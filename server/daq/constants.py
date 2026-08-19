@@ -1,7 +1,7 @@
 """CAEN DT5742B / x742-family hardware constants.
 
 Seeded from CAEN's own WaveDump reference (WaveDumpConfig.txt defaults and the
-x742 init sequence in WaveDump.c). Kept in one place so the simulator and the
+x742 init sequence in WaveDump.c). Kept in one place so the backend and the
 real backend agree on geometry.
 """
 from __future__ import annotations

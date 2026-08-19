@@ -1,9 +1,8 @@
 """The hardware seam.
 
 Everything above this line (acquisition, stats, writer, server, UI) talks only
-to `DigitizerBackend`. The simulator and the real CAEN board are two
-implementations. When lsusb passes, we swap `SimulatorBackend` for
-`CaenBackend` and only this seam needs hardware debugging.
+to `DigitizerBackend`; `CaenBackend` is the implementation. Hardware debugging
+stays behind this seam.
 """
 from __future__ import annotations
 
@@ -69,12 +68,8 @@ class DigitizerBackend(abc.ABC):
         return C.RECORD_LENGTH
 
 
-def make_backend(kind: str, **kwargs) -> DigitizerBackend:
-    kind = (kind or "sim").lower()
-    if kind in ("sim", "simulator", "mock"):
-        from .simulator import SimulatorBackend
-        return SimulatorBackend(**kwargs)
-    if kind in ("caen", "real", "hw", "hardware"):
+def make_backend(kind: str = "caen", **kwargs) -> DigitizerBackend:
+    if (kind or "caen").lower() in ("caen", "real", "hw", "hardware"):
         from .caen import CaenBackend
         return CaenBackend(**kwargs)
-    raise ValueError(f"unknown backend {kind!r} (use 'sim' or 'caen')")
+    raise ValueError(f"unknown backend {kind!r} (use 'caen')")

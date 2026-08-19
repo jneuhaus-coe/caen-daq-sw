@@ -16,8 +16,7 @@ from . import constants as C
 
 
 class AcquisitionEngine:
-    def __init__(self, backend_kind: str = "sim", sim_rate_hz: float = 200.0):
-        self._backend_kind = backend_kind
+    def __init__(self):
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
         self._cfg = BoardConfig.load_last_or_default()
@@ -28,16 +27,13 @@ class AcquisitionEngine:
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
         self._lock = threading.Lock()
-        self._sim_rate_hz = sim_rate_hz
         self._events_seen = 0
         self._errors: list[str] = []
         self._opened = False
 
     # ---------- lifecycle ----------
     def open(self):
-        self._backend = (make_backend(self._backend_kind, rate_hz=self._sim_rate_hz)
-                         if self._backend_kind == "sim"
-                         else make_backend(self._backend_kind))
+        self._backend = make_backend()
         self._board_info = self._backend.open()
         self._opened = True
         return self._board_info
