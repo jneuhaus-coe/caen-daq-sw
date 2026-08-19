@@ -5,15 +5,15 @@ Dead-simple, fast, bulletproof data acquisition for the CAEN **DT5742B** (DRS4,
 
 ## Status
 
-Vertical slice running end-to-end **against a simulator** — no hardware needed
-to develop or demo. The real board is one swappable backend behind the same
-interface; it's written but **not yet hardware-validated** (blocked on USB
-passthrough into the lima guest — see *The gate* below).
+Vertical slice wired end to end against the real board. The DT5742B opens and
+identifies (serial 53364, ROC 04.29 / AMC 01.06); `CaenBackend` is verified that
+far, while configure, arm, read and decode are **not yet exercised** against real
+triggers. Windows is the deployment target.
 
 Working now: config with WaveDump-seeded defaults + load/save + persist-last-used,
 per-channel settings with fan-out to many/all, moving-average waveform, scrolling
 trigger-rate strip, WaveDump-compatible writer, browsable command catalog, live
-web UI. All smoke-tested (`server/tests`).
+React + uPlot web UI. All smoke-tested (`server/tests`).
 
 ## Architecture
 
@@ -22,7 +22,6 @@ web UI. All smoke-tested (`server/tests`).
  (uPlot, static)                 (aggregates only)     │
                                                         ▼
                                               DigitizerBackend  ◄── the hardware seam
-                                              ├─ SimulatorBackend   (synthetic 742 events)
                                               └─ CaenBackend        (ctypes → libCAENDigitizer)
 ```
 
@@ -33,45 +32,36 @@ torrent — which is why a browser client renders at native-comparable speed.
 When we split client/server across a socket, the GUI moves to its own process
 for free.
 
-## Run (simulator)
+## Run
+
+On the machine physically attached to the digitizer:
 
 ```bash
 cd server
 pip install -e .          # or: pip install fastapi "uvicorn[standard]" numpy
-python -m daq --backend sim --sim-rate 300
-# open http://127.0.0.1:8000/
+python -m daq --host 0.0.0.0
+# open http://<host>:8000/ and click Start
 ```
 
-Click **Start** — you'll see live averaged waveforms and the trigger-rate strip.
+Prerequisites:
 
-## Run (real board) — after the gate passes
+- CAENDigitizer, CAENComm, CAENVMELib
+- CAEN USB kernel driver (`CAENUSBdrvB` on Linux)
+- udev rule for non-root access (Linux)
+- Python 3.10+
 
-```bash
-python -m daq --backend caen --host 0.0.0.0
-```
-
-Requires CAEN's Linux libraries in the guest (CAENComm, CAENVMELib,
-CAENDigitizer; aarch64 builds exist for arm64 guests).
-
-## The gate: USB passthrough into lima
-
-Everything hardware-specific lives in `daq/backend/caen.py`. Before it can work,
-the board must enumerate **inside the lima guest**:
-
-```bash
-lsusb | grep 21e1        # expect a CAEN device (vendor 0x21e1)
-```
-
-If nothing appears, lima's default `vz` backend isn't passing the USB device;
-switch to the QEMU backend with `usb-host`, or use UTM. Until `lsusb` shows the
-board, run with `--backend sim`.
+Everything hardware-specific lives in `daq/backend/caen.py`. If `OpenDigitizer`
+fails with `-1` while the board is visible on USB, the driver is missing.
 
 ## Roadmap
 
-- [ ] Validate `CaenBackend` on hardware (enum values, per-group DC offset, decode)
+- [x] Open and identify the board over USB (CAEN driver + libs)
+- [x] Production React + Vite + TypeScript UI (uPlot)
+- [x] Per-channel config panel + apply-to-all in the UI
+- [ ] Exercise `CaenBackend` past open: configure, arm, read, decode real triggers
+      (enum values, per-group DC offset, DRS4 correction path)
 - [ ] Confirm WaveDump writer byte-layout against a real dump; add ROOT/HDF5 writers
-- [ ] Production React + Vite UI (this page is the vanilla proof-of-life)
-- [ ] Per-channel config panel + apply-to-all in the UI
+- [ ] Eyeball the UI in a browser against live data
 - [ ] Client/server split over the socket (colocated first)
 - [ ] Packaging
 
@@ -85,12 +75,13 @@ server/
     catalog.py       browsable command/setting catalog
     backend/
       base.py        DigitizerBackend ABC + Event/BoardInfo
-      simulator.py   synthetic 742 backend
-      caen.py        real board via ctypes (hardware-validation pending)
+      caen.py        real board via ctypes
     stats.py         moving average + trigger-rate meter
     writer.py        Writer interface + WaveDump-compatible writer
     acquisition.py   threaded readout engine + telemetry snapshots
     server.py        FastAPI REST + WebSocket + static
-    static/index.html  live uPlot UI
+    static/          built web UI (generated — build from web/, don't edit)
     __main__.py      entrypoint
+  tests/             hardware-free smoke tests
+web/                 React + Vite + TypeScript UI source (uPlot)
 ```
