@@ -2,6 +2,7 @@
   color-scheme: dark;
   --bg: #0e1116; --panel: #161b22; --border: #30363d; --muted: #8b949e;
   --text: #e6edf3; --accent: #1f6feb; --green: #4ac776; --orange: #f0883e; --purple: #8b5cf6;
+  --red: #f85149;
 }
 * { box-sizing: border-box; }
 body, html, #root { margin: 0; height: 100%; }
@@ -19,6 +20,29 @@ header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; 
 .spacer { flex: 1; }
 .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
 .pill.on { background: #12331f; color: var(--green); }
+
+/* connection badge — identifies the unit and whether we can reach it now */
+.conn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: #21262d; border: 1px solid transparent;
+}
+.conn .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.conn-label { font-weight: 650; }
+.conn-sn { color: var(--muted); font-size: 11px; }
+.conn-btn { margin-left: 2px; }
+
+.conn.ok { background: #12331f; border-color: #1c5233; color: var(--green); }
+.conn.ok .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(74, 199, 118, .18); }
+.conn.ok .conn-sn { color: #7fd6a0; }
+
+.conn.bad { background: #3d1518; border-color: #6b2226; color: var(--red); }
+.conn.bad .dot { background: var(--red); }
+
+.conn.busy { background: #3a2410; border-color: #6a4318; color: var(--orange); }
+.conn.busy .dot { background: var(--orange); animation: conn-pulse 1s ease-in-out infinite; }
+@keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .conn.busy .dot { animation: none; } }
 
 button {
   font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);

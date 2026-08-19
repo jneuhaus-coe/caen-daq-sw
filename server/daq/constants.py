@@ -51,3 +51,9 @@ def sample_period_ns(drs4_freq: int) -> float:
 def time_axis_ns(drs4_freq: int, n: int = RECORD_LENGTH):
     dt = sample_period_ns(drs4_freq)
     return [i * dt for i in range(n)]
+
+# Connection health. The readout loop tolerates a few transient read errors
+# before declaring the board gone; when idle we re-probe (and retry a lost
+# board) at this cadence so the UI recovers on its own.
+READ_FAIL_LIMIT = 10
+RECONNECT_RETRY_S = 5.0

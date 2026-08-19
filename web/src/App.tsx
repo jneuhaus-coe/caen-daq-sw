@@ -7,6 +7,8 @@ import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { Collapsible } from "./components/Collapsible";
 import { RateStrip } from "./components/RateStrip";
+import { ConnectionBadge } from "./components/ConnectionBadge";
+import { STATUS_POLL_MS } from "./types";
 
 export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -14,6 +16,8 @@ export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [tele, setTele] = useState<Telemetry | null>(null);
   const [selected, setSelected] = useState(0);
+  const [serverUp, setServerUp] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -26,6 +30,23 @@ export function App() {
   }, []);
 
   useEffect(() => openTelemetry(setTele), []);
+
+  // Poll status: the board can vanish (unit switched off) or come back at any
+  // time, and only /api/status actually pokes it.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const st = await api.status();
+        if (!cancelled) { setStatus(st); setServerUp(true); }
+      } catch {
+        if (!cancelled) setServerUp(false);
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, STATUS_POLL_MS);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, []);
 
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);
@@ -49,19 +70,33 @@ export function App() {
 
   const start = async () => setStatus(await api.start());
   const stop = async () => setStatus(await api.stop());
+  const reconnect = async () => {
+    setReconnecting(true);
+    try {
+      setStatus(await api.reconnect());
+      setServerUp(true);
+    } catch {
+      setServerUp(false);
+    } finally {
+      setReconnecting(false);
+    }
+  };
 
   if (!catalog || !config) return <div className="loading">Loading…</div>;
   const running = tele?.running ?? status?.running ?? false;
+  const connected = serverUp && !!status?.opened;
 
   return (
     <div className="app">
       <header>
         <h1>DT5742B DAQ</h1>
-        <span className="pill">{status?.board.model ?? "board"}</span>
+        <ConnectionBadge status={status} serverUp={serverUp}
+          busy={reconnecting} onReconnect={reconnect} />
         <span className={"pill" + (running ? " on" : "")}>{running ? "running" : "idle"}</span>
         <span className="pill mono">{tele?.events_seen ?? 0} events</span>
         <div className="spacer" />
-        <button className="primary" onClick={start} disabled={running}>Start</button>
+        <button className="primary" onClick={start} disabled={running || !connected}
+          title={connected ? "" : "No board connected"}>Start</button>
         <button onClick={stop} disabled={!running}>Stop</button>
       </header>
 

@@ -32,6 +32,8 @@ TriggerMode_ACQ_ONLY = 1
 TriggerMode_ACQ_AND_EXTOUT = 3
 # DRS4 frequency enum values (0=5G,1=2.5G,2=1G,3=750M) — match our constants keys.
 
+REG_ACQUISITION_STATUS = 0x8104   # read-only; used as a liveness probe
+
 
 class _X742_GROUP(ct.Structure):
     _fields_ = [
@@ -117,6 +119,21 @@ class CaenBackend(DigitizerBackend):
             amc_firmware=bi.AMC_FirmwareRel.decode(errors="ignore"),
             sw_release=sw.value.decode(errors="ignore"),
         )
+
+    def is_alive(self) -> bool:
+        """Read the acquisition-status register: a real USB round trip.
+
+        GetInfo is NOT usable here - it answers from state the library cached
+        at open time and keeps succeeding after the unit is switched off.
+        """
+        if not self._lib or self._h.value < 0:
+            return False
+        try:
+            val = ct.c_uint32(0)
+            return self._lib.CAEN_DGTZ_ReadRegister(
+                self._h, REG_ACQUISITION_STATUS, ct.byref(val)) == CAEN_DGTZ_Success
+        except Exception:
+            return False
 
     def configure(self, cfg) -> None:
         self._cfg = cfg

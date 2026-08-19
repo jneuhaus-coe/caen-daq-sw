@@ -78,3 +78,6 @@ export interface Status {
   events_seen: number;
   errors: string[];
 }
+
+/** How often the header re-checks the board. */
+export const STATUS_POLL_MS = 1500;

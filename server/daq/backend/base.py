@@ -17,8 +17,8 @@ from .. import constants as C
 
 @dataclass
 class BoardInfo:
-    model: str = "DT5742B"
-    family_code: str = "XX742"
+    model: str = ""          # empty until a real board answers
+    family_code: str = ""
     serial: int = 0
     roc_firmware: str = ""
     amc_firmware: str = ""
@@ -61,6 +61,11 @@ class DigitizerBackend(abc.ABC):
 
     @abc.abstractmethod
     def close(self) -> None: ...
+
+    def is_alive(self) -> bool:
+        """Cheap round trip to confirm the unit is still there. Override for
+        hardware that can be powered off or unplugged underneath us."""
+        return True
 
     # convenience
     @property

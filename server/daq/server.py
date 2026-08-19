@@ -22,7 +22,12 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.get("/api/status")
     def status():
+        engine.probe()          # keeps `opened` honest between polls
         return engine.status()
+
+    @app.post("/api/board/reconnect")
+    def reconnect():
+        return engine.reconnect()
 
     @app.get("/api/catalog")
     def get_catalog():

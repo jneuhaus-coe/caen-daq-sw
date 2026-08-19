@@ -5,6 +5,7 @@ These cover config tiers/fan-out, the aggregation math, and the HTTP surface.
 The acquisition loop itself needs the board and is not covered here."""
 import time
 import numpy as np
+from fastapi.testclient import TestClient
 
 from daq.acquisition import AcquisitionEngine
 from daq.config import default_config, BoardConfig
@@ -58,10 +59,22 @@ def test_http_api_and_fanout():
     assert out["channels"][5]["dc_offset"] == 555
 
 
+def test_probe_and_reconnect_without_hardware():
+    """No board attached: probing and reconnecting must report disconnected
+    rather than raising, so the UI can render a red badge."""
+    eng = AcquisitionEngine()
+    assert eng.probe() is False
+    assert eng.status()["opened"] is False
+    assert eng.reconnect()["opened"] is False
+    c = TestClient(create_app(eng))
+    assert c.get("/api/status").json()["opened"] is False
+    assert c.post("/api/board/reconnect").json()["opened"] is False
+
+
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
-               test_http_api_and_fanout]:
+               test_http_api_and_fanout, test_probe_and_reconnect_without_hardware]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")
