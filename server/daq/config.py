@@ -1,0 +1,140 @@
+"""Configuration model with the 742's real setting tiers: board / bank(group) /
+channel. Defaults mirror CAEN's WaveDump. JSON on disk; load/save/persist.
+
+Tiers (verified against WaveDump.c x742 branch):
+  board   : sampling freq, post-trigger, correction, trigger modes, output
+  bank    : enable, self-trigger threshold, fast-trigger (TR) threshold + DC
+            offset, self-trigger mode  -> per DRS4 group of 8 channels
+  channel : DC-offset trim only (SetChannelDCOffset). No per-channel enable
+            (whole group digitizes together) and no per-channel gain on the 742.
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field, asdict
+
+from . import constants as C
+
+CONFIG_DIR = os.environ.get("DAQ_CONFIG_DIR",
+                            os.path.join(os.path.expanduser("~"), ".daq-sw"))
+LAST_USED_PATH = os.path.join(CONFIG_DIR, "last_used.json")
+
+
+@dataclass
+class ChannelConfig:
+    dc_offset: int = 0          # per-channel baseline trim (DAC counts)
+
+
+@dataclass
+class GroupConfig:
+    enabled: bool = False
+    self_trigger: str = "disabled"          # disabled|acquisition_only|acq_and_trgout
+    trigger_threshold: int = 100            # SetGroupTriggerThreshold (0..4095)
+    fast_trigger_threshold: int = 20000     # SetGroupFastTriggerThreshold (TR0/TR1)
+    fast_trigger_dc_offset: int = 32768     # SetGroupFastTriggerDCOffset
+
+
+@dataclass
+class BoardConfig:
+    # board-level
+    drs4_frequency: int = C.DEFAULT_DRS4_FREQUENCY
+    record_length: int = C.RECORD_LENGTH
+    post_trigger: int = 20
+    correction_level: str = "auto"
+    trigger_edge: str = "falling"
+    external_trigger: str = "acquisition_only"
+    fast_trigger: str = "acquisition_only"
+    fast_trigger_digitizing: bool = True
+    max_events_blt: int = 1024
+    test_pattern: bool = False
+    # output
+    output_format: str = "ascii"
+    output_header: bool = False
+    output_dir: str = "data"
+    write_enabled: bool = False
+    # tiers
+    groups: list[GroupConfig] = field(
+        default_factory=lambda: [GroupConfig() for _ in range(C.NUM_GROUPS)])
+    channels: list[ChannelConfig] = field(
+        default_factory=lambda: [ChannelConfig() for _ in range(C.NUM_CHANNELS)])
+
+    def __post_init__(self):
+        self.groups = [g if isinstance(g, GroupConfig) else GroupConfig(**g)
+                       for g in self.groups][:C.NUM_GROUPS]
+        while len(self.groups) < C.NUM_GROUPS:
+            self.groups.append(GroupConfig())
+        chs = []
+        for i in range(C.NUM_CHANNELS):
+            c = self.channels[i] if i < len(self.channels) else ChannelConfig()
+            chs.append(c if isinstance(c, ChannelConfig) else ChannelConfig(**c))
+        self.channels = chs
+
+    # ---- derived ----
+    @property
+    def group_enable_mask(self) -> int:
+        return sum((1 << g) for g, gc in enumerate(self.groups) if gc.enabled)
+
+    def channel_enabled(self, ch: int) -> bool:
+        return self.groups[C.channel_group(ch)].enabled
+
+    def enabled_channels(self) -> list[int]:
+        return [ch for ch in range(C.NUM_CHANNELS) if self.channel_enabled(ch)]
+
+    # ---- per-channel DC-offset fan-out ----
+    def apply_channel_dc_to(self, src: int, targets: list[int]) -> None:
+        v = self.channels[src].dc_offset
+        for t in targets:
+            self.channels[t].dc_offset = v
+
+    def bank_channels(self, group: int) -> list[int]:
+        base = group * C.GROUP_SIZE
+        return list(range(base, base + C.GROUP_SIZE))
+
+    # ---- serialization ----
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BoardConfig":
+        d = dict(d)
+        groups = d.pop("groups", None)
+        chs = d.pop("channels", None)
+        # tolerate unknown keys from older configs
+        known = cls().__dict__
+        d = {k: v for k, v in d.items() if k in known}
+        cfg = cls(**d)
+        if groups is not None:
+            cfg.groups = [GroupConfig(**g) if isinstance(g, dict) else g for g in groups]
+        if chs is not None:
+            cfg.channels = [ChannelConfig(**c) if isinstance(c, dict) else c for c in chs]
+        cfg.__post_init__()
+        return cfg
+
+    def save(self, path: str) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "BoardConfig":
+        with open(path) as f:
+            return cls.from_dict(json.load(f))
+
+    def persist(self) -> None:
+        self.save(LAST_USED_PATH)
+
+    @classmethod
+    def load_last_or_default(cls) -> "BoardConfig":
+        try:
+            return cls.load(LAST_USED_PATH)
+        except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError):
+            return default_config()
+
+
+def default_config() -> BoardConfig:
+    """WaveDump-equivalent: group 0 enabled (ch0-7), 5 GS/s, corrections AUTO."""
+    cfg = BoardConfig()
+    cfg.groups[0].enabled = True
+    cfg.groups[0].self_trigger = "acquisition_only"
+    return cfg

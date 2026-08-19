@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / web
+node_modules/
+.vite/
+*.tsbuildinfo
+
+# DAQ output (WaveDump-style waveform dumps)
+wave_*.txt
+wave_*.dat
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
