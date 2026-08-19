@@ -81,6 +81,14 @@ class TriggerRateMeter:
             self._cur_start += self.bin_s
             self._bins.append(0)  # push completed current bin forward; start fresh
 
+    def reset(self):
+        """Zero the window and the running total. Called when acquisition starts
+        so Count reflects this run, not the lifetime of the process."""
+        with self._lock:
+            self._bins = deque([0] * self.nbins, maxlen=self.nbins)
+            self._cur_start = time.monotonic()
+            self._total = 0
+
     def add(self, n: int = 1):
         with self._lock:
             self._roll()
@@ -90,14 +98,17 @@ class TriggerRateMeter:
     def snapshot(self):
         with self._lock:
             self._roll()
-            counts = list(self._bins)
+            # Drop the bin still being filled: it always reads low, which made
+            # the headline number disagree with the last bar on the strip.
+            counts = list(self._bins)[:-1]
             rate = [c / self.bin_s for c in counts]
-            # x axis: seconds ago for each bin (oldest .. newest ~ 0)
-            t = [-(self.nbins - 1 - i) * self.bin_s for i in range(self.nbins)]
+            n = len(rate)
+            # x axis: seconds ago for each bin (oldest .. newest)
+            t = [-(n - i) * self.bin_s for i in range(n)]
             recent = rate[-1] if rate else 0.0
             return {
                 "bin_seconds": self.bin_s,
-                "window_seconds": self.nbins * self.bin_s,
+                "window_seconds": n * self.bin_s,
                 "t": t,
                 "rate": rate,
                 "instant": recent,

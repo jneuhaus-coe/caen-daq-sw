@@ -58,6 +58,8 @@ class AcquisitionEngine:
         with self._lock:
             cfg = self._cfg
         self._backend.configure(cfg)
+        self._events_seen = 0      # Count reflects this acquisition run
+        self._rate.reset()
         self._writer = make_writer(cfg)
         self._writer.open(cfg)
         self._backend.start()

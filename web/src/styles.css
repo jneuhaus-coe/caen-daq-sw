@@ -90,10 +90,37 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .badge.off { background: #21262d; color: #6e7681; }
 
 /* rate strip */
-.rate-num { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
-.rate-num .big { font-size: 24px; font-weight: 650; }
+.rate-wrap { display: flex; flex-direction: column; height: 132px; gap: 6px; }
+/* Fixed height: the header must not resize as digits come and go - all the
+   slack belongs to the plot. */
+.rate-num {
+  flex: none; height: 30px; display: flex; align-items: baseline; gap: 6px;
+}
+.rate-num .big {
+  font-size: 24px; font-weight: 650; line-height: 30px;
+  min-width: 3ch;                       /* room for 3 digits, no zero padding */
+  text-align: right;                    /* digits grow leftward into that room,
+                                           so the value stays against the unit */
+}
 .rate-num .unit { color: var(--muted); font-size: 12px; }
-.rate-num .total { margin-left: auto; }
+.rate-num .total { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+.rate-plot {
+  position: relative; flex: 1; min-height: 0;
+  background: var(--bg);                /* darker than the panel behind it */
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.rate-svg { display: block; width: 100%; height: 100%; }
+.rate-area { fill: rgba(31, 111, 235, 0.22); }
+.rate-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+
+.rate-y {
+  position: absolute; left: 4px; font-size: 10px; color: var(--muted);
+  pointer-events: none; line-height: 1;
+}
+.rate-y.top { top: 3px; }
+.rate-y.zero { bottom: 3px; }
 
 /* channel inspector */
 .editor-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }

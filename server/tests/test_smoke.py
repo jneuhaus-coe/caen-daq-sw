@@ -59,6 +59,24 @@ def test_http_api_and_fanout():
     assert out["channels"][5]["dc_offset"] == 555
 
 
+def test_rate_meter_total_and_last_bucket():
+    """Count is a per-run total, and the headline rate is the last COMPLETE
+    bucket — the still-filling one always reads low."""
+    m = TriggerRateMeter(bin_s=0.05, window_s=0.5)
+    for _ in range(3):
+        m.add(4)
+        time.sleep(0.06)
+    snap = m.snapshot()
+    assert snap["total"] == 12                       # cumulative, not windowed
+    assert snap["instant"] == snap["rate"][-1]       # matches the last bar drawn
+    assert len(snap["rate"]) == m.nbins - 1          # partial bin excluded
+    m.reset()
+    snap = m.snapshot()
+    assert snap["total"] == 0 and all(v == 0 for v in snap["rate"])
+    m.add(7)
+    assert m.snapshot()["total"] == 7                # counts up again
+
+
 def test_probe_and_reconnect_without_hardware():
     """No board attached: probing and reconnecting must report disconnected
     rather than raising, so the UI can render a red badge."""
@@ -74,7 +92,8 @@ def test_probe_and_reconnect_without_hardware():
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
-               test_http_api_and_fanout, test_probe_and_reconnect_without_hardware]:
+               test_http_api_and_fanout, test_rate_meter_total_and_last_bucket,
+               test_probe_and_reconnect_without_hardware]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")
