@@ -29,9 +29,9 @@ export function RateStrip({ tele }: { tele: Telemetry | null }) {
   return (
     <div className="rate-wrap">
       <div className="rate-num">
-        <span className="big mono">{fmt(last)}</span>
+        <span className="big mono">{fmtSI(last)}</span>
         <span className="unit">triggers/s</span>
-        <span className="total mono">Count: {count}</span>
+        <span className="total mono">Count: {fmtSI(count)}</span>
       </div>
 
       <div className="rate-plot">
@@ -47,15 +47,31 @@ export function RateStrip({ tele }: { tele: Telemetry | null }) {
           </svg>
         ) : null}
         {/* Top label only once there is a real peak to name. */}
-        {peak > 0 ? <span className="rate-y top mono">{fmt(peak)}</span> : null}
+        {peak > 0 ? <span className="rate-y top mono">{fmtSI(peak)}</span> : null}
         <span className="rate-y zero mono">0</span>
       </div>
     </div>
   );
 }
 
-/** Exact value, never rounded: a bucket count times the update frequency is a
- *  whole number, and the peak must read as the true peak. */
-function fmt(v: number) {
-  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+const SI_UNITS = ["K", "M", "G", "T"];
+
+/** Rates and counts reach the millions, so scale into SI once past 999.
+ *
+ *  Below 1000 the value is a whole number (a bucket count times the update
+ *  frequency), so it prints with no decimal at all. Above that it is always
+ *  1-3 digits and exactly one decimal: 1.5K, 999.9K, 12.3M.
+ */
+function fmtSI(v: number) {
+  const a = Math.abs(v);
+  if (a < 1000) return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  let x = v / 1000;
+  let i = 0;
+  // 999_999 would render as "1000.0K"; promote it to "1.0M" instead so the
+  // mantissa never grows a fourth digit.
+  while (Math.abs(x) >= 999.95 && i < SI_UNITS.length - 1) {
+    x /= 1000;
+    i++;
+  }
+  return x.toFixed(1) + SI_UNITS[i];
 }
