@@ -14,6 +14,8 @@ NUM_TR = NUM_GROUPS        # one fast-trigger (TRn) digitized trace per group
 RECORD_LENGTH = 1024       # DRS4 depth: samples per event, fixed
 ADC_BITS = 12
 ADC_MAX = (1 << ADC_BITS) - 1  # 4095
+INPUT_RANGE_VPP = 1.0      # DT5742B dynamic range: 1 Vpp across the full ADC span
+DC_OFFSET_HALF_SPAN = 32768   # signed per-channel trim is -32768..32767
 
 # --- DRS4 sampling frequency enum (matches CAEN_DGTZ_DRS4Frequency_t) ---
 # value : (label, sample_rate_Hz, sample_period_ns)

@@ -16,7 +16,10 @@ export interface Catalog {
   board: SettingDef[];
   bank: SettingDef[];
   channel: SettingDef[];
-  geometry: { num_channels: number; group_size: number; num_groups: number; record_length: number };
+  geometry: {
+    num_channels: number; group_size: number; num_groups: number; record_length: number;
+    adc_max: number; input_range_vpp: number; dc_offset_half_span: number;
+  };
 }
 
 export interface ChannelConfig { dc_offset: number; }

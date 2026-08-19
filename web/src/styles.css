@@ -72,6 +72,24 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .lg.live::before { background: var(--green); } .lg.dead::before { background: var(--purple); }
 .lg.clip::before { background: var(--orange); } .lg.off::before { background: #3a4150; }
 
+/* banks: label the group once, not on all eight tiles */
+.banks { display: flex; flex-direction: column; gap: 10px; }
+.bank { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.bank-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; background: none; border: none; border-radius: 10px;
+  color: var(--text); cursor: pointer; user-select: none; text-align: left;
+}
+.bank-head:hover:not(:disabled) { border-color: transparent; background: #1b212a; }
+.bank-title { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .6px; }
+.bank-range { margin-left: auto; font-size: 11px; color: #6e7681; }
+.bank-state {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 4px; background: #21262d; color: #6e7681;
+}
+.bank.off { opacity: .5; border-style: dashed; }
+.bank .grid16 { padding: 0 10px 10px; }
+
 .grid16 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .tile {
   text-align: left; padding: 7px 8px 5px; background: var(--panel); border: 1px solid var(--border);
@@ -84,6 +102,23 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .tile-head .ch { font-weight: 650; }
 .tile-head .g { color: #6e7681; font-size: 10px; }
 .tile-foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* averaged-waveform chart + its axes */
+.wave { width: 100%; }
+.wave-plot { position: relative; width: 100%; }
+.wave .ax {
+  position: absolute; font-size: 9.5px; line-height: 1; color: #6e7681;
+  pointer-events: none; font-variant-numeric: tabular-nums;
+}
+.wave .ax.y { left: 2px; }
+.wave .ax.y.max { top: 2px; }
+.wave .ax.y.zero { top: 50%; transform: translateY(-50%); }
+.wave .ax.y.min { bottom: 2px; }
+.wave-x {
+  display: flex; justify-content: space-between;
+  font-size: 9.5px; color: #6e7681; font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
 .badge { margin-left: auto; font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; letter-spacing: .4px; }
 .badge.dead { background: #2a1f45; color: var(--purple); }
 .badge.clip { background: #3a2410; color: var(--orange); }

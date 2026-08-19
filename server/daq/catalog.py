@@ -68,5 +68,8 @@ def catalog() -> dict:
             "group_size": C.GROUP_SIZE,
             "num_groups": C.NUM_GROUPS,
             "record_length": C.RECORD_LENGTH,
+            "adc_max": C.ADC_MAX,
+            "input_range_vpp": C.INPUT_RANGE_VPP,
+            "dc_offset_half_span": C.DC_OFFSET_HALF_SPAN,
         },
     }
