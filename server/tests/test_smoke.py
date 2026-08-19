@@ -48,6 +48,8 @@ def test_http_api_and_fanout():
     # constructing the engine does not touch hardware; opening it would
     c = TestClient(create_app(AcquisitionEngine()))
     assert c.get("/api/catalog").json()["bank"]  # bank tier present
+    st = c.get("/api/status").json()
+    assert st["backend"] == "caen" and st["opened"] is False
     cfg = c.get("/api/config").json()
     # set ch0 offset then fan to bank
     cfg["channels"][0]["dc_offset"] = 555

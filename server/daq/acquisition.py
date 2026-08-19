@@ -148,7 +148,7 @@ class AcquisitionEngine:
         return {
             "opened": self._opened,
             "running": self._running.is_set(),
-            "backend": self._backend_kind,
+            "backend": "caen",
             "board": {
                 "model": bi.model, "family": bi.family_code, "serial": bi.serial,
                 "roc_firmware": bi.roc_firmware, "amc_firmware": bi.amc_firmware,
