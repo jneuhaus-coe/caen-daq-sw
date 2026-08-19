@@ -2,24 +2,31 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.eggs/
 build/
 dist/
 .venv/
 venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
-# Node / web
+# Node / Vite
 node_modules/
-.vite/
-*.tsbuildinfo
+web/dist/
 
-# DAQ output (WaveDump-style waveform dumps)
-wave_*.txt
-wave_*.dat
+# NOTE: the built UI bundle (server/daq/static/) IS committed on purpose, so the
+# app runs with just `pip install -e . && python -m daq` — no Node on the target.
+# Rebuild it with `cd web && npm run build`. If you'd rather treat it as a build
+# artifact, add `server/daq/static/` here and build before running.
 
-# Editor / OS
+# DAQ runtime
+data/
+*.dat
+.daq-sw/
+
+# Session/transport cruft
+_to_delete/
+*.tar.gz
+
+# OS / editor
 .DS_Store
-.vscode/
 .idea/
+.vscode/
