@@ -249,9 +249,6 @@ select { min-width: 90px; }
 .bank-ch { margin-left: auto; font-size: 11px; color: #6e7681; font-weight: 500;
            text-transform: none; letter-spacing: 0; }
 
-/* a voltage, never a DAC word */
-.v-input { display: inline-flex; align-items: center; gap: 4px; }
-.v-input .unit { color: var(--muted); font-size: 11px; }
 
 /* config actions: Load/Save together, Reset held apart */
 .config-btns { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -295,23 +292,25 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 /* stepped setting: field plus a stacked pair of steppers, sized like a real
    spinner instead of the native one - which is hidden, because these values are
    not uniformly spaced and a fixed step cannot land on them. */
-.step-input { display: inline-flex; align-items: stretch; gap: 4px; height: 28px; }
-.step-input .field {
-  display: inline-flex; align-items: center; gap: 4px;
+/* One control box for every number input: value right-aligned, unit inside. */
+.field {
+  display: inline-flex; align-items: center; gap: 4px; height: 28px;
   padding: 0 8px; border: 1px solid var(--border); border-radius: 5px;
   background: #0d1117;
 }
-.step-input .field:focus-within { border-color: var(--accent); }
-.step-input input {
+.field:focus-within { border-color: var(--accent); }
+.field input {
   width: 54px; border: none; background: none; padding: 0;
   color: var(--text); font: inherit; font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.step-input input:focus { outline: none; }
-.step-input input::-webkit-outer-spin-button,
-.step-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.step-input input[type=number] { -moz-appearance: textfield; appearance: textfield; }
-.step-input .field .unit { color: var(--muted); font-size: 11px; }
+.field input:focus { outline: none; }
+.field input::-webkit-outer-spin-button,
+.field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.field input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.field .unit { color: var(--muted); font-size: 11px; }
+
+.step-input { display: inline-flex; align-items: stretch; gap: 4px; height: 28px; }
 
 .steppers { display: inline-flex; flex-direction: column; gap: 2px; }
 .stepper {

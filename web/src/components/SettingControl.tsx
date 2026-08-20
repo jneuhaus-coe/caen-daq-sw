@@ -43,7 +43,7 @@ export function SettingControl({ def, value, geom, dependsOn, onChange }: Props)
   if (def.type === "volts") {
     const limit = geom.dc_offset_range_v / 2;
     return (
-      <span className="v-input">
+      <span className="field">
         <BlurInput
           type="number" step={0.005} min={-limit} max={limit} selectOnFocus
           value={dacToVolts(Number(value ?? geom.dc_offset_mid), geom).toFixed(3)}
@@ -55,10 +55,13 @@ export function SettingControl({ def, value, geom, dependsOn, onChange }: Props)
   }
 
   return (
-    <BlurInput
-      type="number" min={def.min} max={def.max} selectOnFocus
-      value={value ?? 0}
-      onCommit={(v) => onChange(v === "" ? 0 : Number(v))}
-    />
+    <span className="field">
+      <BlurInput
+        type="number" min={def.min} max={def.max} selectOnFocus
+        value={value ?? 0}
+        onCommit={(v) => onChange(v === "" ? 0 : Number(v))}
+      />
+      {def.unit ? <span className="unit">{def.unit}</span> : null}
+    </span>
   );
 }

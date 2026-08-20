@@ -89,15 +89,17 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
                         color={color} />
 
                       <div className="tile-dc" title={dcHelp}>
-                        <label>DC</label>
-                        <BlurInput
-                          type="number" step={0.005}
-                          min={-g.dc_offset_range_v / 2} max={g.dc_offset_range_v / 2}
-                          value={dacToVolts(dac, g).toFixed(3)}
-                          selectOnFocus
-                          onCommit={(v) => onDcOffset(ch, voltsToDac(Number(v || 0), g))}
-                        />
-                        <span className="unit">V</span>
+                        <label>DC offset</label>
+                        <span className="field">
+                          <BlurInput
+                            type="number" step={0.005}
+                            min={-g.dc_offset_range_v / 2} max={g.dc_offset_range_v / 2}
+                            value={dacToVolts(dac, g).toFixed(3)}
+                            selectOnFocus
+                            onCommit={(v) => onDcOffset(ch, voltsToDac(Number(v || 0), g))}
+                          />
+                          <span className="unit">V</span>
+                        </span>
                       </div>
 
                       <div className="tile-foot">

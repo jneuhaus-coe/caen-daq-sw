@@ -17,9 +17,8 @@ export function SettingsList({ defs, geom, get, onChange, skip = [] }: Props) {
         // only the label.
         <div className="setting-row" key={def.key}
           title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
-          <label>
-            {def.label}{def.unit ? <span className="unit"> ({def.unit})</span> : null}
-          </label>
+          {/* The unit lives inside the field, not appended to the label. */}
+          <label>{def.label}</label>
           <SettingControl def={def} value={get(def.key)} geom={geom}
             dependsOn={def.depends_on ? get(def.depends_on) : undefined}
             onChange={(v) => onChange(def.key, v)} />
