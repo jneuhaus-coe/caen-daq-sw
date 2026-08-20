@@ -164,6 +164,11 @@ README is written for two audiences and both matter: an operator arriving cold
 for a night shift, and someone installing or updating it from a long way away.
 Keep the shift instructions short enough to follow at 2 a.m.
 
+The in-app **?** button runs the same content as a three-step tour
+(`web/src/quickuse.tsx`). Keep it and the README's "Taking a shift" section in
+step — they are the same instructions in two presentations, and three steps is
+the ceiling before people stop reading.
+
 ## The board is the source of truth
 
 Never let the UI show a setting the hardware did not confirm.

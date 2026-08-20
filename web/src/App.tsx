@@ -9,6 +9,8 @@ import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
 import { RunsPanel } from "./components/RunsPanel";
 import { Elapsed } from "./components/Elapsed";
+import { Tour } from "./components/Tour";
+import { QUICK_USE } from "./quickuse";
 import { describeChanges } from "./changes";
 import { RateStrip } from "./components/RateStrip";
 import { ConnectionBadge } from "./components/ConnectionBadge";
@@ -23,6 +25,7 @@ export function App() {
   const [reconnecting, setReconnecting] = useState(false);
   const [runName, setRunName] = useState("");
   const [stampRun, setStampRun] = useState(true);
+  const [tour, setTour] = useState(false);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
   const saveTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
@@ -131,6 +134,7 @@ export function App() {
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
   const recording = tele?.recording ?? status?.recording ?? false;
+  const acqState = recording ? "recording" : running ? "acquiring" : "idle";
 
   return (
     <div className="app">
@@ -138,46 +142,57 @@ export function App() {
         <h1>DT5742B DAQ</h1>
         <ConnectionBadge status={status} serverUp={serverUp}
           busy={reconnecting} onReconnect={reconnect} />
-        <span className={"pill" + (running ? " on" : "")}>{running ? "running" : "idle"}</span>
+        <span className={"pill state " + acqState}>{acqState}</span>
         <span className="pill mono">{tele?.events_seen ?? 0} events</span>
         <div className="spacer" />
-        <div className="acq-group">
-          <button className="primary" onClick={start} disabled={running || !connected}
-            title={connected ? "Watch live, without writing anything" : "No unit connected"}>
-            Start
-          </button>
-          <button onClick={stop} disabled={!running}>Stop</button>
-        </div>
-        <div className={"rec-group" + (recording ? " on" : "")}>
-          {recording ? (
-            <>
-              <span className="rec-dot" />
-              <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
-              <span className="rec-count mono">
-                <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
-                {" · "}{tele?.recorded ?? 0} ev
-              </span>
-              <button className="danger" onClick={stopRec}>Stop recording</button>
-            </>
-          ) : (
-            <>
-              <label className="rec-label" htmlFor="runname">Run name</label>
-              <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
-                disabled={!connected}
-                onChange={(e) => setRunName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
-              <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
-                <input type="checkbox" checked={stampRun} disabled={!connected}
-                  onChange={(e) => setStampRun(e.target.checked)} />
-                Include timestamp
-              </label>
-              <button className="record" onClick={startRec} disabled={!connected}
-                title="Start writing this run to disk">
-                <span className="rec-dot" />Record
+        <div className="run-controls">
+          <div className="acq-group">
+            {!running ? (
+              <button className="primary" onClick={start} disabled={!connected}
+                title={connected ? "Watch live — nothing is written to disk"
+                                 : "No unit connected"}>
+                Start Acquisition
               </button>
-            </>
-          )}
+            ) : null}
+            {/* Hidden while recording: stopping acquisition there would end the
+                run, and "Stop recording" is the button you actually want. */}
+            {running && !recording ? (
+              <button onClick={stop}>Stop Acquisition</button>
+            ) : null}
+          </div>
+          <div className={"rec-group" + (recording ? " on" : "")}>
+            {recording ? (
+              <>
+                <span className="rec-dot" />
+                <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
+                <span className="rec-count mono">
+                  <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
+                  {" · "}{tele?.recorded ?? 0} ev
+                </span>
+                <button className="danger" onClick={stopRec}>Stop recording</button>
+              </>
+            ) : (
+              <>
+                <label className="rec-label" htmlFor="runname">Run name</label>
+                <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
+                  disabled={!connected}
+                  onChange={(e) => setRunName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
+                  <input type="checkbox" checked={stampRun} disabled={!connected}
+                    onChange={(e) => setStampRun(e.target.checked)} />
+                  Include timestamp
+                </label>
+                <button className="record" onClick={startRec} disabled={!connected}
+                  title="Start writing this run to disk">
+                  <span className="rec-dot" />Record
+                </button>
+              </>
+            )}
+          </div>
         </div>
+        <button className="help-btn" onClick={() => setTour(true)}
+          title="Quick use" aria-label="Quick use">?</button>
       </header>
 
       <div className="body">
@@ -238,6 +253,7 @@ export function App() {
         </fieldset>
       </div>
       <Toasts toasts={toasts} onDismiss={dismiss} />
+      {tour ? <Tour steps={QUICK_USE} onClose={() => setTour(false)} /> : null}
     </div>
   );
 }

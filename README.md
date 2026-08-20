@@ -11,6 +11,8 @@ from a browser.
 Open **http://\<daq-host\>:8000/** (on the DAQ machine itself,
 <http://127.0.0.1:8000/>).
 
+The **?** button at the top right walks you through this in three steps.
+
 ### 1. Check the unit is connected
 
 Top left shows a green badge with the model and serial:

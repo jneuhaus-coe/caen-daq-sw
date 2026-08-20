@@ -18,8 +18,18 @@ header {
 }
 header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; }
 .spacer { flex: 1; }
-.pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
+.pill { font-size: 12px; padding: 3px 9px; border-radius: 999px;
+        background: #21262d; color: var(--muted);
+        border: 1px solid transparent; }
 .pill.on { background: #12331f; color: var(--green); }
+.pill.state.acquiring, .pill.state.recording {
+  background: #12331f; color: var(--green); border-color: #1c5233;
+}
+.pill.state.recording { animation: state-pulse 1.4s ease-in-out infinite; }
+@keyframes state-pulse {
+  50% { border-color: var(--green); box-shadow: 0 0 0 2px rgba(74, 199, 118, .18); }
+}
+@media (prefers-reduced-motion: reduce) { .pill.state.recording { animation: none; } }
 
 /* connection badge — identifies the unit and whether we can reach it now */
 .conn {
@@ -329,7 +339,15 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 .hw-lock:disabled .tile .ch { cursor: default; }
 
 /* acquire vs record: two separate actions, visibly separate controls */
+.run-controls { display: flex; align-items: center; gap: 8px; }
 .acq-group, .rec-group { display: flex; align-items: center; gap: 6px; }
+.acq-group:empty { display: none; }
+
+.help-btn {
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  font-size: 13px; font-weight: 700; line-height: 1; flex: none;
+  display: grid; place-items: center;
+}
 .rec-group {
   padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border);
   background: #12151b;
@@ -384,3 +402,46 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   border: 1px solid #6b2226; background: #1b0f11; color: var(--text);
 }
 .run-confirm code { background: #1b0f11; padding: 0 4px; border-radius: 3px; }
+
+/* guided tour: dim everything, cut a hole over the thing being explained */
+.tour { position: fixed; inset: 0; z-index: 100; }
+.tour-scrim { position: absolute; inset: 0; }
+/* Only needed on the opener: every other step is dimmed by the spotlight's
+   box-shadow, and stacking both would double the darkness. */
+.tour-scrim.dim { background: rgba(4, 6, 10, .72); }
+/* No transitions here. The spotlight and the card are positioned from one
+   measurement per frame; animating either makes them lag the page and each
+   other. */
+/* Fixed, positioned from getBoundingClientRect every frame: that is the only
+   thing that tracks sticky targets (header, settings column) and scrolling ones
+   alike. The bounce this used to show at the scroll ends is handled by
+   suppressing overscroll while the tour is open, not by changing coordinates. */
+.tour-spot {
+  position: fixed; top: 0; left: 0; border-radius: 10px; pointer-events: none;
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(4, 6, 10, .72), 0 0 0 4px rgba(31, 111, 235, .35);
+  will-change: transform;
+}
+.tour-card {
+  position: fixed; will-change: transform;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+}
+.tour-head { display: flex; align-items: center; }
+.tour-step { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
+             letter-spacing: .6px; font-weight: 650; }
+.tour-x { margin-left: auto; background: none; border: none; color: var(--muted);
+          font-size: 18px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.tour-card h3 { margin: 4px 0 6px; font-size: 14px; }
+.tour-body { font-size: 12.5px; line-height: 1.5; }
+.tour-body p { margin: 0 0 8px; }
+.tour-body p.muted { font-size: 11.5px; }
+.tour-steps { margin: 0 0 8px; padding-left: 18px; }
+.tour-steps li { margin-bottom: 3px; }
+.tour-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.tour-foot .spacer { flex: 1; }
+.tour-dots { display: flex; gap: 5px; }
+.tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: #3a4150;
+               cursor: pointer; }
+.tour-dots i.on { background: var(--accent); }

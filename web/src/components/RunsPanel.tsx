@@ -42,7 +42,7 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
   };
 
   return (
-    <div className="card">
+    <div className="card runs-card">
       <h2>Recorded Runs <span className="sub">{runs.length || "none"}</span></h2>
       {dir ? <p className="muted mono run-dir" title={dir}>{dir}</p> : null}
       {err ? <div className="config-msg err">{err}</div> : null}
