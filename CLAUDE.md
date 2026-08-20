@@ -69,10 +69,19 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   give `InvalidParam` (-3). The datasheet's "1024 events/ch" is the board's
   *buffer depth*, a different quantity. Register 0x800C reads a constant 10 on
   this board, so the library enforces the BLT limit in software, not there.
+- **`-1` (CommError) is a sporadic transient, not a rejection.** Roughly 1 call
+  in 50 during normal use on serial 53364; an immediate retry succeeds, so
+  `_get`/`_set` retry once on `-1`. Under a burst (100+ back-to-back register
+  ops) the very next call fails reliably — and can keep failing while still
+  taking effect, so the readback is the truth, not the return code.
+  **Never conclude a feature is unsupported from a single `-1`.** Doing exactly
+  that briefly convinced me 2.5 GS/s was rejected by this unit; it is not, and
+  all four sampling frequencies work. `-17` is the code that means unsupported.
 - **Post-trigger is quantised in time, not percent.** The register steps in
-  ~8.5 ns (measured 8.45 on serial 53364), so reachable percentages depend on
-  the record duration: only 25 values at 5 GS/s (~4.15% apart), every whole
-  percent at 1 GS/s and below. `constants.post_trigger_steps()` derives this;
+  ~8.5 ns (measured 8.45 on serial 53364). Because the API takes a whole
+  percent, the *effective* increment depends on the record duration: 8.5 ns at
+  5 GS/s (25 settings), then the integer percent becomes the coarser limit —
+  10.24 ns at 1 GS/s and 13.65 ns at 750 MS/s, every 1%. `constants.post_trigger_steps()` derives this;
   the backend snaps before writing. Neither UM1935 nor the 742 datasheet
   mentions it — it was found by sweeping the board.
 - `SetGroupTriggerThreshold` and `SetGroupSelfTrigger` return
@@ -140,6 +149,12 @@ The macOS host has no node, so the UI cannot be rebuilt there; the committed
 ## The board is the source of truth
 
 Never let the UI show a setting the hardware did not confirm.
+
+- **`open()` must not `Reset`.** The unit keeps its settings across our process
+  restarts. Resetting on open wiped them and then read back our own defaults —
+  post-trigger 0, every DC offset `0x8f00` — which looked exactly like state the
+  board had chosen. `Reset` belongs only in `configure()`, where it is
+  deliberate and everything is rewritten straight after.
 
 - On open, read every setting off the board and adopt it (`read_settings`);
   the last-used file only seeds what cannot be read.

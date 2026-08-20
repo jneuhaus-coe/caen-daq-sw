@@ -19,39 +19,68 @@ TRIG_MODES = [{"value": "disabled", "label": "Disabled"},
 UNIT_SETTINGS = [
     {"key": "drs4_frequency", "label": "Sampling frequency", "type": "enum",
      "choices": FREQ_CHOICES, "caen": "CAEN_DGTZ_SetDRS4SamplingFrequency",
-     "help": "How fast the DRS4 samples. The record is always 1024 cells, so "
-             "this sets how much time you capture: 204.8 ns at 5 GS/s, 1.4 us at "
-             "750 MS/s. Changing it reloads the correction tables and changes "
-             "which post-trigger values are reachable."},
-    {"key": "post_trigger", "label": "Post-trigger", "type": "int", "min": 0, "max": 100,
-     "unit": "%", "caen": "CAEN_DGTZ_SetPostTriggerSize",
-     "help": "How much of the record is kept after the trigger. 0% puts the "
-             "trigger at the end of the window (all pre-trigger history), 100% "
-             "at the start. The register steps in ~8.5 ns, so at 5 GS/s only 25 "
-             "values exist and yours snaps to the nearest."},
+     "help": "How fast the DRS4 samples.\n\n"
+             "The record is always 1024 cells, so this decides how much time "
+             "you capture:\n"
+             "    5 GS/s      204.8 ns\n"
+             "    2.5 GS/s    409.6 ns\n"
+             "    1 GS/s      1.02 us\n"
+             "    750 MS/s    1.37 us\n\n"
+             "Changing it reloads the correction tables and changes which "
+             "post-trigger settings are reachable."},
+    {"key": "post_trigger", "label": "Post-trigger duration", "type": "steps",
+     "depends_on": "drs4_frequency",
+     "values_by_freq": {
+         str(f): [{"pct": p, "ns": round(p / 100.0 * C.record_ns(f), 2)}
+                  for p in C.post_trigger_steps(f)]
+         for f in C.DRS4_FREQUENCIES
+     },
+     "record_ns_by_freq": {str(f): round(C.record_ns(f), 2) for f in C.DRS4_FREQUENCIES},
+     "caen": "CAEN_DGTZ_SetPostTriggerSize",
+     "help": "How much of the record is captured AFTER the trigger fires.\n\n"
+             "    0 ns    trigger at the very END - nothing after it\n"
+             "    half    trigger centred in the record\n"
+             "    full    trigger at the very START - nothing before it\n\n"
+             "The register moves in ~8.5 ns steps and the API takes a whole "
+             "percent, so the smallest increment depends on the sampling "
+             "frequency:\n"
+             "    5 GS/s      8.5 ns    (25 settings)\n"
+             "    1 GS/s      10.24 ns  (every 1%)\n"
+             "    750 MS/s    13.65 ns  (every 1%)\n\n"
+             "The arrows walk exactly those settings."},
     {"key": "correction_level", "label": "DRS4 correction", "type": "enum",
      "choices": [{"value": "auto", "label": "Auto"}, {"value": "disabled", "label": "Disabled"},
                  {"value": "manual", "label": "Manual tables"}],
      "caen": "CAEN_DGTZ_LoadDRS4CorrectionData / EnableDRS4Correction",
-     "help": "The DRS4 needs cell-by-cell offset, timing and peak correction "
-             "before its samples mean anything. Auto applies CAEN's stored "
-             "tables during decode. Disable only to look at raw cells."},
+     "help": "The DRS4 needs cell-by-cell correction before its samples mean "
+             "anything - each capacitor has its own offset, timing and peak "
+             "error.\n\n"
+             "    Auto            apply CAEN's stored tables during decode\n"
+             "    Disabled        raw cells, for diagnosing the chip itself\n"
+             "    Manual tables   supply your own\n\n"
+             "Leave this on Auto unless you know why you want it off."},
     {"key": "trigger_edge", "label": "Trigger edge", "type": "enum",
      "choices": [{"value": "rising", "label": "Rising"}, {"value": "falling", "label": "Falling"}],
      "caen": "CAEN_DGTZ_SetTriggerPolarity",
-     "help": "Which way the signal must cross the threshold to fire. Negative "
-             "pulses (PMTs, NIM) trigger on falling. Despite the per-channel "
-             "API this board applies one edge to everything."},
+     "help": "Which way the signal must cross the threshold to fire.\n\n"
+             "    Rising    for positive-going pulses\n"
+             "    Falling   for negative-going pulses (PMTs, NIM)\n\n"
+             "Despite the per-channel API, this unit applies one edge to "
+             "every channel."},
     {"key": "external_trigger", "label": "External trigger (TRG-IN)", "type": "enum",
      "choices": TRIG_MODES, "caen": "CAEN_DGTZ_SetExtTriggerInputMode",
-     "help": "Accept triggers on the front-panel TRG-IN connector. "
-             "Acq + TRG-OUT also forwards them out, for chaining boards. "
-             "Adds ~115 ns of delay relative to the fast trigger."},
+     "help": "Accept triggers on the front-panel TRG-IN connector.\n\n"
+             "    Disabled          ignore TRG-IN\n"
+             "    Acquisition only  trigger on it\n"
+             "    Acq + TRG-OUT     trigger, and pass it out for chaining\n\n"
+             "Carries about 115 ns of delay, against ~42 ns on the TR inputs."},
     {"key": "fast_trigger", "label": "Fast trigger (TR0/TR1)", "type": "enum",
      "choices": TRIG_MODES[:2], "caen": "CAEN_DGTZ_SetFastTriggerMode",
      "help": "Trigger from the dedicated TR inputs - the low-latency path, and "
-             "the usual choice for timing work. TR0 serves bank 0, TR1 bank 1. "
-             "Adds ~42 ns of delay."},
+             "the usual choice for timing work.\n\n"
+             "TR0 serves bank 0, TR1 serves bank 1. Each has its own threshold "
+             "and DC offset under Bank Settings.\n\n"
+             "Carries about 42 ns of delay."},
     {"key": "fast_trigger_digitizing", "label": "Digitize TR traces", "type": "bool",
      "caen": "CAEN_DGTZ_SetFastTriggerDigitizing",
      "help": "Record the TR inputs alongside the channels, giving a timing "
@@ -66,9 +95,9 @@ UNIT_SETTINGS = [
              "rates. Not the same thing as the board's 1024-event buffer."},
     {"key": "output_format", "label": "Dump format", "type": "enum",
      "choices": [{"value": "ascii", "label": "ASCII"}, {"value": "binary", "label": "Binary"}],
-     "help": "ASCII is one decimal sample per line - readable, roughly 6x "
-             "larger and slower. Binary is raw samples, and what you want for "
-             "any sustained run."},
+     "help": "How samples are written to disk.\n\n"
+             "    ASCII    one decimal per line; readable, ~6x larger, slower\n"
+             "    Binary   raw samples; what you want for a sustained run"},
     {"key": "output_header", "label": "Dump header", "type": "bool",
      "help": "Prepend WaveDump's per-event header (event size, channel, counter, "
              "trigger time tag). Needed to tell events apart in a binary file; "

@@ -11,6 +11,9 @@ interface Props {
   autoFocus?: boolean;
   className?: string;
   onCancel?: () => void;
+  /** Canonical display text for what was typed, e.g. the reachable step it
+   *  lands on. Without it the field falls back to the current value. */
+  format?: (raw: string) => string;
   /** Address-bar behaviour: the first click into an unfocused field selects
    *  the whole value (so it can be copied or typed over), while a click in an
    *  already-focused field places the caret and dragging selects a range.
@@ -26,7 +29,7 @@ interface Props {
  *  yank the field out from under the typist. */
 export function BlurInput({
   value, onCommit, onCancel, type = "text", step, min, max,
-  placeholder, autoFocus, className, selectOnFocus,
+  placeholder, autoFocus, className, selectOnFocus, format,
 }: Props) {
   const [draft, setDraft] = useState(String(value));
   const editing = useRef(false);
@@ -75,11 +78,14 @@ export function BlurInput({
         if (!claiming.current) return;
         claiming.current = false;
         const el = e.currentTarget;
-        // A drag already chose a range - leave the user's selection alone.
-        if (el.selectionStart === el.selectionEnd) {
-          e.preventDefault();
-          el.select();
-        }
+        // Never preventDefault here. On a number input the spinner's press-and-
+        // hold repeat is torn down by the default mouseup action, so cancelling
+        // it leaves the arrow auto-repeating as if the button were still held.
+        // Defer instead, and let the browser finish first.
+        requestAnimationFrame(() => {
+          // A drag already chose a range - leave the user's selection alone.
+          if (el.isConnected && el.selectionStart === el.selectionEnd) el.select();
+        });
       }}
       onChange={(e) => {
         // Typing/pasting carries an inputType; the spinner and arrow-key
@@ -90,8 +96,16 @@ export function BlurInput({
       }}
       onBlur={() => {
         editing.current = false;
-        if (draft !== String(value)) onCommit(draft);
-        else onCancel?.();
+        if (draft !== String(value)) {
+          // Show where it actually landed straight away, so the field never
+          // displays text the value never became - and never flashes the old
+          // value on the way to the new one.
+          const canonical = format ? format(draft) : String(value);
+          onCommit(draft);
+          setDraft(canonical);
+        } else {
+          onCancel?.();
+        }
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();

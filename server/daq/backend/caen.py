@@ -29,6 +29,12 @@ CAEN_DGTZ_Success = 0
 # (GetGroupTriggerThreshold and GetGroupSelfTrigger among them). Those settings
 # are write-only here: we keep what we asked for, because nothing can confirm it.
 CAEN_DGTZ_FunctionNotAllowed = -17
+# A burst of register traffic can make the NEXT call come back CommError; an
+# immediate retry succeeds. Reproduced on serial 53364: a 101-step post-trigger
+# sweep makes the following SetDRS4SamplingFrequency return -1 whatever value it
+# is given, and calling it again straight away returns 0. Retry once rather than
+# report a failure the board did not really have.
+CAEN_DGTZ_CommError = -1
 ConnectionType_USB = 0
 AcqMode_SW_CONTROLLED = 0
 TriggerMode_DISABLED = 0
@@ -38,6 +44,13 @@ TriggerMode_EXTOUT_ONLY = 2
 # DRS4 frequency enum values (0=5G,1=2.5G,2=1G,3=750M) — match our constants keys.
 
 REG_ACQUISITION_STATUS = 0x8104   # read-only; used as a liveness probe
+# Group configuration. GetFastTriggerDigitizing is broken on this board - it
+# reports the fast-trigger MODE bit (2 when the mode is on, 0 when off) and
+# ignores the digitizing flag entirely, so an "off" always read back as "on".
+# The setter works fine; bit 11 here is the truth. Verified on serial 53364:
+# mode off/dig off 0x0110, dig on 0x0910; mode on 0x1110 / 0x1910.
+REG_GROUP_CONFIG = 0x8000
+BIT_TR_DIGITIZE = 1 << 11
 
 # --- codecs between our config vocabulary and CAEN's enums ---
 _TRIGMODE = {"disabled": TriggerMode_DISABLED,
@@ -181,7 +194,12 @@ class CaenBackend(DigitizerBackend):
             self._lib.CAEN_DGTZ_SWRelease(sw)
         except Exception:
             pass
-        self._lib.CAEN_DGTZ_Reset(self._h)
+        # NO Reset here. Opening must be non-destructive: the unit keeps its
+        # settings across our process restarts, and read_settings is about to
+        # adopt them. Resetting first wiped them and then faithfully read back
+        # our own defaults - post-trigger 0, every DC offset 0x8f00 - which
+        # looked like the board had those settings all along. Reset belongs in
+        # configure(), where wiping is deliberate and everything is rewritten.
         return BoardInfo(
             model=bi.ModelName.decode(errors="ignore"),
             family_code=str(bi.FamilyCode), serial=bi.SerialNumber,
@@ -207,12 +225,19 @@ class CaenBackend(DigitizerBackend):
 
     # ---------- settings: the board is the source of truth ----------
     def _get(self, name, *args, ctype=ct.c_uint32):
+        fn = getattr(self._lib, "CAEN_DGTZ_" + name)
         v = ctype(0)
-        rc = getattr(self._lib, "CAEN_DGTZ_" + name)(self._h, *args, ct.byref(v))
+        rc = fn(self._h, *args, ct.byref(v))
+        if rc == CAEN_DGTZ_CommError:
+            rc = fn(self._h, *args, ct.byref(v))     # transient; see above
         return rc, v.value
 
     def _set(self, name, *args):
-        return getattr(self._lib, "CAEN_DGTZ_" + name)(self._h, *args)
+        fn = getattr(self._lib, "CAEN_DGTZ_" + name)
+        rc = fn(self._h, *args)
+        if rc == CAEN_DGTZ_CommError:
+            rc = fn(self._h, *args)                  # transient; see above
+        return rc
 
     # Each _rd_* refreshes one setting on `out`; a getter the module refuses is
     # recorded as write-only rather than reported as a failure.
@@ -228,6 +253,13 @@ class CaenBackend(DigitizerBackend):
 
     def _rd_board(self, out, spec, errs):
         attr, getter, _s, ctype, _e, dec = spec
+        if attr == "fast_trigger_digitizing":
+            rc, v = self._get("ReadRegister", ct.c_uint32(REG_GROUP_CONFIG))
+            if rc == CAEN_DGTZ_Success:
+                out.fast_trigger_digitizing = bool(v & BIT_TR_DIGITIZE)
+            else:
+                errs.append(f"ReadRegister(0x{REG_GROUP_CONFIG:04x}): error {rc}")
+            return
         ok, v = self._rd(errs, getter, getter, ctype=ctype, key=attr)
         if ok:
             setattr(out, attr, dec(v))
@@ -306,11 +338,6 @@ class CaenBackend(DigitizerBackend):
             if rc != CAEN_DGTZ_Success:
                 errs.append(f"{name}: error {rc}")
             return True
-
-        # The post-trigger register counts ~8.5 ns steps, so most percentages
-        # are unreachable at 5 GS/s. Snap first rather than ask for one the
-        # board would silently round.
-        cfg.post_trigger = C.snap_post_trigger(cfg.post_trigger, cfg.drs4_frequency)
 
         for spec in BOARD_HW:
             attr, _g, setter, _ct, enc, _d = spec

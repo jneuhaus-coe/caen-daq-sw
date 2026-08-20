@@ -23,6 +23,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
   const [renaming, setRenaming] = useState<number | null>(null);
 
   const windowNs = tele ? tele.sample_period_ns * tele.record_length : undefined;
+  const dcDef = catalog.channel.find((d) => d.key === "dc_offset");
+  const dcHelp = [dcDef?.help, dcDef?.caen].filter(Boolean).join("\n\n");
 
   return (
     <div className="banks">
@@ -83,9 +85,10 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
                       </div>
 
                       <MiniWave wave={on ? e?.wave : undefined} dcOffset={dac} geom={g}
-                        windowNs={windowNs} color={color} />
+                        windowNs={windowNs} postTriggerPct={config.post_trigger}
+                        color={color} />
 
-                      <div className="tile-dc">
+                      <div className="tile-dc" title={dcHelp}>
                         <label>DC</label>
                         <BlurInput
                           type="number" step={0.005}

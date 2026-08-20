@@ -6,6 +6,8 @@ import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { Collapsible } from "./components/Collapsible";
 import { ConfigPanel } from "./components/ConfigPanel";
+import { Toasts, useToasts } from "./components/Toasts";
+import { describeChanges } from "./changes";
 import { RateStrip } from "./components/RateStrip";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
@@ -18,13 +20,20 @@ export function App() {
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
+  // The config the unit last confirmed - what a change gets measured against.
+  const confirmed = useRef<BoardConfig | null>(null);
+  const { toasts, push, dismiss } = useToasts();
 
   useEffect(() => {
     (async () => {
       const [cat, cfg, st] = await Promise.all([api.catalog(), api.getConfig(), api.status()]);
       setCatalog(cat); setConfig(cfg); setStatus(st);
+      confirmed.current = cfg;
     })().catch(console.error);
   }, []);
+
+  const catalogRef = useRef<Catalog | null>(null);
+  catalogRef.current = catalog;
 
   useEffect(() => openTelemetry(setTele), []);
 
@@ -52,8 +61,20 @@ export function App() {
       // Whatever the board reports wins - a rejected write must not leave the
       // UI showing a value the hardware never took.
       api.setConfig(next)
-        .then((r) => { setConfig(r.config); if (r.errors?.length) setStatus((st) => st && { ...st, errors: [...st.errors, ...r.errors] }); })
-        .catch(console.error);
+        .then((r) => {
+          setConfig(r.config);
+          const prev = confirmed.current ?? r.config;
+          const lines = catalogRef.current
+            ? describeChanges(prev, r.config, next, catalogRef.current) : [];
+          confirmed.current = r.config;
+          if (r.errors?.length) {
+            setStatus((st) => st && { ...st, errors: [...st.errors, ...r.errors] });
+            push("err", "Unit rejected a setting", r.errors);
+          } else if (lines.length) {
+            push("ok", "Applied and read back from unit", lines);
+          }
+        })
+        .catch(() => push("err", "Could not reach the DAQ server"));
     }, 250);
   };
   const updateBoard = (key: string, value: any) =>
@@ -130,9 +151,15 @@ export function App() {
             <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />
           </Collapsible>
           <ConfigPanel
-            onReset={async () => setConfig(await api.resetDefault())}
-            onLoaded={(cfg, _notes, restart, running) => {
-              setConfig(cfg);
+            onReset={async () => {
+              const cfg = await api.resetDefault();
+              setConfig(cfg); confirmed.current = cfg;
+              push("ok", "Defaults applied and read back from unit");
+            }}
+            onLoaded={(cfg, notes, restart, running) => {
+              setConfig(cfg); confirmed.current = cfg;
+              push(notes.length ? "warn" : "ok",
+                   "Config loaded and read back from unit", notes);
               if (restart.length && running) {
                 const what = restart.join(", ");
                 if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
@@ -148,6 +175,7 @@ export function App() {
           ) : null}
         </aside>
       </div>
+      <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }

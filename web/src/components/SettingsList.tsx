@@ -13,12 +13,15 @@ export function SettingsList({ defs, geom, get, onChange, skip = [] }: Props) {
   return (
     <div className="settings-grid">
       {defs.filter((d) => !skip.includes(d.key)).map((def) => (
-        <div className="setting-row" key={def.key}>
-          {/* The tooltip explains the setting; the CAEN call is a footnote. */}
-          <label title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
+        // Tooltip on the row, so hovering the control explains it too - not
+        // only the label.
+        <div className="setting-row" key={def.key}
+          title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
+          <label>
             {def.label}{def.unit ? <span className="unit"> ({def.unit})</span> : null}
           </label>
           <SettingControl def={def} value={get(def.key)} geom={geom}
+            dependsOn={def.depends_on ? get(def.depends_on) : undefined}
             onChange={(v) => onChange(def.key, v)} />
         </div>
       ))}

@@ -1,17 +1,27 @@
 import type { Catalog, SettingDef } from "../types";
 import { BlurInput } from "./BlurInput";
 import { dacToVolts, voltsToDac } from "../volts";
+import { StepControl } from "./StepControl";
 
 interface Props {
   def: SettingDef;
   value: any;
   geom: Catalog["geometry"];
+  /** Value of the setting this one's reachable range depends on. */
+  dependsOn?: any;
   onChange: (v: any) => void;
 }
 
 /** Renders one setting from its catalog definition. Anything that is physically
  *  a voltage is edited as volts; the DAC word never reaches the operator. */
-export function SettingControl({ def, value, geom, onChange }: Props) {
+export function SettingControl({ def, value, geom, dependsOn, onChange }: Props) {
+  if (def.type === "steps") {
+    const steps = def.values_by_freq?.[String(dependsOn)] ?? [];
+    return steps.length
+      ? <StepControl steps={steps} value={Number(value ?? 0)} onChange={onChange} />
+      : <span className="muted">—</span>;
+  }
+
   if (def.type === "bool") {
     return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />;
   }

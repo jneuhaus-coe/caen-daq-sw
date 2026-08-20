@@ -93,7 +93,5 @@ def post_trigger_steps(drs4_freq: int) -> list[int]:
         i += 1
 
 
-def snap_post_trigger(pct: int, drs4_freq: int) -> int:
-    """Nearest reachable value, so we never ask for one the board must round."""
-    steps = post_trigger_steps(drs4_freq)
-    return min(steps, key=lambda s: (abs(s - pct), s))
+def record_ns(drs4_freq: int) -> float:
+    return RECORD_LENGTH * sample_period_ns(drs4_freq)

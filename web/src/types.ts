@@ -3,13 +3,16 @@ export interface Choice { value: string | number; label: string; }
 export interface SettingDef {
   key: string;
   label: string;
-  type: "enum" | "int" | "bool" | "volts";
+  type: "enum" | "int" | "bool" | "volts" | "steps";
   choices?: Choice[];
   min?: number;
   max?: number;
   unit?: string;
   caen?: string;
   help?: string;
+  depends_on?: string;
+  values_by_freq?: Record<string, { pct: number; ns: number }[]>;
+  record_ns_by_freq?: Record<string, number>;
 }
 
 export interface Catalog {

@@ -127,26 +127,40 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .tile-head .g { color: #6e7681; font-size: 10px; }
 .tile-foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-/* averaged-waveform chart + its axes */
-.wave { width: 100%; }
-.wave-plot { position: relative; width: 100%; }
+/* averaged-waveform chart + its axes.
+   The y labels live in a left margin wide enough for the "0 V" zero line plus
+   an em; the longer extremes are allowed to bleed into the two corners, which
+   is empty plot anyway. The time axis has no zero tick - it was only ever
+   colliding with the y labels, and the left edge is obviously t=0. */
+/* Gutter = the widest y label plus 4px of air. TRIG needs no horizontal
+   clearance here: it rides above the top label, not beside it. */
+.wave { width: 100%; --y-gutter: 48px; --y-label: 44px; }
+/* Room for TRIG above the plot - deliberately less than the tag's height, so
+   it overflows a little rather than claiming a whole row. */
+.wave-plot { position: relative; width: 100%; margin-top: 4px; }
+.wave-canvas { position: relative; margin-left: var(--y-gutter); }
 .wave .ax {
   position: absolute; font-size: 9.5px; line-height: 1; color: #6e7681;
-  pointer-events: none; font-variant-numeric: tabular-nums;
+  pointer-events: none; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.wave .ax.y { left: 2px; }
+.wave .ax.y { left: 0; width: var(--y-label); text-align: right; }
 .wave .ax.y.max { top: 2px; }
-.wave .ax.y.zero { top: 50%; transform: translateY(-50%); }
+.wave .ax.y.zero { transform: translateY(-50%); }
 .wave .ax.y.min { bottom: 2px; }
+.wave .ax.x-total { right: 0; bottom: 2px; }
 .wave-x {
-  display: flex; justify-content: space-between;
-  font-size: 9.5px; color: #6e7681; font-variant-numeric: tabular-nums;
-  padding-top: 2px;
+  position: relative; margin-left: var(--y-gutter); height: 12px;
+  font-size: 9.5px; font-variant-numeric: tabular-nums;
 }
-.badge { margin-left: auto; font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; letter-spacing: .4px; }
-.badge.dead { background: #2a1f45; color: var(--purple); }
-.badge.clip { background: #3a2410; color: var(--orange); }
-.badge.off { background: #21262d; color: #6e7681; }
+
+/* trigger marker: accent, dimmed, so it reads as chrome rather than signal */
+.trig-tag, .trig-time {
+  position: absolute; font-size: 9px; line-height: 1; letter-spacing: .4px;
+  color: rgba(88, 150, 245, .85); pointer-events: none; white-space: nowrap;
+  transform: translateX(-50%);          /* always centred on the line */
+}
+.trig-tag { top: -9px; font-weight: 700; }
+.trig-time { top: 2px; font-variant-numeric: tabular-nums; }
 
 /* rate strip */
 .rate-wrap { display: flex; flex-direction: column; height: 132px; gap: 6px; }
@@ -250,3 +264,57 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 .config-msg.warn { background: #3a2410; color: var(--orange); }
 .config-msg.err { background: #3d1518; color: var(--red); }
 .config-msg div + div { margin-top: 3px; }
+
+/* toasts: confirmation that the unit took a setting, not that we sent one */
+.toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 40;
+  display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+}
+.toast {
+  display: flex; gap: 9px; padding: 9px 11px; border-radius: 8px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  animation: toast-in .16s ease-out;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+.toast-mark {
+  flex: none; width: 16px; height: 16px; border-radius: 50%; margin-top: 1px;
+  display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.toast.ok   { border-color: #1c5233; }
+.toast.ok   .toast-mark { background: #12331f; color: var(--green); }
+.toast.warn { border-color: #6a4318; }
+.toast.warn .toast-mark { background: #3a2410; color: var(--orange); }
+.toast.err  { border-color: #6b2226; }
+.toast.err  .toast-mark { background: #3d1518; color: var(--red); }
+.toast-body { min-width: 0; }
+.toast-title { font-size: 12px; font-weight: 650; }
+.toast-line { font-size: 11px; color: var(--muted); margin-top: 2px; word-break: break-word; }
+
+/* stepped setting: field plus a stacked pair of steppers, sized like a real
+   spinner instead of the native one - which is hidden, because these values are
+   not uniformly spaced and a fixed step cannot land on them. */
+.step-input { display: inline-flex; align-items: stretch; gap: 4px; height: 28px; }
+.step-input .field {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 8px; border: 1px solid var(--border); border-radius: 5px;
+  background: #0d1117;
+}
+.step-input .field:focus-within { border-color: var(--accent); }
+.step-input input {
+  width: 54px; border: none; background: none; padding: 0;
+  color: var(--text); font: inherit; font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.step-input input:focus { outline: none; }
+.step-input input::-webkit-outer-spin-button,
+.step-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.step-input input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.step-input .field .unit { color: var(--muted); font-size: 11px; }
+
+.steppers { display: inline-flex; flex-direction: column; gap: 2px; }
+.stepper {
+  width: 26px; flex: 1; padding: 0; display: grid; place-items: center;
+  font-size: 11px; line-height: 1; border-radius: 4px;
+}
