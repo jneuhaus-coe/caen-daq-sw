@@ -163,6 +163,11 @@ Never let the UI show a setting the hardware did not confirm.
 - Config field types follow CAEN's API — unsigned where the API is unsigned.
 - Getters that answer `-17` are recorded as write-only and left unverified;
   setters that answer `-17` are reported once, then skipped.
+- **With no unit connected, a config write is refused, not stored.** It cannot
+  reach the hardware and would be discarded on the next open anyway, so the
+  request returns `connected: false` and the previous config. Storing it once
+  produced a green "applied and read back from unit" toast with nothing
+  attached. The UI also disables every hardware control while disconnected.
 - Human-facing controls use human units (DC offset is volts in the UI); the DAC
   word only exists on the wire.
 

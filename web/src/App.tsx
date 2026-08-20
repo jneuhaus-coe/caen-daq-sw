@@ -67,7 +67,10 @@ export function App() {
           const lines = catalogRef.current
             ? describeChanges(prev, r.config, next, catalogRef.current) : [];
           confirmed.current = r.config;
-          if (r.errors?.length) {
+          if (r.connected === false) {
+            // Nothing was sent; the fields have just snapped back.
+            push("warn", "No unit connected", ["Nothing was sent. Reconnect, then try again."]);
+          } else if (r.errors?.length) {
             setStatus((st) => st && { ...st, errors: [...st.errors, ...r.errors] });
             push("err", "Unit rejected a setting", r.errors);
           } else if (lines.length) {
@@ -123,6 +126,8 @@ export function App() {
       </header>
 
       <div className="body">
+        <fieldset className="hw-lock" disabled={!connected}
+          title={connected ? undefined : "No unit connected"}>
         <main>
           <div className="grid-head">
             <h2>Channels <span className="sub">all 16 · avg {tele?.avg_window_s ?? 1}s window · click a title to rename</span></h2>
@@ -174,6 +179,7 @@ export function App() {
             </div>
           ) : null}
         </aside>
+        </fieldset>
       </div>
       <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>

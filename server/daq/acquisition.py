@@ -52,12 +52,20 @@ class AcquisitionEngine:
     def set_config(self, cfg: BoardConfig) -> BoardConfig:
         """Push to the board and adopt what it reports back. Returns the actual
         config; anything the board refused lands in the error list."""
+        if not self._opened or self._backend is None:
+            # Nothing was sent anywhere. Returning the requested config here
+            # would have the UI show - and confirm - a value the unit never
+            # received, and it would be discarded anyway the moment we reopen
+            # and read the unit's own settings.
+            self._record_error("no unit connected: settings were not applied")
+            with self._lock:
+                return self._cfg
+
         errors: list[str] = []
-        if self._opened and self._backend is not None:
-            try:
-                cfg, errors = self._backend.write_settings(cfg)
-            except Exception as e:
-                errors = [f"write settings: {e}"]
+        try:
+            cfg, errors = self._backend.write_settings(cfg)
+        except Exception as e:
+            errors = [f"write settings: {e}"]
         with self._lock:
             self._cfg = cfg
         for e in errors:

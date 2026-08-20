@@ -13,7 +13,7 @@ export const api = {
     fetch("/api/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
-    }).then(j<{ ok: boolean; config: BoardConfig; errors: string[] }>),
+    }).then(j<{ ok: boolean; config: BoardConfig; errors: string[]; connected: boolean }>),
   resetDefault: () => fetch("/api/config/default", { method: "POST" }).then(j<BoardConfig>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () => fetch("/api/acq/start", { method: "POST" }).then(j<Status>),

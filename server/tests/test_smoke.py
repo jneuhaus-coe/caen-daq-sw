@@ -50,11 +50,23 @@ def test_http_api():
     assert c.get("/api/catalog").json()["bank"]  # bank tier present
     st = c.get("/api/status").json()
     assert st["backend"] == "caen" and st["opened"] is False
+
+
+def test_config_write_is_refused_with_no_unit():
+    """With nothing attached the write goes nowhere, so it must be reported as
+    a failure and must not change the stored config. Claiming success here once
+    produced a green 'applied and read back from unit' toast with no unit."""
+    from fastapi.testclient import TestClient
+    c = TestClient(create_app(AcquisitionEngine()))
     cfg = c.get("/api/config").json()
-    # set ch0 offset then fan to bank
+    was = cfg["channels"][0]["dc_offset"]
+
     cfg["channels"][0]["dc_offset"] = 555
-    c.post("/api/config", json=cfg)
-    assert c.get("/api/config").json()["channels"][0]["dc_offset"] == 555
+    r = c.post("/api/config", json=cfg).json()
+    assert r["connected"] is False
+    assert r["ok"] is False and r["errors"]
+    assert r["config"]["channels"][0]["dc_offset"] == was       # reverts
+    assert c.get("/api/config").json()["channels"][0]["dc_offset"] == was
 
 
 def test_rate_meter_total_and_last_bucket():
@@ -90,7 +102,8 @@ def test_probe_and_reconnect_without_hardware():
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
-               test_http_api, test_rate_meter_total_and_last_bucket,
+               test_http_api, test_config_write_is_refused_with_no_unit,
+               test_rate_meter_total_and_last_bucket,
                test_probe_and_reconnect_without_hardware]:
         fn()
         print("ok:", fn.__name__)

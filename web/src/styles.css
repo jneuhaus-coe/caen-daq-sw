@@ -317,3 +317,13 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
   width: 26px; flex: 1; padding: 0; display: grid; place-items: center;
   font-size: 11px; line-height: 1; border-radius: 4px;
 }
+
+/* Everything that writes to the unit lives in this fieldset. `display: contents`
+   keeps it out of the layout while `disabled` still reaches every control, so
+   with no unit attached the settings cannot be edited at all - rather than
+   accepting an edit that goes nowhere. */
+.hw-lock { display: contents; border: 0; margin: 0; padding: 0; min-width: 0; }
+.hw-lock:disabled .card,
+.hw-lock:disabled .bank,
+.hw-lock:disabled .tile { opacity: .55; }
+.hw-lock:disabled .tile .ch { cursor: default; }

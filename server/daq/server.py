@@ -42,8 +42,10 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     def set_config(payload: dict):
         before = len(engine.status()["errors"])
         cfg = engine.set_config(BoardConfig.from_dict(payload))
-        new = engine.status()["errors"][before:]
-        return {"ok": not new, "config": cfg.to_dict(), "errors": new}
+        st = engine.status()
+        new = st["errors"][before:]
+        return {"ok": not new, "config": cfg.to_dict(), "errors": new,
+                "connected": st["opened"]}
 
     @app.get("/api/config/file")
     def save_config_file(names: bool = True):
