@@ -5,8 +5,9 @@ Project instructions and hard-won context for this repo. Read before working.
 ## Goal
 
 Dead-simple, fast, bulletproof DAQ for the CAEN **DT5742B** digitizer (DRS4,
-16+1 ch, 12-bit, ≤5 GS/s, **1024 samples/event fixed**). Windows is the eventual
-primary target; today it's developed/run in a **Linux VM (lima) on macOS**.
+16+1 ch, 12-bit, ≤5 GS/s, **1024 samples/event fixed**). **Live runs happen on
+Windows**; the Linux VM on macOS is only where it gets developed. Keep the
+Windows path working — it is the one that matters at the beamline.
 
 Wanted capabilities: send commands with a browsable catalog; configure a channel
 easily; apply settings to many/all; a live averaged-waveform view that never
@@ -105,6 +106,16 @@ driver is missing.
 **Windows is the deployment target.** The Mac + lima guest is a dev convenience
 for fast iteration; keep host-specific setup out of this repo.
 
+- On Windows the CAEN API is **`__stdcall`** (`#define CAENDGTZ_API __stdcall`
+  under `_WIN32`), so `_load_lib` uses `WinDLL` there and `CDLL` elsewhere. The
+  two coincide on x64, so a cdecl mistake hides until someone runs 32-bit
+  Python — do not "simplify" it back to one loader.
+- Python and the CAEN DLLs must have the same bitness, and the failure when they
+  do not is unhelpful. 64-bit both.
+- Nothing else in `server/daq` assumes a platform: paths go through
+  `os.path`/`expanduser`, so runs land in `~/daq-runs` or
+  `%USERPROFILE%\daq-runs` without special casing.
+
 ## Architecture
 
 Server owns the hardware; browser renders; they talk over HTTP + WebSocket.
@@ -116,7 +127,8 @@ as native. Colocated for v1; the socket boundary makes a remote/Mac GUI free lat
 server/daq/
   constants.py     geometry, DRS4 freqs, display/aggregation constants
   config.py        board/bank/channel config + defaults
-  catalog.py       browsable command/setting catalog (drives the UI)
+  configfile.py    save/load; our JSON and CAEN WaveDumpConfig.txt
+  catalog.py       setting catalog incl. operator-facing help (drives the UI)
   backend/
     base.py        DigitizerBackend ABC + Event/BoardInfo  <-- the hardware seam
     caen.py        real board via ctypes
@@ -126,7 +138,7 @@ server/daq/
   acquisition.py   threaded readout engine + telemetry snapshots
   server.py        FastAPI REST + WS + static
   __main__.py      entrypoint
-web/               React + Vite + TypeScript + uPlot; builds into server/daq/static
+web/               React + Vite + TypeScript; builds into server/daq/static
 ```
 
 The hardware is isolated behind `DigitizerBackend`; `CaenBackend` is the only
@@ -144,8 +156,13 @@ cd web && npm run dev                     # UI hot-reload, proxies API/WS to :80
 
 Run the server on the machine physically attached to the board.
 
-The macOS host has no node, so the UI cannot be rebuilt there; the committed
-`server/daq/static/` bundle is what gets served.
+**`server/daq/static/` is committed on purpose.** Deployments update by
+`git pull` alone and never need Node. Always rebuild and commit it in the same
+change as any `web/src` edit, or the deployed UI silently lags the server.
+
+README is written for two audiences and both matter: an operator arriving cold
+for a night shift, and someone installing or updating it from a long way away.
+Keep the shift instructions short enough to follow at 2 a.m.
 
 ## The board is the source of truth
 
@@ -196,30 +213,30 @@ downloaded or deleted.
 - Keep the **test suite minimal** — just enough smoke coverage to trust the
   hardware-free paths (rolling-average vs numpy, config tiers, HTTP API).
   Don't grow coverage for its own sake. The acquisition loop needs the board.
-- Config changes autosave + persist as last-used. Per-channel DC-offset fans out
-  to bank/all; board/bank settings are edited directly (not fanned out).
+- Nothing is persisted between runs of the process: the unit holds the settings
+  and is read at open. Save/Load write and read an explicit file instead.
 - The `Writer` interface is byte-compatible-WaveDump for v1; ROOT/HDF5 are meant
   to slot in behind it.
 
 ## Known-pending / gotchas
 
-- `caen.py` is structurally faithful (call order + structs from CAEN's headers).
-  `OpenDigitizer`/`GetInfo`/`CloseDigitizer` are now **verified on the board**;
-  everything past that — configure, arm, read, decode — is still **unexercised**.
-  Most likely to need tweaks: enum values, per-group vs per-channel offset math,
-  the decode/correction path.
+- `caen.py` has been driven end to end on serial 53364: open, identify,
+  configure, arm, software-trigger, read, decode (8 ch x 1024 float samples,
+  DRS4-corrected), stop, close. What is **not** verified is anything needing a
+  real signal — waveform correctness, where the trigger actually lands in the
+  record, and the absolute 0 V position of the DC-offset model (the span and
+  sign are measured; the intercept rests on the nominal spec).
 - WaveDump writer layout follows the docs but is **not byte-verified** against a
   real dump — check against one sample `.dat` before trusting downstream.
 - **TR traces are never written.** WaveDump emits `TR_%d_0` / `TR_0_%d` files for
   the x742's digitized fast-trigger traces; our decoder skips channel index 8
   entirely, so enabling "Digitize TR traces" costs dead time and produces no
   file. Decode + write them before relying on TR for timing.
-- The UI has not been eyeballed in a real browser yet (it was built in a headless
-  cloud session). Verify layout/interactions.
+- The UI has been used in a real browser and iterated on there; the remaining
+  unknown is how it behaves with live data in it, not whether it renders.
 
 ## Roadmap
 
-Exercise `CaenBackend` past open — configure/arm/read/decode against real
-triggers · verify/lock the WaveDump writer against a real `.dat` · eyeball the UI
-in a browser · config save/load-to-named-file in the UI · client/server over a
-real socket · packaging.
+Verify against a pulser (waveforms, trigger position, byte-compare a run against
+WaveDump) · write the x742 TR traces · ROOT/HDF5 writers behind `Writer` ·
+in-app help · client/server over a real socket · Windows packaging.

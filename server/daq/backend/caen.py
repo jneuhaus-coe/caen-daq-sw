@@ -14,6 +14,7 @@ cell/time/peak-corrected float samples — no software correction port needed.
 from __future__ import annotations
 
 import ctypes as ct
+import sys
 
 import numpy as np
 
@@ -153,13 +154,27 @@ class _BoardInfoC(ct.Structure):
 
 
 def _load_lib():
-    for name in ("libCAENDigitizer.so", "libCAENDigitizer.so.1", "CAENDigitizer.dll"):
+    """Load libCAENDigitizer / CAENDigitizer.dll.
+
+    On Windows the API is `__stdcall` (`#define CAENDGTZ_API __stdcall` under
+    `_WIN32`), so it must be loaded with WinDLL. CDLL is cdecl and would corrupt
+    the stack on a 32-bit interpreter; x64 has only one convention so the two
+    coincide there, but relying on that would fail bafflingly the day someone
+    runs 32-bit Python.
+    """
+    if sys.platform == "win32":
+        loader, names = ct.WinDLL, ("CAENDigitizer.dll", "CAENDigitizer")
+        hint = ("Install CAEN's digitizer libraries and make sure their bin "
+                "directory is on PATH. Python and the DLLs must both be 64-bit.")
+    else:
+        loader, names = ct.CDLL, ("libCAENDigitizer.so", "libCAENDigitizer.so.1")
+        hint = "Install CAENDigitizer, CAENComm and CAENVMELib."
+    for name in names:
         try:
-            return ct.CDLL(name)
+            return loader(name)
         except OSError:
             continue
-    raise OSError("libCAENDigitizer not found. Install CAEN's Linux driver+libs "
-                  "(CAENComm, CAENVMELib, CAENDigitizer) in the guest.")
+    raise OSError(f"libCAENDigitizer not found. {hint}")
 
 
 class CaenBackend(DigitizerBackend):
