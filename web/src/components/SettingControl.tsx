@@ -1,23 +1,21 @@
-import type { SettingDef } from "../types";
+import type { Catalog, SettingDef } from "../types";
+import { BlurInput } from "./BlurInput";
+import { dacToVolts, voltsToDac } from "../volts";
 
 interface Props {
   def: SettingDef;
   value: any;
+  geom: Catalog["geometry"];
   onChange: (v: any) => void;
-  compact?: boolean;
 }
 
-/** Renders one setting (enum/int/bool) from a catalog definition. */
-export function SettingControl({ def, value, onChange, compact }: Props) {
+/** Renders one setting from its catalog definition. Anything that is physically
+ *  a voltage is edited as volts; the DAC word never reaches the operator. */
+export function SettingControl({ def, value, geom, onChange }: Props) {
   if (def.type === "bool") {
-    return (
-      <input
-        type="checkbox"
-        checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-    );
+    return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />;
   }
+
   if (def.type === "enum") {
     return (
       <select value={String(value)} onChange={(e) => {
@@ -31,15 +29,26 @@ export function SettingControl({ def, value, onChange, compact }: Props) {
       </select>
     );
   }
-  // int
+
+  if (def.type === "volts") {
+    const limit = geom.dc_offset_range_v / 2;
+    return (
+      <span className="v-input">
+        <BlurInput
+          type="number" step={0.005} min={-limit} max={limit} selectOnFocus
+          value={dacToVolts(Number(value ?? geom.dc_offset_mid), geom).toFixed(3)}
+          onCommit={(v) => onChange(voltsToDac(Number(v || 0), geom))}
+        />
+        <span className="unit">V</span>
+      </span>
+    );
+  }
+
   return (
-    <input
-      type="number"
+    <BlurInput
+      type="number" min={def.min} max={def.max} selectOnFocus
       value={value ?? 0}
-      min={def.min}
-      max={def.max}
-      style={compact ? { width: 78 } : undefined}
-      onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+      onCommit={(v) => onChange(v === "" ? 0 : Number(v))}
     />
   );
 }

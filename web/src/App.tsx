@@ -5,6 +5,7 @@ import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { Collapsible } from "./components/Collapsible";
+import { ConfigPanel } from "./components/ConfigPanel";
 import { RateStrip } from "./components/RateStrip";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
@@ -121,17 +122,24 @@ export function App() {
             <h2>Trigger rate</h2>
             <RateStrip tele={tele} />
           </div>
-          <div className="card">
-            <h2>Banks</h2>
+          <Collapsible title="Unit Settings" defaultOpen>
+            <SettingsList defs={catalog.unit} geom={catalog.geometry}
+              get={(k) => (config as any)[k]} onChange={updateBoard} />
+          </Collapsible>
+          <Collapsible title="Bank Settings" defaultOpen>
             <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />
-          </div>
-          <Collapsible title="Board settings">
-            <SettingsList defs={catalog.board} get={(k) => (config as any)[k]} onChange={updateBoard} />
           </Collapsible>
-          <Collapsible title="Config"
-            right={<button className="mini" onClick={async () => setConfig(await api.resetDefault())}>Reset defaults</button>}>
-            <p className="muted">Changes are written to the board and read back; the board holds the state.</p>
-          </Collapsible>
+          <ConfigPanel
+            onReset={async () => setConfig(await api.resetDefault())}
+            onLoaded={(cfg, _notes, restart, running) => {
+              setConfig(cfg);
+              if (restart.length && running) {
+                const what = restart.join(", ");
+                if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
+                  api.stop().then(() => api.start()).then(setStatus).catch(console.error);
+                }
+              }
+            }} />
           {status?.errors?.length ? (
             <div className="card errors">
               <h2>Errors</h2>

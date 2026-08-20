@@ -42,7 +42,7 @@ class BoardConfig:
     external_trigger: str = "acquisition_only"
     fast_trigger: str = "acquisition_only"
     fast_trigger_digitizing: bool = True
-    max_events_blt: int = 1024
+    max_events_blt: int = 1023   # 1024 is silently clamped to this; see CLAUDE.md
     test_pattern: bool = False
     # output
     output_format: str = "ascii"

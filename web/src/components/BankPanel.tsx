@@ -1,5 +1,6 @@
 import type { BoardConfig, Catalog } from "../types";
 import { SettingsList } from "./SettingsList";
+import { Collapsible } from "./Collapsible";
 
 interface Props {
   catalog: Catalog;
@@ -7,29 +8,27 @@ interface Props {
   onGroupChange: (group: number, key: string, value: any) => void;
 }
 
+/** Each bank collapses independently, enabled or not — the enable lives inside
+ *  the bank it belongs to rather than floating above it. */
 export function BankPanel({ catalog, config, onGroupChange }: Props) {
   const gsize = catalog.geometry.group_size;
   return (
-    <div className="banks">
+    <div className="bank-settings">
       {config.groups.map((g, gi) => (
-        <div key={gi} className={"bank" + (g.enabled ? " on" : "")}>
-          <div className="bank-head">
-            <label className="switch">
-              <input type="checkbox" checked={g.enabled}
-                onChange={(e) => onGroupChange(gi, "enabled", e.target.checked)} />
-              <strong>Bank {gi}</strong>
-            </label>
-            <span className="bank-ch">CH {gi * gsize}–{gi * gsize + gsize - 1}</span>
-          </div>
-          {g.enabled ? (
-            <SettingsList
-              defs={catalog.bank}
-              skip={["enabled"]}
-              get={(k) => (g as any)[k]}
-              onChange={(k, v) => onGroupChange(gi, k, v)}
-            />
-          ) : null}
-        </div>
+        <Collapsible
+          key={gi}
+          variant="nested"
+          defaultOpen={g.enabled}
+          title={`Bank ${gi}`}
+          right={<span className="bank-ch">CH {gi * gsize}&ndash;{gi * gsize + gsize - 1}</span>}
+        >
+          <SettingsList
+            defs={catalog.bank}
+            geom={catalog.geometry}
+            get={(k) => (g as any)[k]}
+            onChange={(k, v) => onGroupChange(gi, k, v)}
+          />
+        </Collapsible>
       ))}
     </div>
   );

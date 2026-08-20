@@ -61,6 +61,14 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   `Set/GetGroupDCOffset` answer `-17` and libCAENDigitizer ships no
   `V1742_*GroupDCOffset`. The datasheet's "per channel or 8-channel group" is a
   family-wide statement. The only group-level offset here is TR0/TR1's.
+- **`MaxNumEventsBLT` is a true event count, not a register word.** Verified
+  functionally: set 1 and one `ReadData` returns exactly 1 event; set 5 and it
+  returns 5. It is a *cap*, not a fixed batch - a read yields whatever is
+  queued, up to the limit. Valid 1..1023: 0 fails at `MallocReadoutBuffer`
+  (-2), 1024 is **silently clamped** to 1023 (set returns success), and 1025+
+  give `InvalidParam` (-3). The datasheet's "1024 events/ch" is the board's
+  *buffer depth*, a different quantity. Register 0x800C reads a constant 10 on
+  this board, so the library enforces the BLT limit in software, not there.
 - **Post-trigger is quantised in time, not percent.** The register steps in
   ~8.5 ns (measured 8.45 on serial 53364), so reachable percentages depend on
   the record duration: only 25 values at 5 GS/s (~4.15% apart), every whole

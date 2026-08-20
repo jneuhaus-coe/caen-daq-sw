@@ -6,12 +6,13 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from .acquisition import AcquisitionEngine
 from .config import BoardConfig, default_config
 from .catalog import catalog
+from . import configfile
 from . import constants as C
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -43,6 +44,30 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         cfg = engine.set_config(BoardConfig.from_dict(payload))
         new = engine.status()["errors"][before:]
         return {"ok": not new, "config": cfg.to_dict(), "errors": new}
+
+    @app.get("/api/config/file")
+    def save_config_file(names: bool = True):
+        body = configfile.to_json(engine.get_config(), include_names=names)
+        return Response(
+            body, media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="daq-config.json"'})
+
+    @app.post("/api/config/file")
+    async def load_config_file(request: Request):
+        """Accepts our JSON or a CAEN WaveDumpConfig.txt."""
+        text = (await request.body()).decode("utf-8", errors="replace")
+        try:
+            loaded, notes = configfile.from_text(text)
+        except Exception as e:
+            return {"ok": False, "errors": [f"could not parse: {e}"], "notes": [],
+                    "config": engine.get_config().to_dict(), "restart": []}
+        restart = configfile.needs_restart(engine.get_config(), loaded)
+        before = len(engine.status()["errors"])
+        cfg = engine.set_config(loaded)
+        new = engine.status()["errors"][before:]
+        return {"ok": not new, "config": cfg.to_dict(), "errors": new,
+                "notes": notes, "restart": restart,
+                "running": engine.status()["running"]}
 
     @app.post("/api/config/default")
     def reset_default():

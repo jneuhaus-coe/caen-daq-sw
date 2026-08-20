@@ -3,7 +3,7 @@ export interface Choice { value: string | number; label: string; }
 export interface SettingDef {
   key: string;
   label: string;
-  type: "enum" | "int" | "bool";
+  type: "enum" | "int" | "bool" | "volts";
   choices?: Choice[];
   min?: number;
   max?: number;
@@ -13,7 +13,7 @@ export interface SettingDef {
 }
 
 export interface Catalog {
-  board: SettingDef[];
+  unit: SettingDef[];
   bank: SettingDef[];
   channel: SettingDef[];
   geometry: {
