@@ -11,7 +11,7 @@ far, while configure, arm, read and decode are **not yet exercised** against rea
 triggers. Windows is the deployment target.
 
 Working now: config with WaveDump-seeded defaults + load/save + persist-last-used,
-per-channel settings with fan-out to many/all, moving-average waveform, scrolling
+per-channel DC offset in volts, moving-average waveform, scrolling
 trigger-rate strip, WaveDump-compatible writer, browsable command catalog, live
 React + uPlot web UI. All smoke-tested (`server/tests`).
 
@@ -71,7 +71,7 @@ fails with `-1` while the board is visible on USB, the driver is missing.
 server/
   daq/
     constants.py     board geometry + DRS4 frequencies
-    config.py        config model, defaults, load/save/persist, fan-out
+    config.py        config model + defaults
     catalog.py       browsable command/setting catalog
     backend/
       base.py        DigitizerBackend ABC + Event/BoardInfo

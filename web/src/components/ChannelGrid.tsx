@@ -1,46 +1,47 @@
 import { useState } from "react";
 import type { BoardConfig, Catalog, Telemetry } from "../types";
 import { MiniWave } from "./MiniWave";
+import { BlurInput } from "./BlurInput";
+import { dacToVolts, voltsToDac } from "../volts";
 
 interface Props {
   catalog: Catalog;
   config: BoardConfig;
   tele: Telemetry | null;
-  selected: number;
-  onSelect: (ch: number) => void;
+  onDcOffset: (ch: number, dac: number) => void;
+  onName: (ch: number, name: string) => void;
 }
 
 const DEAD_VPP = 30;      // below this = likely dead / no signal
 const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
-export function ChannelGrid({ catalog, config, tele, selected, onSelect }: Props) {
-  const gsize = catalog.geometry.group_size;
+export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props) {
+  const g = catalog.geometry;
+  const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
-  const [override, setOverride] = useState<Record<number, boolean>>({});
+  const [open, setOpen] = useState<Record<number, boolean>>({});
+  const [renaming, setRenaming] = useState<number | null>(null);
 
   const windowNs = tele ? tele.sample_period_ns * tele.record_length : undefined;
 
   return (
     <div className="banks">
-      {config.groups.map((g, gi) => {
-        const on = g.enabled;
-        const open = override[gi] ?? on;   // disabled banks start collapsed
+      {config.groups.map((grp, gi) => {
+        const on = grp.enabled;
+        const shown = open[gi] ?? on;   // disabled banks start collapsed
         const first = gi * gsize;
 
         return (
           <section key={gi} className={"bank" + (on ? "" : " off")}>
-            <button
-              className="bank-head"
-              onClick={() => setOverride((o) => ({ ...o, [gi]: !open }))}
-              aria-expanded={open}
-            >
-              <span className={"chevron" + (open ? " open" : "")}>▸</span>
+            <button className="bank-head" onClick={() => setOpen((o) => ({ ...o, [gi]: !shown }))}
+              aria-expanded={shown}>
+              <span className={"chevron" + (shown ? " open" : "")}>&#9656;</span>
               <span className="bank-title">Bank {gi}</span>
               {on ? null : <span className="bank-state">disabled</span>}
-              <span className="bank-range">CH {first}–{first + gsize - 1}</span>
+              <span className="bank-range">CH {first}&ndash;{first + gsize - 1}</span>
             </button>
 
-            {open ? (
+            {shown ? (
               <div className="grid16">
                 {Array.from({ length: gsize }, (_, i) => {
                   const ch = first + i;
@@ -55,25 +56,51 @@ export function ChannelGrid({ catalog, config, tele, selected, onSelect }: Props
                   else if (clip) { badge = "CLIP"; bcls = "clip"; }
                   else if (dead) { badge = "DEAD"; bcls = "dead"; }
 
+                  const cc = config.channels[ch];
+                  const name = cc?.name ?? "";
+                  const dac = cc?.dc_offset ?? g.dc_offset_mid;
+
                   return (
-                    <button
-                      key={ch}
-                      className={"tile" + (selected === ch ? " sel" : "") + (on ? "" : " disabled")}
-                      onClick={() => onSelect(ch)}
-                    >
+                    <div key={ch} className={"tile" + (on ? "" : " disabled")}>
                       <div className="tile-head">
-                        <span className="ch">CH {ch}</span>
+                        {renaming === ch ? (
+                          <span className="ch-edit">
+                            {/* Prefix is decoration; it never reaches the name. */}
+                            <span className="ch-prefix">CH {ch} -&nbsp;</span>
+                            <BlurInput
+                              value={name} autoFocus placeholder="name"
+                              onCommit={(v) => { setRenaming(null); onName(ch, v.trim()); }}
+                              onCancel={() => setRenaming(null)}
+                            />
+                          </span>
+                        ) : (
+                          <button className="ch" onClick={() => setRenaming(ch)}
+                            title="Click to rename">
+                            CH {ch}{name ? " - " + name : ""}
+                          </button>
+                        )}
                         {badge ? <span className={"badge " + bcls}>{badge}</span> : null}
                       </div>
-                      <MiniWave
-                        wave={on ? e?.wave : undefined}
-                        dcOffset={config.channels[ch]?.dc_offset ?? catalog.geometry.dc_offset_mid}
-                        geom={catalog.geometry}
+
+                      <MiniWave wave={on ? e?.wave : undefined} dcOffset={dac} geom={g}
                         windowNs={windowNs} color={color} />
-                      <div className="tile-foot">
-                        <span className="n">{e?.count ? `n=${e.count}` : ""}</span>
+
+                      <div className="tile-dc">
+                        <label>DC</label>
+                        <BlurInput
+                          type="number" step={0.005}
+                          min={-g.dc_offset_range_v / 2} max={g.dc_offset_range_v / 2}
+                          value={dacToVolts(dac, g).toFixed(3)}
+                          selectOnFocus
+                          onCommit={(v) => onDcOffset(ch, voltsToDac(Number(v || 0), g))}
+                        />
+                        <span className="unit">V</span>
                       </div>
-                    </button>
+
+                      <div className="tile-foot">
+                        <span className="n">{e?.count ? "n=" + e.count : ""}</span>
+                      </div>
+                    </div>
                   );
                 })}
               </div>

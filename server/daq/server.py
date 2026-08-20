@@ -48,21 +48,6 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     def reset_default():
         return engine.set_config(default_config()).to_dict()
 
-    @app.post("/api/config/apply")
-    def apply_fanout(payload: dict):
-        """Fan a channel's DC offset onto a bank or all channels."""
-        src = int(payload["source"])
-        scope = payload.get("scope", "all")  # 'all' | 'bank' | explicit list
-        cfg = engine.get_config()
-        if scope == "all":
-            targets = list(range(C.NUM_CHANNELS))
-        elif scope == "bank":
-            targets = cfg.bank_channels(C.channel_group(src))
-        else:
-            targets = [int(t) for t in payload.get("targets", [])]
-        cfg.apply_channel_dc_to(src, targets)
-        return engine.set_config(cfg).to_dict()
-
     @app.post("/api/acq/start")
     def start():
         engine.start()

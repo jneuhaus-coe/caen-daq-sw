@@ -23,7 +23,7 @@ export interface Catalog {
   };
 }
 
-export interface ChannelConfig { dc_offset: number; }
+export interface ChannelConfig { dc_offset: number; name: string; }
 
 export interface GroupConfig {
   enabled: boolean;

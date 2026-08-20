@@ -13,6 +13,7 @@ confirm/lock the layout. The structure below follows WaveDump.c/WriteOutputFiles
 from __future__ import annotations
 
 import abc
+import json
 import os
 import struct
 import numpy as np
@@ -55,6 +56,24 @@ class WaveDumpWriter(Writer):
         for ch in cfg.enabled_channels():
             path = os.path.join(self._dir, f"wave_{ch}.{ext}")
             self._files[ch] = open(path, mode)
+        self._write_metadata(cfg)
+
+    def _write_metadata(self, cfg) -> None:
+        """Channel names and settings go in a sidecar, not the WaveDump header -
+        that header layout is fixed and the point of this writer is byte
+        compatibility. Names are stored bare, without the UI's "CH n - " prefix."""
+        meta = {
+            "channels": {
+                str(ch): {"name": cfg.channels[ch].name,
+                          "dc_offset": cfg.channels[ch].dc_offset}
+                for ch in cfg.enabled_channels()
+            },
+            "drs4_frequency": cfg.drs4_frequency,
+            "record_length": cfg.record_length,
+            "post_trigger": cfg.post_trigger,
+        }
+        with open(os.path.join(self._dir, "run_metadata.json"), "w") as f:
+            json.dump(meta, f, indent=2)
 
     def write(self, ev: Event) -> None:
         for ch, wave in ev.samples.items():

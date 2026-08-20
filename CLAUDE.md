@@ -45,6 +45,10 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   LOWERS the baseline**. Measured on serial 53364: 0.137 counts/LSB, 2.19 V
   across the full sweep (nominal 0.125 / 2.00 V). Only ~half the DAC range keeps
   the window in view at all; outside it the channel rails.
+- **DC offset is the only real per-channel setting.** Probed on the board:
+  `ChannelTriggerThreshold`, `ChannelSelfTrigger`, `ChannelGroupMask` and
+  `ChannelPairTriggerLogic` all answer `-17`; `ChannelPulsePolarity` is a silent
+  no-op. So the per-channel UI is one control, and it lives on the channel card.
 - `SetChannelPulsePolarity` is a **silent no-op** on the x742: it returns
   success, and the readback stays `Positive` whatever you write. More dangerous
   than a `-17`, because it looks like it worked. Do not expose it — and note the
@@ -94,7 +98,7 @@ as native. Colocated for v1; the socket boundary makes a remote/Mac GUI free lat
 ```
 server/daq/
   constants.py     geometry, DRS4 freqs, display/aggregation constants
-  config.py        board/bank/channel config; defaults, load/save, persist-last-used, fan-out
+  config.py        board/bank/channel config + defaults
   catalog.py       browsable command/setting catalog (drives the UI)
   backend/
     base.py        DigitizerBackend ABC + Event/BoardInfo  <-- the hardware seam
@@ -142,7 +146,7 @@ Never let the UI show a setting the hardware did not confirm.
 ## Conventions / scope
 
 - Keep the **test suite minimal** — just enough smoke coverage to trust the
-  hardware-free paths (rolling-average vs numpy, config tiers/fan-out, HTTP API).
+  hardware-free paths (rolling-average vs numpy, config tiers, HTTP API).
   Don't grow coverage for its own sake. The acquisition loop needs the board.
 - Config changes autosave + persist as last-used. Per-channel DC-offset fans out
   to bank/all; board/bank settings are edited directly (not fanned out).

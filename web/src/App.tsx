@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { api, openTelemetry } from "./api";
 import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
-import { ChannelEditor } from "./components/ChannelEditor";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { Collapsible } from "./components/Collapsible";
@@ -15,7 +14,6 @@ export function App() {
   const [config, setConfig] = useState<BoardConfig | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [tele, setTele] = useState<Telemetry | null>(null);
-  const [selected, setSelected] = useState(0);
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -24,8 +22,6 @@ export function App() {
     (async () => {
       const [cat, cfg, st] = await Promise.all([api.catalog(), api.getConfig(), api.status()]);
       setCatalog(cat); setConfig(cfg); setStatus(st);
-      const firstGroup = cfg.groups.findIndex((g) => g.enabled);
-      setSelected(firstGroup < 0 ? 0 : firstGroup * cat.geometry.group_size);
     })().catch(console.error);
   }, []);
 
@@ -66,13 +62,11 @@ export function App() {
     const groups = config.groups.map((gc, i) => (i === g ? { ...gc, [key]: value } : gc));
     pushConfig({ ...config, groups });
   };
-  const updateChannelDc = (ch: number, value: number) => {
+  const updateChannel = (ch: number, patch: Partial<BoardConfig["channels"][number]>) => {
     if (!config) return;
-    const channels = config.channels.map((c, i) => (i === ch ? { ...c, dc_offset: value } : c));
+    const channels = config.channels.map((c, i) => (i === ch ? { ...c, ...patch } : c));
     pushConfig({ ...config, channels });
   };
-  const fanout = async (scope: "bank" | "all") =>
-    setConfig(await api.applyFanout(selected, scope));
 
   const start = async () => setStatus(await api.start());
   const stop = async () => setStatus(await api.stop());
@@ -109,7 +103,7 @@ export function App() {
       <div className="body">
         <main>
           <div className="grid-head">
-            <h2>Channels <span className="sub">all 16 · avg {config ? tele?.avg_window_s ?? 1 : 1}s window · click to inspect</span></h2>
+            <h2>Channels <span className="sub">all 16 · avg {tele?.avg_window_s ?? 1}s window · click a title to rename</span></h2>
             <div className="legend">
               <span className="lg live">live</span>
               <span className="lg dead">dead</span>
@@ -118,18 +112,14 @@ export function App() {
             </div>
           </div>
           <ChannelGrid catalog={catalog} config={config} tele={tele}
-            selected={selected} onSelect={setSelected} />
+            onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
+            onName={(ch, name) => updateChannel(ch, { name })} />
         </main>
 
         <aside>
           <div className="card">
             <h2>Trigger rate</h2>
             <RateStrip tele={tele} />
-          </div>
-          <div className="card">
-            <h2>Channel inspector</h2>
-            <ChannelEditor catalog={catalog} config={config} selected={selected}
-              tele={tele} onDcOffset={updateChannelDc} onFanout={fanout} />
           </div>
           <div className="card">
             <h2>Banks</h2>

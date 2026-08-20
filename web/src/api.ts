@@ -15,11 +15,6 @@ export const api = {
       body: JSON.stringify(cfg),
     }).then(j<{ ok: boolean; config: BoardConfig; errors: string[] }>),
   resetDefault: () => fetch("/api/config/default", { method: "POST" }).then(j<BoardConfig>),
-  applyFanout: (source: number, scope: "all" | "bank") =>
-    fetch("/api/config/apply", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source, scope }),
-    }).then(j<BoardConfig>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () => fetch("/api/acq/start", { method: "POST" }).then(j<Status>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),

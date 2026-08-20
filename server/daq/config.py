@@ -19,6 +19,9 @@ from . import constants as C
 class ChannelConfig:
     # Unsigned 16-bit DAC word, matching CAEN_DGTZ_SetChannelDCOffset's uint32_t.
     dc_offset: int = C.DC_OFFSET_MID
+    # Operator label, e.g. "Upstream". The UI shows it as "CH 3 - Upstream", but
+    # that prefix is presentation only and never reaches the recording.
+    name: str = ""
 
 
 @dataclass
@@ -73,12 +76,6 @@ class BoardConfig:
 
     def enabled_channels(self) -> list[int]:
         return [ch for ch in range(C.NUM_CHANNELS) if self.channel_enabled(ch)]
-
-    # ---- per-channel DC-offset fan-out ----
-    def apply_channel_dc_to(self, src: int, targets: list[int]) -> None:
-        v = self.channels[src].dc_offset
-        for t in targets:
-            self.channels[t].dc_offset = v
 
     def bank_channels(self, group: int) -> list[int]:
         base = group * C.GROUP_SIZE

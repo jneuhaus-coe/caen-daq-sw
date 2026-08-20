@@ -285,7 +285,11 @@ class CaenBackend(DigitizerBackend):
         still what the board last told us."""
         prev = self._state          # None => we know nothing, so do it all
         errs: list[str] = []
-        out = self._blank(prev if prev is not None else cfg)
+        # Start from what was asked for, so purely app-side fields (channel
+        # names, output options) survive; hardware fields are then overwritten
+        # by what the board reports, and anything the board refused is rolled
+        # back to its previous value.
+        out = self._blank(cfg)
         reads = []                  # refresh exactly what we wrote
         wrote = False
 
@@ -313,6 +317,8 @@ class CaenBackend(DigitizerBackend):
             if prev is None or getattr(prev, attr) != getattr(cfg, attr):
                 if put(setter, enc(getattr(cfg, attr))):
                     reads.append(lambda sp=spec: self._rd_board(out, sp, errs))
+                elif prev is not None:
+                    setattr(out, attr, getattr(prev, attr))   # refused; keep old
 
         if prev is None or prev.group_enable_mask != cfg.group_enable_mask:
             if put("SetGroupEnableMask", cfg.group_enable_mask):
@@ -332,15 +338,20 @@ class CaenBackend(DigitizerBackend):
                 if pg is None or getattr(pg, attr) != getattr(g, attr):
                     if put(setter, ct.c_uint32(gr), enc(getattr(g, attr))):
                         reads.append(lambda r=gr, sp=spec: self._rd_group(out, r, sp, errs))
+                    elif pg is not None:
+                        setattr(out.groups[gr], attr, getattr(pg, attr))
 
         for ch in range(C.NUM_CHANNELS):
             want = cfg.channels[ch].dc_offset & 0xFFFF
             if prev is None or (prev.channels[ch].dc_offset & 0xFFFF) != want:
                 if put("SetChannelDCOffset", ct.c_uint32(ch), want):
                     reads.append(lambda c=ch: self._rd_channel(out, c, errs))
+                elif prev is not None:
+                    out.channels[ch].dc_offset = prev.channels[ch].dc_offset
 
         if not wrote:
-            return (cfg if prev is None else prev), errs
+            self._state = out       # no hardware change, but names etc. may differ
+            return out, errs
 
         for r in reads:
             r()
