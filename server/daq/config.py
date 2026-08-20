@@ -1,5 +1,6 @@
 """Configuration model with the 742's real setting tiers: board / bank(group) /
-channel. Defaults mirror CAEN's WaveDump. JSON on disk; load/save/persist.
+channel. Defaults mirror CAEN's WaveDump and are only a seed: once a board is
+open, its own settings are the truth, so nothing is persisted between runs.
 
 Tiers (verified against WaveDump.c x742 branch):
   board   : sampling freq, post-trigger, correction, trigger modes, output
@@ -10,27 +11,19 @@ Tiers (verified against WaveDump.c x742 branch):
 """
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field, asdict
 
 from . import constants as C
 
-CONFIG_DIR = os.environ.get("DAQ_CONFIG_DIR",
-                            os.path.join(os.path.expanduser("~"), ".daq-sw"))
-LAST_USED_PATH = os.path.join(CONFIG_DIR, "last_used.json")
-
-
 @dataclass
 class ChannelConfig:
-    dc_offset: int = 0          # per-channel baseline trim (DAC counts)
+    # Unsigned 16-bit DAC word, matching CAEN_DGTZ_SetChannelDCOffset's uint32_t.
+    dc_offset: int = C.DC_OFFSET_MID
 
 
 @dataclass
 class GroupConfig:
     enabled: bool = False
-    self_trigger: str = "disabled"          # disabled|acquisition_only|acq_and_trgout
-    trigger_threshold: int = 100            # SetGroupTriggerThreshold (0..4095)
     fast_trigger_threshold: int = 20000     # SetGroupFastTriggerThreshold (TR0/TR1)
     fast_trigger_dc_offset: int = 32768     # SetGroupFastTriggerDCOffset
 
@@ -111,30 +104,9 @@ class BoardConfig:
         cfg.__post_init__()
         return cfg
 
-    def save(self, path: str) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-
-    @classmethod
-    def load(cls, path: str) -> "BoardConfig":
-        with open(path) as f:
-            return cls.from_dict(json.load(f))
-
-    def persist(self) -> None:
-        self.save(LAST_USED_PATH)
-
-    @classmethod
-    def load_last_or_default(cls) -> "BoardConfig":
-        try:
-            return cls.load(LAST_USED_PATH)
-        except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError):
-            return default_config()
-
 
 def default_config() -> BoardConfig:
     """WaveDump-equivalent: group 0 enabled (ch0-7), 5 GS/s, corrections AUTO."""
     cfg = BoardConfig()
     cfg.groups[0].enabled = True
-    cfg.groups[0].self_trigger = "acquisition_only"
     return cfg

@@ -13,7 +13,7 @@ export const api = {
     fetch("/api/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
-    }).then(j<{ ok: boolean; config: BoardConfig }>),
+    }).then(j<{ ok: boolean; config: BoardConfig; errors: string[] }>),
   resetDefault: () => fetch("/api/config/default", { method: "POST" }).then(j<BoardConfig>),
   applyFanout: (source: number, scope: "all" | "bank") =>
     fetch("/api/config/apply", {

@@ -49,9 +49,15 @@ export function App() {
   }, []);
 
   const pushConfig = (next: BoardConfig) => {
-    setConfig(next);
+    setConfig(next);                       // optimistic, for input responsiveness
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => api.setConfig(next).catch(console.error), 250);
+    saveTimer.current = window.setTimeout(() => {
+      // Whatever the board reports wins - a rejected write must not leave the
+      // UI showing a value the hardware never took.
+      api.setConfig(next)
+        .then((r) => { setConfig(r.config); if (r.errors?.length) setStatus((st) => st && { ...st, errors: [...st.errors, ...r.errors] }); })
+        .catch(console.error);
+    }, 250);
   };
   const updateBoard = (key: string, value: any) =>
     config && pushConfig({ ...config, [key]: value });
@@ -134,7 +140,7 @@ export function App() {
           </Collapsible>
           <Collapsible title="Config"
             right={<button className="mini" onClick={async () => setConfig(await api.resetDefault())}>Reset defaults</button>}>
-            <p className="muted">Changes autosave and persist as last-used.</p>
+            <p className="muted">Changes are written to the board and read back; the board holds the state.</p>
           </Collapsible>
           {status?.errors?.length ? (
             <div className="card errors">

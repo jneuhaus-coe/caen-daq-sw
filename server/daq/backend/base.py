@@ -46,7 +46,9 @@ class DigitizerBackend(abc.ABC):
     def open(self) -> BoardInfo: ...
 
     @abc.abstractmethod
-    def configure(self, cfg) -> None: ...
+    def configure(self, cfg):
+        """Apply cfg for acquisition; return (actual config, errors)."""
+        ...
 
     @abc.abstractmethod
     def start(self) -> None: ...
@@ -61,6 +63,14 @@ class DigitizerBackend(abc.ABC):
 
     @abc.abstractmethod
     def close(self) -> None: ...
+
+    def read_settings(self, cfg):
+        """Return (config as the hardware actually holds it, errors)."""
+        return cfg, []
+
+    def write_settings(self, cfg):
+        """Write settings, read them back, return (actual, errors)."""
+        return cfg, []
 
     def is_alive(self) -> bool:
         """Cheap round trip to confirm the unit is still there. Override for

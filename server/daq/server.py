@@ -39,15 +39,14 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.post("/api/config")
     def set_config(payload: dict):
-        cfg = BoardConfig.from_dict(payload)
-        engine.set_config(cfg)
-        return {"ok": True, "config": cfg.to_dict()}
+        before = len(engine.status()["errors"])
+        cfg = engine.set_config(BoardConfig.from_dict(payload))
+        new = engine.status()["errors"][before:]
+        return {"ok": not new, "config": cfg.to_dict(), "errors": new}
 
     @app.post("/api/config/default")
     def reset_default():
-        cfg = default_config()
-        engine.set_config(cfg)
-        return cfg.to_dict()
+        return engine.set_config(default_config()).to_dict()
 
     @app.post("/api/config/apply")
     def apply_fanout(payload: dict):
@@ -62,8 +61,7 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         else:
             targets = [int(t) for t in payload.get("targets", [])]
         cfg.apply_channel_dc_to(src, targets)
-        engine.set_config(cfg)
-        return cfg.to_dict()
+        return engine.set_config(cfg).to_dict()
 
     @app.post("/api/acq/start")
     def start():

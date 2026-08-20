@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import uPlot from "uplot";
 import type { BoardConfig, Catalog, Telemetry } from "../types";
 import { UPlotChart } from "./UPlotChart";
+import { dacToVolts, voltsToDac } from "../volts";
 
 interface Props {
   catalog: Catalog;
@@ -31,8 +32,12 @@ export function ChannelEditor({ catalog, config, selected, tele, onDcOffset, onF
     cursor: { drag: { x: true, y: false } },
   }), [selected]);
 
-  const dc = config.channels[selected]?.dc_offset ?? 0;
+  const g = catalog.geometry;
+  const dc = config.channels[selected]?.dc_offset ?? g.dc_offset_mid;
   const def = catalog.channel.find((d) => d.key === "dc_offset")!;
+  // Humans set volts; the DAC word is an implementation detail of the wire.
+  const dcVolts = dacToVolts(dc, g);
+  const vLimit = g.input_range_vpp / 2;
 
   return (
     <div>
@@ -49,14 +54,19 @@ export function ChannelEditor({ catalog, config, selected, tele, onDcOffset, onF
         <span>max <b>{e?.max != null ? e.max.toFixed(0) : "—"}</b></span>
       </div>
       <div className="editor-dc">
-        <label>DC offset</label>
-        <input type="number" min={def.min} max={def.max} value={dc}
-          onChange={(ev) => onDcOffset(selected, ev.target.value === "" ? 0 : Number(ev.target.value))} />
+        <label htmlFor="dcoff">DC offset</label>
+        <input id="dcoff" type="number" step={0.005}
+          min={-vLimit} max={vLimit}
+          value={Number(dcVolts.toFixed(3))}
+          onChange={(ev) =>
+            onDcOffset(selected, voltsToDac(Number(ev.target.value || 0), g))} />
+        <span className="unit">V</span>
         <div className="fan-btns">
           <button onClick={() => onFanout("bank")}>→ bank</button>
           <button onClick={() => onFanout("all")}>→ all</button>
         </div>
       </div>
+      <p className="muted mono dc-raw">DAC {dc} · board-reported</p>
       <p className="muted">{def.help}</p>
     </div>
   );

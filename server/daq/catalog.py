@@ -14,7 +14,10 @@ BOARD_SETTINGS = [
      "choices": FREQ_CHOICES, "caen": "CAEN_DGTZ_SetDRS4SamplingFrequency",
      "help": "DRS4 sample rate (whole board). Correction tables reload on change."},
     {"key": "post_trigger", "label": "Post-trigger", "type": "int", "min": 0, "max": 100,
-     "unit": "%", "caen": "CAEN_DGTZ_SetPostTriggerSize"},
+     "unit": "%", "caen": "CAEN_DGTZ_SetPostTriggerSize",
+     "help": "Percent of the record after the trigger. The register steps in "
+             "~8.5 ns, so at 5 GS/s only ~4% increments exist and the value "
+             "snaps to the nearest reachable one."},
     {"key": "correction_level", "label": "DRS4 correction", "type": "enum",
      "choices": [{"value": "auto", "label": "Auto"}, {"value": "disabled", "label": "Disabled"},
                  {"value": "manual", "label": "Manual tables"}],
@@ -41,10 +44,6 @@ BANK_SETTINGS = [
     {"key": "enabled", "label": "Bank enabled", "type": "bool",
      "caen": "CAEN_DGTZ_SetGroupEnableMask",
      "help": "The DRS4 digitizes all 8 channels in the bank together — enable is per-bank."},
-    {"key": "self_trigger", "label": "Self-trigger", "type": "enum",
-     "choices": TRIG_MODES, "caen": "CAEN_DGTZ_SetGroupSelfTrigger"},
-    {"key": "trigger_threshold", "label": "Self-trigger threshold", "type": "int",
-     "min": 0, "max": 4095, "caen": "CAEN_DGTZ_SetGroupTriggerThreshold"},
     {"key": "fast_trigger_threshold", "label": "Fast-trigger (TR) threshold", "type": "int",
      "min": 0, "max": 65535, "caen": "CAEN_DGTZ_SetGroupFastTriggerThreshold"},
     {"key": "fast_trigger_dc_offset", "label": "Fast-trigger (TR) DC offset", "type": "int",
@@ -52,9 +51,11 @@ BANK_SETTINGS = [
 ]
 
 CHANNEL_SETTINGS = [
-    {"key": "dc_offset", "label": "DC offset", "type": "int", "min": -32768, "max": 32767,
+    {"key": "dc_offset", "label": "DC offset", "type": "int",
+     "min": 0, "max": C.DC_OFFSET_MAX, "unit": "volts",
      "caen": "CAEN_DGTZ_SetChannelDCOffset",
-     "help": "Per-channel baseline trim. (The 742 has no per-channel gain.)"},
+     "help": "Per-channel baseline trim, shown in volts. (The 742 has no "
+             "per-channel gain.)"},
 ]
 
 
@@ -70,6 +71,8 @@ def catalog() -> dict:
             "record_length": C.RECORD_LENGTH,
             "adc_max": C.ADC_MAX,
             "input_range_vpp": C.INPUT_RANGE_VPP,
-            "dc_offset_half_span": C.DC_OFFSET_HALF_SPAN,
+            "dc_offset_max": C.DC_OFFSET_MAX,
+            "dc_offset_range_v": C.DC_OFFSET_RANGE_V,
+            "dc_offset_mid": C.DC_OFFSET_MID,
         },
     }

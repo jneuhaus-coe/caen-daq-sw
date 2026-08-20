@@ -18,7 +18,8 @@ export interface Catalog {
   channel: SettingDef[];
   geometry: {
     num_channels: number; group_size: number; num_groups: number; record_length: number;
-    adc_max: number; input_range_vpp: number; dc_offset_half_span: number;
+    adc_max: number; input_range_vpp: number;
+    dc_offset_max: number; dc_offset_mid: number; dc_offset_range_v: number;
   };
 }
 
@@ -26,8 +27,6 @@ export interface ChannelConfig { dc_offset: number; }
 
 export interface GroupConfig {
   enabled: boolean;
-  self_trigger: string;
-  trigger_threshold: number;
   fast_trigger_threshold: number;
   fast_trigger_dc_offset: number;
 }

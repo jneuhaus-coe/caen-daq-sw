@@ -37,11 +37,36 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
 - **Board**: sampling frequency, post-trigger, correction level, trigger edge,
   external/fast trigger mode, fast-trigger digitizing, max events per readout.
 - **Bank (per DRS4 group of 8 channels)**: **enable** (the DRS4 digitizes a whole
-  bank at once — there is NO per-channel enable), self-trigger + threshold
-  (`SetGroupTriggerThreshold`), fast-trigger (TR0/TR1) threshold and DC offset
-  (`SetGroupFastTrigger*`).
-- **Channel**: DC-offset trim only (`SetChannelDCOffset`). The 742 has **no
-  per-channel gain**.
+  bank at once — there is NO per-channel enable), fast-trigger (TR0/TR1)
+  threshold and DC offset (`SetGroupFastTrigger*`).
+- **Channel**: DC-offset trim only (`SetChannelDCOffset`, an **unsigned** uint16
+  DAC word — midscale `0x8000` is no shift). The 742 has **no per-channel gain**.
+  The DAC spans **±1 V — twice the 1 Vpp window** — and **increasing the DAC
+  LOWERS the baseline**. Measured on serial 53364: 0.137 counts/LSB, 2.19 V
+  across the full sweep (nominal 0.125 / 2.00 V). Only ~half the DAC range keeps
+  the window in view at all; outside it the channel rails.
+- `SetChannelPulsePolarity` is a **silent no-op** on the x742: it returns
+  success, and the readback stays `Positive` whatever you write. More dangerous
+  than a `-17`, because it looks like it worked. Do not expose it — and note the
+  DC-offset sign above is *not* polarity-dependent, verified by sweeping under
+  both settings (identical slope, -0.1377).
+- `SetTriggerPolarity` does take, but is **board-wide despite its per-channel
+  signature**: set ch0 and ch1 differently and both read back the last value.
+  Write it once, read it from channel 0.
+- There is **no summable per-bank DC offset for signal channels**:
+  `Set/GetGroupDCOffset` answer `-17` and libCAENDigitizer ships no
+  `V1742_*GroupDCOffset`. The datasheet's "per channel or 8-channel group" is a
+  family-wide statement. The only group-level offset here is TR0/TR1's.
+- **Post-trigger is quantised in time, not percent.** The register steps in
+  ~8.5 ns (measured 8.45 on serial 53364), so reachable percentages depend on
+  the record duration: only 25 values at 5 GS/s (~4.15% apart), every whole
+  percent at 1 GS/s and below. `constants.post_trigger_steps()` derives this;
+  the backend snaps before writing. Neither UM1935 nor the 742 datasheet
+  mentions it — it was found by sweeping the board.
+- `SetGroupTriggerThreshold` and `SetGroupSelfTrigger` return
+  `CAEN_DGTZ_FunctionNotAllowed` (-17) on this board — **both set and get**.
+  Verified on serial 53364. The 742 triggers on TR0/TR1 or the external input,
+  not a per-group digital self-trigger, so treat those two as absent.
 
 ## Board prerequisites
 
@@ -99,6 +124,20 @@ Run the server on the machine physically attached to the board.
 
 The macOS host has no node, so the UI cannot be rebuilt there; the committed
 `server/daq/static/` bundle is what gets served.
+
+## The board is the source of truth
+
+Never let the UI show a setting the hardware did not confirm.
+
+- On open, read every setting off the board and adopt it (`read_settings`);
+  the last-used file only seeds what cannot be read.
+- On write, set then immediately read back (`write_settings`) and keep what the
+  board reports. Mismatches and failed writes surface in `status.errors`.
+- Config field types follow CAEN's API — unsigned where the API is unsigned.
+- Getters that answer `-17` are recorded as write-only and left unverified;
+  setters that answer `-17` are reported once, then skipped.
+- Human-facing controls use human units (DC offset is volts in the UI); the DAC
+  word only exists on the wire.
 
 ## Conventions / scope
 

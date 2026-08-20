@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from .backend.base import make_backend, DigitizerBackend, BoardInfo
-from .config import BoardConfig
+from .config import BoardConfig, default_config
 from .stats import RollingAverage, TriggerRateMeter, decimate
 from .writer import make_writer
 from . import constants as C
@@ -19,7 +19,7 @@ class AcquisitionEngine:
     def __init__(self):
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
-        self._cfg = BoardConfig.load_last_or_default()
+        self._cfg = default_config()   # only a seed; the board wins once open
         self._avg = RollingAverage()
         self._rate = TriggerRateMeter()
         self._writer = None
@@ -37,18 +37,32 @@ class AcquisitionEngine:
         self._backend = make_backend()
         self._board_info = self._backend.open()
         self._opened = True
+        # The board, not our last-used file, is the source of truth.
+        cfg, errs = self._backend.read_settings(self._cfg)
+        with self._lock:
+            self._cfg = cfg
+        for e in errs:
+            self._record_error(f"read settings: {e}")
         return self._board_info
 
     def get_config(self) -> BoardConfig:
         with self._lock:
             return self._cfg
 
-    def set_config(self, cfg: BoardConfig):
+    def set_config(self, cfg: BoardConfig) -> BoardConfig:
+        """Push to the board and adopt what it reports back. Returns the actual
+        config; anything the board refused lands in the error list."""
+        errors: list[str] = []
+        if self._opened and self._backend is not None:
+            try:
+                cfg, errors = self._backend.write_settings(cfg)
+            except Exception as e:
+                errors = [f"write settings: {e}"]
         with self._lock:
             self._cfg = cfg
-            cfg.persist()
-        if self._running.is_set():
-            self._backend.configure(cfg)
+        for e in errors:
+            self._record_error(e)
+        return cfg
 
     def start(self):
         if self._running.is_set():
@@ -57,7 +71,11 @@ class AcquisitionEngine:
             self.open()
         with self._lock:
             cfg = self._cfg
-        self._backend.configure(cfg)
+        actual, cfg_errs = self._backend.configure(cfg)
+        with self._lock:
+            self._cfg = actual
+        for e in cfg_errs:
+            self._record_error(e)
         self._events_seen = 0      # Count reflects this acquisition run
         self._rate.reset()
         self._writer = make_writer(cfg)

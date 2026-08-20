@@ -18,7 +18,6 @@ export function ChannelGrid({ catalog, config, tele, selected, onSelect }: Props
   // undefined = follow the bank's enabled flag; set = the user overrode it
   const [override, setOverride] = useState<Record<number, boolean>>({});
 
-  const { adc_max, input_range_vpp, dc_offset_half_span } = catalog.geometry;
   const windowNs = tele ? tele.sample_period_ns * tele.record_length : undefined;
 
   return (
@@ -68,9 +67,8 @@ export function ChannelGrid({ catalog, config, tele, selected, onSelect }: Props
                       </div>
                       <MiniWave
                         wave={on ? e?.wave : undefined}
-                        dcOffset={config.channels[ch]?.dc_offset ?? 0}
-                        adcMax={adc_max} rangeVpp={input_range_vpp}
-                        dcHalfSpan={dc_offset_half_span}
+                        dcOffset={config.channels[ch]?.dc_offset ?? catalog.geometry.dc_offset_mid}
+                        geom={catalog.geometry}
                         windowNs={windowNs} color={color} />
                       <div className="tile-foot">
                         <span className="n">{e?.count ? `n=${e.count}` : ""}</span>

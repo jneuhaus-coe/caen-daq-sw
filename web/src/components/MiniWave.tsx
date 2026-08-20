@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
+import { fmtV, voltsAtCount, zeroCounts } from "../volts";
+import type { Geom } from "../volts";
 
 interface Props {
   wave?: number[];
-  /** Signed per-channel trim; positions 0 V within the ADC window. */
+  /** uint16 DAC word; positions 0 V within the ADC window. */
   dcOffset: number;
-  adcMax: number;
-  rangeVpp: number;
-  dcHalfSpan: number;
+  geom: Geom;
   windowNs?: number;  // full record length in ns, for the time axis
   height?: number;
   color: string;
@@ -17,15 +17,11 @@ interface Props {
  *
  * Axis labels are HTML rather than canvas text: crisper, and they stay put
  * without re-measuring on every repaint. */
-export function MiniWave({
-  wave, dcOffset, adcMax, rangeVpp, dcHalfSpan, windowNs, height = 140, color,
-}: Props) {
+export function MiniWave({ wave, dcOffset, geom, windowNs, height = 140, color }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
-
-  // Where 0 V sits in ADC counts: a positive trim lifts the baseline.
-  const zeroCounts = (adcMax / 2) * (1 + dcOffset / dcHalfSpan);
-  const voltsAt = (counts: number) => (counts - zeroCounts) * (rangeVpp / (adcMax + 1));
-  const zeroFrac = Math.min(1, Math.max(0, zeroCounts / adcMax));
+  const adcMax = geom.adc_max;
+  const zc = zeroCounts(dcOffset, geom);
+  const zeroFrac = Math.min(1, Math.max(0, zc / adcMax));
 
   useEffect(() => {
     const cv = ref.current;
@@ -45,7 +41,7 @@ export function MiniWave({
     ctx.strokeStyle = "rgba(255,255,255,0.10)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, y(zeroCounts)); ctx.lineTo(w, y(zeroCounts)); ctx.stroke();
+    ctx.moveTo(0, y(zc)); ctx.lineTo(w, y(zc)); ctx.stroke();
 
     if (!wave || wave.length === 0) return;
     const n = wave.length;
@@ -59,15 +55,15 @@ export function MiniWave({
       i === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
     }
     ctx.stroke();
-  }, [wave, zeroCounts, adcMax, height, color]);
+  }, [wave, zc, adcMax, height, color]);
 
   return (
     <div className="wave">
       <div className="wave-plot" style={{ height }}>
         <canvas ref={ref} style={{ width: "100%", height, display: "block" }} />
-        <span className="ax y max">{fmtV(voltsAt(adcMax))}</span>
+        <span className="ax y max">{fmtV(voltsAtCount(adcMax, dcOffset, geom))}</span>
         <span className="ax y zero" style={{ top: `${(1 - zeroFrac) * 100}%` }}>0 V</span>
-        <span className="ax y min">{fmtV(voltsAt(0))}</span>
+        <span className="ax y min">{fmtV(voltsAtCount(0, dcOffset, geom))}</span>
       </div>
       <div className="wave-x">
         <span>0</span>
@@ -75,12 +71,6 @@ export function MiniWave({
       </div>
     </div>
   );
-}
-
-/** Signed volts at the window edges, e.g. "+0.500 V". */
-export function fmtV(v: number) {
-  const s = Math.abs(v) < 5e-4 ? "0.000" : Math.abs(v).toFixed(3);
-  return (v < 0 ? "-" : "+") + s + " V";
 }
 
 /** ns -> ps/ns/us/ms. The 742 spans 204.8 ns at 5 GS/s and 1.4 us at 750 MS/s,
