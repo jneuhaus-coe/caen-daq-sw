@@ -16,6 +16,7 @@ import abc
 import json
 import os
 import struct
+import time
 import numpy as np
 
 from .backend.base import Event
@@ -37,18 +38,19 @@ class NullWriter(Writer):
 
 
 class WaveDumpWriter(Writer):
-    def __init__(self):
-        self._files: dict[int, object] = {}
+    def __init__(self, directory: str, run_name: str = ""):
+        self._files = {}
         self._cfg = None
         self._ascii = True
         self._header = False
-        self._dir = "data"
+        self._dir = directory
+        self._run_name = run_name
+        self._events = 0
 
     def open(self, cfg) -> None:
         self._cfg = cfg
         self._ascii = (cfg.output_format.lower() == "ascii")
         self._header = bool(cfg.output_header)
-        self._dir = cfg.output_dir or "data"
         os.makedirs(self._dir, exist_ok=True)
         ext = "txt" if self._ascii else "dat"
         mode = "w" if self._ascii else "wb"
@@ -63,6 +65,8 @@ class WaveDumpWriter(Writer):
         that header layout is fixed and the point of this writer is byte
         compatibility. Names are stored bare, without the UI's "CH n - " prefix."""
         meta = {
+            "run_name": self._run_name,
+            "started": time.time(),
             "channels": {
                 str(ch): {"name": cfg.channels[ch].name,
                           "dc_offset": cfg.channels[ch].dc_offset}
@@ -76,6 +80,7 @@ class WaveDumpWriter(Writer):
             json.dump(meta, f, indent=2)
 
     def write(self, ev: Event) -> None:
+        self._events += 1
         for ch, wave in ev.samples.items():
             f = self._files.get(ch)
             if f is None:
@@ -114,9 +119,20 @@ class WaveDumpWriter(Writer):
             except Exception:
                 pass
         self._files = {}
+        # Stamp the final event count so a listing can show it without opening
+        # every wave file.
+        if self._cfg is not None:
+            try:
+                path = os.path.join(self._dir, "run_metadata.json")
+                with open(path) as f:
+                    meta = json.load(f)
+                meta["events"] = self._events
+                meta["ended"] = time.time()
+                with open(path, "w") as f:
+                    json.dump(meta, f, indent=2)
+            except OSError:
+                pass
 
 
-def make_writer(cfg) -> Writer:
-    if not cfg.write_enabled:
-        return NullWriter()
-    return WaveDumpWriter()
+def make_writer(directory: str, run_name: str = "") -> Writer:
+    return WaveDumpWriter(directory, run_name)

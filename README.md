@@ -12,8 +12,8 @@ triggers. Windows is the deployment target.
 
 Working now: config with WaveDump-seeded defaults + load/save + persist-last-used,
 per-channel DC offset in volts, moving-average waveform, scrolling
-trigger-rate strip, WaveDump-compatible writer, browsable command catalog, live
-React + uPlot web UI. All smoke-tested (`server/tests`).
+trigger-rate strip, WaveDump-compatible writer, named runs with download/delete,
+browsable command catalog, live React web UI. All smoke-tested (`server/tests`).
 
 ## Architecture
 

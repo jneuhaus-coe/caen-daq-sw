@@ -12,6 +12,7 @@ from .backend.base import make_backend, DigitizerBackend, BoardInfo
 from .config import BoardConfig, default_config
 from .stats import RollingAverage, TriggerRateMeter, decimate
 from .writer import make_writer
+from . import runs
 from . import constants as C
 
 
@@ -22,7 +23,11 @@ class AcquisitionEngine:
         self._cfg = default_config()   # only a seed; the board wins once open
         self._avg = RollingAverage()
         self._rate = TriggerRateMeter()
+        # Recording is independent of acquiring: you watch first, then record.
         self._writer = None
+        self._run_id: str | None = None
+        self._run_started: float | None = None
+        self._recorded = 0
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -86,8 +91,6 @@ class AcquisitionEngine:
             self._record_error(e)
         self._events_seen = 0      # Count reflects this acquisition run
         self._rate.reset()
-        self._writer = make_writer(cfg)
-        self._writer.open(cfg)
         self._backend.start()
         self._running.set()
         self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
@@ -99,13 +102,11 @@ class AcquisitionEngine:
         self._running.clear()
         if self._thread:
             self._thread.join(timeout=2.0)
+        self.stop_recording()
         try:
             self._backend.stop()
         except Exception as e:
             self._record_error(f"stop: {e}")
-        if self._writer:
-            self._writer.close()
-            self._writer = None
 
     def close(self):
         self.stop()
@@ -164,6 +165,49 @@ class AcquisitionEngine:
             if force:
                 self._record_error(f"reconnect: {e}")
 
+    # ---------- recording ----------
+    def start_recording(self, name: str, timestamp: bool = True) -> dict:
+        """Begin writing to a new run directory, starting acquisition if the
+        operator has not already. Watching and recording are separate actions."""
+        if self._writer is not None:
+            return {"ok": False, "error": "already recording"}
+        if not self._opened:
+            return {"ok": False, "error": "no unit connected"}
+        if not self._running.is_set():
+            self.start()
+        try:
+            run_id, path = runs.create(name, timestamp)
+        except FileExistsError as e:
+            return {"ok": False,
+                    "error": f"a run named {e.args[0]!r} already exists - "
+                             f"rename it or switch the timestamp on"}
+        with self._lock:
+            cfg = self._cfg
+        writer = make_writer(path, run_id)      # the directory name is the name
+        try:
+            writer.open(cfg)
+        except Exception as e:
+            self._record_error(f"record: {e}")
+            return {"ok": False, "error": str(e)}
+        self._recorded = 0
+        self._run_started = time.time()
+        self._run_id = run_id
+        self._writer = writer          # last: the loop starts writing here
+        return {"ok": True, "run": run_id}
+
+    def stop_recording(self) -> dict:
+        w, run_id = self._writer, self._run_id
+        self._writer = None            # first: the loop stops writing
+        if w is None:
+            return {"ok": False, "error": "not recording"}
+        try:
+            w.close()
+        except Exception as e:
+            self._record_error(f"record close: {e}")
+        self._run_id = None
+        self._run_started = None
+        return {"ok": True, "run": run_id}
+
     # ---------- readout loop ----------
     def _loop(self):
         fails = 0
@@ -192,6 +236,7 @@ class AcquisitionEngine:
                     self._avg.add(ch, wave, t)
                 if self._writer:
                     self._writer.write(ev)
+                    self._recorded += 1
             self._rate.add(len(events))
         if not self._opened and self._writer:   # bailed out on a lost board
             try:
@@ -233,6 +278,10 @@ class AcquisitionEngine:
             "overview_points": C.OVERVIEW_POINTS,
             "avg_window_s": self._avg.window_s,
             "events_seen": self._events_seen,
+            "recording": self._writer is not None,
+            "run_id": self._run_id,
+            "run_started": self._run_started,
+            "recorded": self._recorded,
             "enabled_channels": chans,
             "channels": channels,
             "rate": self._rate.snapshot(),
@@ -250,5 +299,10 @@ class AcquisitionEngine:
                 "sw_release": bi.sw_release,
             },
             "events_seen": self._events_seen,
+            "recording": self._writer is not None,
+            "run_id": self._run_id,
+            "run_started": self._run_started,
+            "recorded": self._recorded,
+            "data_dir": runs.DATA_ROOT,
             "errors": list(self._errors),
         }

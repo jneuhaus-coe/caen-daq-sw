@@ -47,8 +47,6 @@ class BoardConfig:
     # output
     output_format: str = "ascii"
     output_header: bool = False
-    output_dir: str = "data"
-    write_enabled: bool = False
     # tiers
     groups: list[GroupConfig] = field(
         default_factory=lambda: [GroupConfig() for _ in range(C.NUM_GROUPS)])

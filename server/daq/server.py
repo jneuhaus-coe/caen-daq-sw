@@ -6,13 +6,16 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (BackgroundTasks, FastAPI, HTTPException, Request, Response,
+                     WebSocket, WebSocketDisconnect)
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .acquisition import AcquisitionEngine
 from .config import BoardConfig, default_config
 from .catalog import catalog
 from . import configfile
+from . import runs
 from . import constants as C
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -74,6 +77,41 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.post("/api/config/default")
     def reset_default():
         return engine.set_config(default_config()).to_dict()
+
+    @app.post("/api/rec/start")
+    def rec_start(payload: dict | None = None):
+        p = payload or {}
+        r = engine.start_recording((p.get("name") or "").strip(),
+                                   bool(p.get("timestamp", True)))
+        return {**r, "status": engine.status()}
+
+    @app.post("/api/rec/stop")
+    def rec_stop():
+        r = engine.stop_recording()
+        return {**r, "status": engine.status()}
+
+    @app.get("/api/runs")
+    def list_runs():
+        return {"data_dir": runs.DATA_ROOT, "runs": runs.listing()}
+
+    @app.get("/api/runs/{run_id}/download")
+    def download_run(run_id: str, background: BackgroundTasks):
+        if engine.status()["run_id"] == run_id:
+            raise HTTPException(409, "that run is still recording")
+        tmp = runs.zip_to_temp(run_id)
+        if tmp is None:
+            raise HTTPException(404, "no such run")
+        background.add_task(os.unlink, tmp)      # cleaned up after the response
+        return FileResponse(tmp, media_type="application/zip",
+                            filename=f"{run_id}.zip", background=background)
+
+    @app.delete("/api/runs/{run_id}")
+    def delete_run(run_id: str):
+        if engine.status()["run_id"] == run_id:
+            raise HTTPException(409, "that run is still recording")
+        if not runs.delete(run_id):
+            raise HTTPException(404, "no such run")
+        return {"ok": True, "deleted": run_id}
 
     @app.post("/api/acq/start")
     def start():

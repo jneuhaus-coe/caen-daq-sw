@@ -108,10 +108,6 @@ UNIT_SETTINGS = [
              "counter, trigger time tag).\n\n"
              "Needed to tell events apart in a binary file; leave it off for "
              "a bare column of samples."},
-    {"key": "write_enabled", "label": "Write to disk", "type": "bool",
-     "help": "Master switch for recording.\n\n"
-             "Off means the display still runs but nothing is written - no "
-             "files are created and no data is kept."},
 ]
 
 # Per DRS4 group of 8 channels.

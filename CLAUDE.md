@@ -121,6 +121,7 @@ server/daq/
     base.py        DigitizerBackend ABC + Event/BoardInfo  <-- the hardware seam
     caen.py        real board via ctypes
   stats.py         time-windowed RollingAverage + fixed-window TriggerRateMeter + decimate
+  runs.py          recorded runs on disk: create/list/zip/delete
   writer.py        Writer interface + WaveDump-compatible writer
   acquisition.py   threaded readout engine + telemetry snapshots
   server.py        FastAPI REST + WS + static
@@ -171,6 +172,25 @@ Never let the UI show a setting the hardware did not confirm.
 - Human-facing controls use human units (DC offset is volts in the UI); the DAC
   word only exists on the wire.
 
+## Watching vs recording
+
+They are separate actions and separate controls. **Start/Stop** acquires — live
+averaged waveforms, nothing written. **Record** opens a run and begins writing;
+it starts acquisition if it is not already running. Stopping a recording leaves
+acquisition running, so the usual loop (watch, verify, then record) never has to
+stop looking.
+
+A run is a directory under `DAQ_DATA_DIR` (default `~/daq-runs` in the guest —
+never the repo, which may be a read-only mount): one wave file per channel plus
+`run_metadata.json` with the channel names and settings. One file per channel is
+WaveDump's own layout (`wave_%d.txt` / `.dat`, verified against WaveDump.c).
+**The directory name is the run's only name** — what the listing shows, what the
+metadata records, what the downloaded zip is called. An optional ISO-ish
+`-YYYY-MM-DD-HHMMSS` suffix keeps same-named runs apart; without it a clash is
+an error rather than a silent rename.
+Downloads are a zip of that directory. The run being recorded cannot be
+downloaded or deleted.
+
 ## Conventions / scope
 
 - Keep the **test suite minimal** — just enough smoke coverage to trust the
@@ -190,6 +210,10 @@ Never let the UI show a setting the hardware did not confirm.
   the decode/correction path.
 - WaveDump writer layout follows the docs but is **not byte-verified** against a
   real dump — check against one sample `.dat` before trusting downstream.
+- **TR traces are never written.** WaveDump emits `TR_%d_0` / `TR_0_%d` files for
+  the x742's digitized fast-trigger traces; our decoder skips channel index 8
+  entirely, so enabling "Digitize TR traces" costs dead time and produces no
+  file. Decode + write them before relying on TR for timing.
 - The UI has not been eyeballed in a real browser yet (it was built in a headless
   cloud session). Verify layout/interactions.
 

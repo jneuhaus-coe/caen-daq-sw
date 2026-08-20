@@ -70,6 +70,10 @@ export interface Telemetry {
   overview_points: number;
   avg_window_s: number;
   events_seen: number;
+  recording: boolean;
+  run_id: string | null;
+  run_started: number | null;
+  recorded: number;
   enabled_channels: number[];
   channels: Record<string, ChannelTelemetry>;
   rate: { bin_seconds: number; window_seconds: number; t: number[]; rate: number[]; instant: number; total: number };
@@ -78,6 +82,11 @@ export interface Telemetry {
 export interface Status {
   opened: boolean;
   running: boolean;
+  recording: boolean;
+  run_id: string | null;
+  run_started: number | null;
+  recorded: number;
+  data_dir: string;
   backend: string;
   board: { model: string; family: string; serial: number; roc_firmware: string; amc_firmware: string; sw_release: string };
   events_seen: number;

@@ -17,6 +17,14 @@ export const api = {
   resetDefault: () => fetch("/api/config/default", { method: "POST" }).then(j<BoardConfig>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () => fetch("/api/acq/start", { method: "POST" }).then(j<Status>),
+  recStart: (name: string, timestamp: boolean) =>
+    fetch("/api/rec/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, timestamp }),
+    }).then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
+  recStop: () =>
+    fetch("/api/rec/stop", { method: "POST" })
+      .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
 };
 

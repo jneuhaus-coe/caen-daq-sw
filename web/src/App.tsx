@@ -7,6 +7,8 @@ import { SettingsList } from "./components/SettingsList";
 import { Collapsible } from "./components/Collapsible";
 import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
+import { RunsPanel } from "./components/RunsPanel";
+import { Elapsed } from "./components/Elapsed";
 import { describeChanges } from "./changes";
 import { RateStrip } from "./components/RateStrip";
 import { ConnectionBadge } from "./components/ConnectionBadge";
@@ -19,6 +21,9 @@ export function App() {
   const [tele, setTele] = useState<Telemetry | null>(null);
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
+  const [runName, setRunName] = useState("");
+  const [stampRun, setStampRun] = useState(true);
+  const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
   const saveTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
   const confirmed = useRef<BoardConfig | null>(null);
@@ -95,6 +100,21 @@ export function App() {
 
   const start = async () => setStatus(await api.start());
   const stop = async () => setStatus(await api.stop());
+  const startRec = async () => {
+    const r = await api.recStart(runName, stampRun);
+    setStatus(r.status);
+    if (!r.ok) push("err", "Could not start recording", [r.error ?? ""]);
+    else {
+      push("ok", "Recording", [`${r.run}`]);
+      setRunsKey((k) => k + 1);
+    }
+  };
+  const stopRec = async () => {
+    const r = await api.recStop();
+    setStatus(r.status);
+    if (r.ok) push("ok", "Recording stopped", [`${r.run}`]);
+    setRunsKey((k) => k + 1);
+  };
   const reconnect = async () => {
     setReconnecting(true);
     try {
@@ -110,6 +130,7 @@ export function App() {
   if (!catalog || !config) return <div className="loading">Loading…</div>;
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
+  const recording = tele?.recording ?? status?.recording ?? false;
 
   return (
     <div className="app">
@@ -120,9 +141,43 @@ export function App() {
         <span className={"pill" + (running ? " on" : "")}>{running ? "running" : "idle"}</span>
         <span className="pill mono">{tele?.events_seen ?? 0} events</span>
         <div className="spacer" />
-        <button className="primary" onClick={start} disabled={running || !connected}
-          title={connected ? "" : "No board connected"}>Start</button>
-        <button onClick={stop} disabled={!running}>Stop</button>
+        <div className="acq-group">
+          <button className="primary" onClick={start} disabled={running || !connected}
+            title={connected ? "Watch live, without writing anything" : "No unit connected"}>
+            Start
+          </button>
+          <button onClick={stop} disabled={!running}>Stop</button>
+        </div>
+        <div className={"rec-group" + (recording ? " on" : "")}>
+          {recording ? (
+            <>
+              <span className="rec-dot" />
+              <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
+              <span className="rec-count mono">
+                <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
+                {" · "}{tele?.recorded ?? 0} ev
+              </span>
+              <button className="danger" onClick={stopRec}>Stop recording</button>
+            </>
+          ) : (
+            <>
+              <label className="rec-label" htmlFor="runname">Run name</label>
+              <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
+                disabled={!connected}
+                onChange={(e) => setRunName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+              <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
+                <input type="checkbox" checked={stampRun} disabled={!connected}
+                  onChange={(e) => setStampRun(e.target.checked)} />
+                Include timestamp
+              </label>
+              <button className="record" onClick={startRec} disabled={!connected}
+                title="Start writing this run to disk">
+                <span className="rec-dot" />Record
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       <div className="body">
@@ -178,6 +233,7 @@ export function App() {
               {status.errors.slice(-6).map((e, i) => <div key={i} className="mono err">{e}</div>)}
             </div>
           ) : null}
+          <RunsPanel status={status} refreshKey={runsKey} />
         </aside>
         </fieldset>
       </div>
