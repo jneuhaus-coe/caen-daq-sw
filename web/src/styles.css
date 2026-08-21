@@ -1,6 +1,10 @@
 :root {
   color-scheme: dark;
   --bg: #0e1116; --panel: #161b22; --border: #30363d; --muted: #8b949e;
+  /* Plot surface: recessed from the panel, but lighter than the page
+     itself — matching the page background made every chart read as a
+     hole punched through the card. */
+  --chart: #10141a;
   --text: #e6edf3; --accent: #1f6feb; --green: #4ac776; --orange: #f0883e; --purple: #8b5cf6;
   --red: #f85149;
 }
@@ -148,7 +152,10 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 /* Room for TRIG above the plot - deliberately less than the tag's height, so
    it overflows a little rather than claiming a whole row. */
 .wave-plot { position: relative; width: 100%; margin-top: 4px; }
-.wave-canvas { position: relative; margin-left: var(--y-gutter); }
+.wave-canvas {
+  position: relative; margin-left: var(--y-gutter);
+  background: var(--chart); border-radius: 3px;
+}
 .wave .ax {
   position: absolute; font-size: 9.5px; line-height: 1; color: #6e7681;
   pointer-events: none; font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -190,7 +197,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 
 .rate-plot {
   position: relative; flex: 1; min-height: 0;
-  background: var(--bg);                /* darker than the panel behind it */
+  background: var(--chart);             /* recessed, not a hole */
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
