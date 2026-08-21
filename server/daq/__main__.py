@@ -36,16 +36,16 @@ def _check_bindable(host: str, port: int) -> None:
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             _err(f"port {port} is already in use — another daq is probably running.")
-            _err("stop that one, or start this one on another port: daq --port 8800")
+            _err("stop that one, or start this one on another port: daq --port 9100")
         elif e.errno in (errno.EACCES, errno.EPERM):
             _err(f"not allowed to bind {host}:{port}.")
             if os.name == "nt":
                 _err("on Windows this usually means the port sits inside a range reserved")
                 _err("by Hyper-V or WSL. List the reserved ranges with:")
                 _err("    netsh interface ipv4 show excludedportrange protocol=tcp")
-                _err("then pick a port outside them: daq --port 8800")
+                _err("then pick a port outside them: daq --port 9100")
             elif port < 1024:
-                _err("ports below 1024 need root. Use --port 8000 or higher.")
+                _err("ports below 1024 need root. Use the default 8800, or any port above 1024.")
         else:
             _err(f"cannot bind {host}:{port}: {e}")
         raise SystemExit(2)
@@ -219,8 +219,11 @@ def main():
     p.add_argument("command", nargs="?", choices=["stop", "status"],
                    help="stop or inspect the running server")
     p.add_argument("--version", action="version", version=f"dt5742b-daq {__version__}")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="address to serve on (default: %(default)s; "
+                        "use 0.0.0.0 to reach it from other machines)")
+    p.add_argument("--port", type=int, default=8800,
+                   help="port to serve on (default: %(default)s)")
     p.add_argument("--serve", action="store_true",
                    help="run the server in the foreground with no window and no "
                         "tray icon; it never exits on its own")

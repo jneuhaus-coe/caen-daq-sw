@@ -46,22 +46,46 @@ $daqBin = Join-Path $toolBin 'daq.exe'
 # fails if the server is still up. Refuse rather than kill blind when a run is
 # recording, or when the server is somewhere we cannot ask.
 $restartHint = $false
-$running = @(Get-Process -Name daq -ErrorAction SilentlyContinue)
-if ($running.Count -gt 0) {
-    $pids = ($running | ForEach-Object { $_.Id }) -join ', '
-    $status = $null
-    try { $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/status' -TimeoutSec 3 } catch { }
-    if (-not $status) {
-        Warn "A daq server is running (pid $pids) but does not answer on 127.0.0.1:8000,"
-        Warn 'so this installer cannot check whether it is recording.'
-        Die  'Stop it yourself, then re-run this installer.'
-    }
+
+# Where the running server records its pid and port. Reading it beats guessing:
+# the server may be on any port, and on a host with a port-forward a probe of the
+# default port can reach an entirely different machine's server.
+$stateBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:USERPROFILE }
+$runtimeFile = Join-Path $stateBase 'dt5742b-daq\runtime.json'
+$rt = $null
+if (Test-Path $runtimeFile) {
+    try { $rt = Get-Content -Raw $runtimeFile | ConvertFrom-Json } catch { $rt = $null }
+}
+
+# The runtime file is a hint: it outlives crashes. Confirm by asking the port.
+$status = $null
+if ($rt -and $rt.port) {
+    try {
+        $answer = Invoke-RestMethod -Uri "http://127.0.0.1:$($rt.port)/api/status" -TimeoutSec 3
+        if ($answer.app -eq 'dt5742b-daq') { $status = $answer }
+    } catch { }
+}
+
+if ($status) {
     if ($status.recording) {
         Warn "A run is recording: $($status.run_id)"
         Die  'Stop the recording, then re-run this installer.'
     }
-    Say "Stopping the running server (pid $pids)"
-    $running | Stop-Process -Force
+    Say "Stopping the running server (pid $($rt.pid) on port $($rt.port))"
+    if ($rt.pid) { Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue }
+    $restartHint = $true
+} else {
+    # No usable record — fall back to finding the process by name.
+    $running = @(Get-Process -Name daq -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        $pids = ($running | ForEach-Object { $_.Id }) -join ', '
+        Warn "A daq server is running (pid $pids) but did not record a port we can"
+        Warn 'reach, so this installer cannot check whether it is recording.'
+        Die  'Stop it yourself (daq stop), then re-run this installer.'
+    }
+}
+
+if ($restartHint) {
     foreach ($i in 1..10) {
         Start-Sleep -Milliseconds 500
         if (-not (Get-Process -Name daq -ErrorAction SilentlyContinue)) { break }
@@ -80,7 +104,6 @@ if ($running.Count -gt 0) {
         Warn 'the update, then re-run this installer.'
         Die  'Refusing to update underneath a server that keeps restarting.'
     }
-    $restartHint = $true
 }
 
 # --- 3. Work out what to install --------------------------------------------
@@ -194,11 +217,11 @@ if (-not $ver) { $ver = $Pkg }
 Write-Host ''
 Write-Host "Installed: $ver"
 Write-Host ''
-Write-Host '  daq                    serve on 127.0.0.1:8000 (this machine only)'
+Write-Host '  daq                    open the DAQ (starts the server if needed)'
 Write-Host '  daq --host 0.0.0.0     serve to the network'
 Write-Host '  daq --help             all options'
 Write-Host ''
-Write-Host 'Then open http://127.0.0.1:8000/ - runs are written to %USERPROFILE%\daq-runs.'
+Write-Host 'Runs are written to %USERPROFILE%\daq-runs.'
 if ($restartHint) {
     Write-Host ''
     Say 'The server that was running has been stopped - start it again with the command above.'

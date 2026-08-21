@@ -68,13 +68,13 @@ it — that older copy is what will actually run, and every future update will l
 like it silently did nothing.
 
 **If it will not start on Windows** with *"an attempt was made to access a socket
-in a way forbidden by its access permissions"*, port 8000 is inside a range
+in a way forbidden by its access permissions"*, the port is inside a range
 Windows has reserved for Hyper-V or WSL. Nothing is using it and nothing will
 free it — pick a port outside those ranges:
 
 ```powershell
 netsh interface ipv4 show excludedportrange protocol=tcp
-daq --host 0.0.0.0 --port 8800
+daq --host 0.0.0.0 --port 9100
 ```
 
 Use that port in the URL and in your `.bat` or service arguments too.
@@ -178,7 +178,7 @@ Afterwards, **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new U
 
 # Taking a shift
 
-Run **daq** on the DAQ machine, or open **http://\<daq-host\>:8000/** from
+Run **daq** on the DAQ machine, or open **http://\<daq-host\>:8800/** from
 anywhere else.
 
 The **?** button at the top right walks you through this in three steps.
@@ -291,11 +291,11 @@ git clone https://github.com/jneuhaus-coe/caen-daq-sw.git
 cd caen-daq-sw
 
 cd server && pip install -e ".[test]"   # editable install + test deps
-python -m daq                        # http://127.0.0.1:8000/
+python -m daq                        # http://127.0.0.1:8800/
 python tests/test_smoke.py           # hardware-free smoke tests
 
 cd web && npm install
-npm run dev                          # UI hot-reload, proxies API/WS to :8000
+npm run dev                          # UI hot-reload, proxies API/WS to :8800
 npm run build                        # rebuild the bundle into server/daq/static
 ```
 

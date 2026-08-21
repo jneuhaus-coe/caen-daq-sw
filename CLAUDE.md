@@ -148,10 +148,10 @@ implementation, so hardware work touches only `caen.py`.
 
 ```bash
 cd server && pip install -e .            # one-time, editable
-python -m daq                            # http://127.0.0.1:8000/
+python -m daq                            # http://127.0.0.1:8800/
 cd server && python tests/test_smoke.py  # hardware-free smoke tests
 cd web && npm install && npm run build   # rebuild UI into server/daq/static
-cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8000
+cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8800
 ```
 
 ## Packaging and install
@@ -179,7 +179,7 @@ re-running the same one-liner.
   remotely.
 - **Updating stops the server first — that is a requirement, not a side effect.**
   Both installers find the running `daq`, refuse (naming the run) if one is
-  recording or if the process cannot be queried on `127.0.0.1:8000`, and
+  recording or if the process cannot be reached at the port it recorded, and
   otherwise stop it and tell the operator to start it again. On Windows this is
   also forced: a running `daq.exe` cannot be replaced at all.
 - The recommended systemd unit is **`Restart=on-failure`, never `always`**.
@@ -193,10 +193,17 @@ re-running the same one-liner.
 - On Linux, `pgrep` matches **zombies**, so a correctly-killed server looks like
   one that refused to die. `daq_pids()` filters on process state; do not
   simplify it back to a bare `pgrep`.
-- The stop check probes the default port only. On a host with a port-forward
-  (the lima dev box forwards 8000) that probe can reach a *different* server
-  than the local process being stopped. It fails safe — unreachable means
-  refuse, not kill — and the runtime file in the launcher work is the real fix.
+- **The installers read `runtime.json` for the pid and port** rather than
+  guessing at the default. Guessing was wrong twice over: the server may be on
+  any port, and on a host with a port-forward (the lima dev box) a probe of the
+  default port reaches a *different machine's* server — which is exactly how a
+  test of mine once started a run on the real board. They confirm the answer
+  carries `app: "dt5742b-daq"`, and fall back to a process scan that refuses
+  rather than kills when there is no usable record.
+- The **default port is 8800**, not 8000. 8000 collides with everything and was
+  inside a Hyper-V reserved range on the Windows box, where it cannot be bound
+  at all. `web/vite.config.ts` proxies to 8800 too — that is dev-server config
+  only, so changing it needs no `static/` rebuild.
 - CI runs `install.ps1` for real on `windows-latest` and `install.sh` on Linux,
   then starts the installed `daq` and fetches the UI and one asset. That is the
   only Windows verification available from a Mac; keep it working.

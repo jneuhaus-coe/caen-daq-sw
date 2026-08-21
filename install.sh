@@ -47,40 +47,71 @@ DAQ_BIN="$TOOL_BIN/daq"
 # An update must not leave the old server serving old code, and on Windows the
 # running executable cannot even be replaced. Refuse rather than kill blind if a
 # run is recording, or if the server is somewhere we cannot ask.
+# Where the running server records its pid and port. Reading it beats guessing:
+# the server may be on any port, and on a host with a port-forward a probe of the
+# default port can reach an entirely different machine's server.
+runtime_file() {
+    if [ -n "${XDG_STATE_HOME:-}" ]; then
+        printf '%s\n' "$XDG_STATE_HOME/dt5742b-daq/runtime.json"
+    else
+        printf '%s\n' "$HOME/.local/state/dt5742b-daq/runtime.json"
+    fi
+}
+
+json_field() {  # json_field <file> <key>  — the record is written one key per line
+    sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",]*\).*/\1/p" "$1" | head -1
+}
+
 # A killed process lingers as a zombie until its parent reaps it, and pgrep
 # matches zombies — so list only pids that are actually alive, or a server that
 # stopped correctly looks like one that refused to.
+alive() {
+    local state
+    state="$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')"
+    case "$state" in "" | Z*) return 1 ;; *) return 0 ;; esac
+}
+
 daq_pids() {
-    local p state
+    local p
     for p in $(pgrep -f "$DAQ_BIN" 2>/dev/null || true); do
-        state="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
-        case "$state" in
-            "" | Z*) ;;                       # exited, or defunct awaiting reap
-            *) printf '%s\n' "$p" ;;
-        esac
+        alive "$p" && printf '%s\n' "$p"
     done
 }
 
 stop_running_server() {
-    local pids status run
-    pids="$(daq_pids | tr '\n' ' ')"
-    [ -n "${pids// /}" ] || return 0
-
-    status="$(curl -fsS --max-time 3 "http://127.0.0.1:8000/api/status" 2>/dev/null || true)"
-    if [ -z "$status" ]; then
-        warn "A daq server is running (pid $pids) but does not answer on 127.0.0.1:8000,"
-        warn "so this installer cannot check whether it is recording."
-        die  "Stop it yourself, then re-run this installer."
-    fi
-    if printf '%s' "$status" | grep -q '"recording"[[:space:]]*:[[:space:]]*true'; then
-        run="$(printf '%s' "$status" | sed -n 's/.*"run_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        warn "A run is recording: ${run:-unknown}"
-        die  "Stop the recording, then re-run this installer."
+    local rf pid port status run pids
+    rf="$(runtime_file)"
+    pid=""; port=""
+    if [ -f "$rf" ]; then
+        pid="$(json_field "$rf" pid)"
+        port="$(json_field "$rf" port)"
     fi
 
-    say "Stopping the running server (pid $pids)"
-    # shellcheck disable=SC2086
-    kill $pids 2>/dev/null || true
+    # The runtime file is a hint: it outlives crashes. Confirm by asking the port.
+    if [ -n "$port" ]; then
+        status="$(curl -fsS --max-time 3 "http://127.0.0.1:$port/api/status" 2>/dev/null || true)"
+        if ! printf '%s' "$status" | grep -q '"app"[[:space:]]*:[[:space:]]*"dt5742b-daq"'; then
+            status=""                     # stale record, or somebody else's server
+        fi
+    fi
+
+    if [ -n "$status" ]; then
+        if printf '%s' "$status" | grep -q '"recording"[[:space:]]*:[[:space:]]*true'; then
+            run="$(printf '%s' "$status" | sed -n 's/.*"run_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+            warn "A run is recording: ${run:-unknown}"
+            die  "Stop the recording, then re-run this installer."
+        fi
+        say "Stopping the running server (pid ${pid:-?} on port $port)"
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    else
+        # No usable record — fall back to finding the process by its path.
+        pids="$(daq_pids | tr '\n' ' ')"
+        [ -n "${pids// /}" ] || return 0
+        warn "A daq server is running (pid $pids) but did not record a port we can"
+        warn "reach, so this installer cannot check whether it is recording."
+        die  "Stop it yourself (daq stop), then re-run this installer."
+    fi
+
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         [ -z "$(daq_pids)" ] && break
         sleep 0.5
@@ -174,11 +205,11 @@ fi
 echo
 printf '%sInstalled:%s %s\n' "$B" "$N" "$($DAQ_BIN --version 2>/dev/null || echo "$PKG")"
 echo
-echo "  daq                    serve on 127.0.0.1:8000 (this machine only)"
+echo "  daq                    open the DAQ (starts the server if needed)"
 echo "  daq --host 0.0.0.0     serve to the network"
 echo "  daq --help             all options"
 echo
-echo "Then open http://127.0.0.1:8000/ — runs are written to ~/daq-runs."
+echo "Runs are written to ~/daq-runs."
 if [ "$RESTART_HINT" -eq 1 ]; then
     echo
     say "The server that was running has been stopped — start it again with the command above."
