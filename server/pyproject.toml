@@ -20,6 +20,12 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+# The smoke tests drive the API through starlette's TestClient, which needs an
+# HTTP client that is NOT a runtime dependency — keep it out of the operator
+# install, which should stay lean.
+[project.optional-dependencies]
+test = ["httpx2"]
+
 [project.urls]
 Homepage = "https://github.com/jneuhaus-coe/caen-daq-sw"
 Source = "https://github.com/jneuhaus-coe/caen-daq-sw"

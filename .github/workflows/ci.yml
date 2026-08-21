@@ -19,7 +19,7 @@ jobs:
       - name: Smoke tests
         run: |
           cd server
-          python -m pip install --quiet -e .
+          python -m pip install --quiet -e ".[test]"
           python tests/test_smoke.py
 
       - name: Build wheel and check the UI is in it

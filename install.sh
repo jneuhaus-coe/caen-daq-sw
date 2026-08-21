@@ -37,7 +37,49 @@ fi
 command -v uv >/dev/null 2>&1 || die "uv installed but is not on PATH; open a new shell and re-run."
 say "uv $(uv --version | awk '{print $2}')"
 
-# --- 2. Work out what to install --------------------------------------------
+# Ask uv where the executable goes rather than trusting PATH: a leftover `daq`
+# from an older pip install shadows the new one and makes an update look like a
+# no-op, which is a miserable thing to debug over the phone.
+TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
+DAQ_BIN="$TOOL_BIN/daq"
+
+# --- 2. Stop a server that is already running --------------------------------
+# An update must not leave the old server serving old code, and on Windows the
+# running executable cannot even be replaced. Refuse rather than kill blind if a
+# run is recording, or if the server is somewhere we cannot ask.
+stop_running_server() {
+    local pids status
+    pids="$(pgrep -f "^[^ ]*python[^ ]* $DAQ_BIN( |$)" 2>/dev/null || pgrep -f "$DAQ_BIN" 2>/dev/null || true)"
+    [ -n "$pids" ] || return 0
+
+    status="$(curl -fsS --max-time 3 "http://127.0.0.1:8000/api/status" 2>/dev/null || true)"
+    if [ -z "$status" ]; then
+        warn "A daq server is running (pid $(echo "$pids" | tr '\n' ' ')) but does not answer"
+        warn "on 127.0.0.1:8000, so this installer cannot check whether it is recording."
+        die  "Stop it yourself, then re-run this installer."
+    fi
+    if printf '%s' "$status" | grep -q '"recording"[[:space:]]*:[[:space:]]*true'; then
+        run="$(printf '%s' "$status" | sed -n 's/.*"run_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        warn "A run is recording: ${run:-unknown}"
+        die  "Stop the recording, then re-run this installer."
+    fi
+
+    say "Stopping the running server (pid $(echo "$pids" | tr '\n' ' '))"
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -f "$DAQ_BIN" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if pgrep -f "$DAQ_BIN" >/dev/null 2>&1; then
+        die "The running daq did not exit. Stop it yourself, then re-run this installer."
+    fi
+    RESTART_HINT=1
+}
+RESTART_HINT=0
+stop_running_server
+
+# --- 3. Work out what to install --------------------------------------------
 GIT_SPEC="$PKG @ git+https://github.com/$REPO#subdirectory=server"
 
 resolve_wheel() {
@@ -69,16 +111,11 @@ else
     fi
 fi
 
-# --- 3. Install --------------------------------------------------------------
+# --- 4. Install --------------------------------------------------------------
 say "Installing $PKG on Python $PYTHON_VERSION"
 uv tool install --python "$PYTHON_VERSION" --force "$SPEC"
 uv tool update-shell >/dev/null 2>&1 || true
 
-# Ask uv where it put the executable rather than trusting PATH: a leftover `daq`
-# from an older pip install shadows the new one and makes an update look like a
-# no-op, which is a miserable thing to debug over the phone.
-TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
-DAQ_BIN="$TOOL_BIN/daq"
 [ -x "$DAQ_BIN" ] || die "install finished but no 'daq' executable was produced in $TOOL_BIN."
 
 ON_PATH="$(command -v daq 2>/dev/null || true)"
@@ -88,7 +125,7 @@ if [ -n "$ON_PATH" ] && [ "$ON_PATH" != "$DAQ_BIN" ]; then
     warn "Remove it (e.g. pip uninstall dt5742b-daq) or put $TOOL_BIN earlier on PATH."
 fi
 
-# --- 4. Preflight: the CAEN stack, which we cannot install for you ------------
+# --- 5. Preflight: the CAEN stack, which we cannot install for you ------------
 say "Checking CAEN prerequisites"
 missing=0
 if ldconfig -p 2>/dev/null | grep -q "libCAENDigitizer" \
@@ -106,7 +143,7 @@ elif [ "$(uname -s)" = "Linux" ]; then
     missing=1
 fi
 
-# --- 5. What to do next ------------------------------------------------------
+# --- 6. What to do next ------------------------------------------------------
 echo
 printf '%sInstalled:%s %s\n' "$B" "$N" "$($DAQ_BIN --version 2>/dev/null || echo "$PKG")"
 echo
@@ -115,6 +152,10 @@ echo "  daq --host 0.0.0.0     serve to the network"
 echo "  daq --help             all options"
 echo
 echo "Then open http://127.0.0.1:8000/ — runs are written to ~/daq-runs."
+if [ "$RESTART_HINT" -eq 1 ]; then
+    echo
+    say "The server that was running has been stopped — start it again with the command above."
+fi
 if [ "$missing" -eq 1 ]; then
     echo
     warn "Install the CAEN items above before the unit will open."

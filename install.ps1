@@ -34,7 +34,45 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 Say "uv $((uv --version) -split ' ' | Select-Object -Index 1)"
 
-# --- 2. Work out what to install --------------------------------------------
+# Ask uv where the executable goes rather than trusting PATH: a leftover `daq`
+# from an older pip install shadows the new one and makes an update look like a
+# no-op, which is a miserable thing to debug over the phone.
+$toolBin = (uv tool dir --bin 2>$null)
+if (-not $toolBin) { $toolBin = "$env:USERPROFILE\.local\bin" }
+$daqBin = Join-Path $toolBin 'daq.exe'
+
+# --- 2. Stop a server that is already running --------------------------------
+# Windows will not let a running executable be replaced, so an update simply
+# fails if the server is still up. Refuse rather than kill blind when a run is
+# recording, or when the server is somewhere we cannot ask.
+$restartHint = $false
+$running = @(Get-Process -Name daq -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0) {
+    $pids = ($running | ForEach-Object { $_.Id }) -join ', '
+    $status = $null
+    try { $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/status' -TimeoutSec 3 } catch { }
+    if (-not $status) {
+        Warn "A daq server is running (pid $pids) but does not answer on 127.0.0.1:8000,"
+        Warn 'so this installer cannot check whether it is recording.'
+        Die  'Stop it yourself, then re-run this installer.'
+    }
+    if ($status.recording) {
+        Warn "A run is recording: $($status.run_id)"
+        Die  'Stop the recording, then re-run this installer.'
+    }
+    Say "Stopping the running server (pid $pids)"
+    $running | Stop-Process -Force
+    foreach ($i in 1..10) {
+        Start-Sleep -Milliseconds 500
+        if (-not (Get-Process -Name daq -ErrorAction SilentlyContinue)) { break }
+    }
+    if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
+        Die 'The running daq did not exit. Stop it yourself, then re-run this installer.'
+    }
+    $restartHint = $true
+}
+
+# --- 3. Work out what to install --------------------------------------------
 $GitSpec = "$Pkg @ git+https://github.com/$Repo#subdirectory=server"
 
 function Resolve-Wheel {
@@ -69,18 +107,12 @@ if ($Version -eq 'source') {
     }
 }
 
-# --- 3. Install --------------------------------------------------------------
+# --- 4. Install --------------------------------------------------------------
 Say "Installing $Pkg on Python $PyVer"
 uv tool install --python $PyVer --force $Spec
 if ($LASTEXITCODE -ne 0) { Die 'uv tool install failed.' }
 uv tool update-shell 2>$null | Out-Null
 
-# Ask uv where it put the executable rather than trusting PATH: a leftover `daq`
-# from an older pip install shadows the new one and makes an update look like a
-# no-op, which is a miserable thing to debug over the phone.
-$toolBin = (uv tool dir --bin 2>$null)
-if (-not $toolBin) { $toolBin = "$env:USERPROFILE\.local\bin" }
-$daqBin = Join-Path $toolBin 'daq.exe'
 if (-not (Test-Path $daqBin)) { Die "install finished but no daq.exe was produced in $toolBin." }
 
 $onPath = (Get-Command daq -ErrorAction SilentlyContinue).Source
@@ -90,7 +122,7 @@ if ($onPath -and $onPath -ne $daqBin) {
     Warn "Remove it, or put $toolBin earlier on PATH."
 }
 
-# --- 4. Preflight: the CAEN stack, which we cannot install for you ------------
+# --- 5. Preflight: the CAEN stack, which we cannot install for you ------------
 Say 'Checking CAEN prerequisites'
 $missing = $false
 
@@ -140,7 +172,7 @@ if ($dll) {
     $missing = $true
 }
 
-# --- 5. What to do next ------------------------------------------------------
+# --- 6. What to do next ------------------------------------------------------
 $ver = try { & $daqBin --version 2>$null } catch { $Pkg }
 if (-not $ver) { $ver = $Pkg }
 Write-Host ''
@@ -151,6 +183,10 @@ Write-Host '  daq --host 0.0.0.0     serve to the network'
 Write-Host '  daq --help             all options'
 Write-Host ''
 Write-Host 'Then open http://127.0.0.1:8000/ - runs are written to %USERPROFILE%\daq-runs.'
+if ($restartHint) {
+    Write-Host ''
+    Say 'The server that was running has been stopped - start it again with the command above.'
+}
 if ($missing) {
     Write-Host ''
     Warn 'Install the CAEN items above before the unit will open.'

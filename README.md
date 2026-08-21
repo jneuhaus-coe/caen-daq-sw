@@ -4,6 +4,136 @@ Data acquisition for the CAEN **DT5742B** digitizer — 16+1 channels, 12-bit,
 up to 5 GS/s, 1024 samples per event. The server owns the board; you drive it
 from a browser.
 
+Already installed? Skip to **[Taking a shift](#taking-a-shift)**.
+
+---
+
+# Install
+
+## 1. CAEN Drivers
+
+CAEN's own software is account-gated and cannot be installed by this repo, so that part
+must come first.
+
+**Windows** — install CAEN's bundle (CAENDigitizer, CAENComm, CAENVMELib) and
+the Windows USB driver for the DT5xxx. Confirm Device Manager shows the
+digitizer with no warning triangle before going any further.
+
+**Linux** — the same three libraries, the `CAENUSBdrvB` kernel module, and a
+udev rule for non-root access.
+
+> `CAENUSBdrvB` is an out-of-tree module built against one kernel version. **A
+> kernel upgrade leaves it unloadable**, which shows up as the unit failing to
+> open. Install it with `dkms` so it rebuilds itself, or pin the kernel.
+
+## 2. The DAQ
+
+**Windows** — in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
+```
+
+**Linux**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
+```
+
+This fetches the newest release along with its own private Python, so a
+32-bit/64-bit driver library mismatch cannot happen. It finishes by checking for the
+CAEN libraries and naming anything that is missing.
+
+Open a new terminal afterwards so `daq` is on your PATH, then:
+
+```
+daq                    serve on 127.0.0.1:8000 (this machine only)
+daq --host 0.0.0.0     serve to the network
+daq --help             all options
+```
+
+Open `http://<daq-host>:8000/`. Runs are written to `%USERPROFILE%\daq-runs` on
+Windows and `~/daq-runs` on Linux; set `DAQ_DATA_DIR` to move them.
+
+If the installer warns that a different `daq` comes first on your PATH, deal with
+it — that older copy is what will actually run, and every future update will look
+like it silently did nothing.
+
+To install a specific version rather than the newest, set `DAQ_VERSION` to a tag
+(`v0.1.0`) — or to `source` to build from the tip of `main` — before running the
+one-liner.
+
+## Keeping it running
+
+**Windows** — simplest is a `.bat` on the desktop:
+
+```bat
+@echo off
+"%USERPROFILE%\.local\bin\daq.exe" --host 0.0.0.0
+```
+
+To have it start on boot and restart itself, point [NSSM](https://nssm.cc/) at
+that same `daq.exe` with arguments `--host 0.0.0.0`. Task Scheduler ("At
+startup", "Run whether user is logged on or not") also works and needs nothing
+extra installed.
+
+**Linux** — as a user service:
+
+```ini
+# /etc/systemd/system/daq.service
+[Unit]
+Description=DT5742B DAQ server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=<you>
+ExecStart=/home/<you>/.local/bin/daq --host 0.0.0.0
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now daq
+journalctl -u daq -f          # logs
+```
+
+Restarting the server does not disturb the digitizer — it keeps its settings,
+and they are read back on the next connect.
+
+## If the unit will not open
+
+- **Windows** — check Device Manager shows the digitizer without a warning
+  triangle, and that the CAEN library `bin` directory is on `PATH`; that is how
+  `CAENDigitizer.dll` gets found. Re-running the installer re-checks both and
+  reports what it finds, including whether the DLL is 32- or 64-bit.
+- **Linux** — `lsmod | grep CAENUSBdrvB`. `OpenDigitizer` returning `-1` while
+  `lsusb` shows the board means the USB driver is missing or unloadable.
+
+---
+
+# Updating
+
+Run install command — it will stop the server first, then replace the installed
+version.
+
+```powershell
+irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
+```
+
+It will refuse while a run is recording. **Your recorded runs are
+untouched** — they live in your data directory, not anywhere the
+installer writes.
+
+Afterwards, **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new UI.
+
 ---
 
 # Taking a shift
@@ -102,144 +232,10 @@ check the USB cable, then see [Install](#install).
 Check the indicator is red and counting. **Start** only watches; **Record**
 writes.
 
----
-
-# Install
-
-**Live runs are on Windows.** Linux notes are inline below.
-
-Installing is one command — but CAEN's own software is account-gated and cannot
-be installed for you, so that part comes first.
-
-## 1. CAEN's software, once, by hand
-
-**Windows** — install CAEN's bundle (CAENDigitizer, CAENComm, CAENVMELib) and
-the Windows USB driver for the DT5xxx. Confirm Device Manager shows the
-digitizer with no warning triangle before going any further.
-
-**Linux** — the same three libraries, the `CAENUSBdrvB` kernel module, and a
-udev rule for non-root access.
-
-> `CAENUSBdrvB` is an out-of-tree module built against one kernel version. **A
-> kernel upgrade leaves it unloadable**, which shows up as the unit failing to
-> open. Install it with `dkms` so it rebuilds itself, or pin the kernel.
-
-## 2. The DAQ
-
-**Windows** — in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
-```
-
-**Linux**:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
-```
-
-That is the whole install. It needs no Python, no Node and no Git on the
-machine: it fetches the newest release along with its own private Python, so the
-32-bit/64-bit mismatch that used to be the most common failure here cannot
-happen. It finishes by checking for the CAEN libraries and naming anything that
-is missing.
-
-Open a new terminal afterwards so `daq` is on your PATH, then:
-
-```
-daq                    serve on 127.0.0.1:8000 (this machine only)
-daq --host 0.0.0.0     serve to the network
-daq --help             all options
-```
-
-Open `http://<daq-host>:8000/`. Runs are written to `%USERPROFILE%\daq-runs` on
-Windows and `~/daq-runs` on Linux; set `DAQ_DATA_DIR` to move them.
-
-To install a specific version rather than the newest, set `DAQ_VERSION` to a tag
-(`v0.1.0`) — or to `source` to build from the tip of `main` — before running the
-one-liner.
-
-## Keeping it running
-
-**Windows** — simplest is a `.bat` on the desktop:
-
-```bat
-@echo off
-"%USERPROFILE%\.local\bin\daq.exe" --host 0.0.0.0
-```
-
-To have it start on boot and restart itself, point [NSSM](https://nssm.cc/) at
-that same `daq.exe` with arguments `--host 0.0.0.0`. Task Scheduler ("At
-startup", "Run whether user is logged on or not") also works and needs nothing
-extra installed.
-
-**Linux** — as a user service:
-
-```ini
-# /etc/systemd/system/daq.service
-[Unit]
-Description=DT5742B DAQ server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=<you>
-ExecStart=/home/<you>/.local/bin/daq --host 0.0.0.0
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable --now daq
-journalctl -u daq -f          # logs
-```
-
-Restarting the server does not disturb the digitizer — it keeps its settings,
-and they are read back on the next connect.
-
-## If the unit will not open
-
-- **Windows** — check Device Manager shows the digitizer without a warning
-  triangle, and that the CAEN library `bin` directory is on `PATH`; that is how
-  `CAENDigitizer.dll` gets found. Re-running the installer re-checks both and
-  reports what it finds, including whether the DLL is 32- or 64-bit.
-- **Linux** — `lsmod | grep CAENUSBdrvB`. `OpenDigitizer` returning `-1` while
-  `lsusb` shows the board means the USB driver is missing or unloadable.
-
----
-
-# Updating
-
-Run the same one-liner again. It replaces the installed version in place.
-
-```powershell
-irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
-```
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
-```
-
-Then restart the server, and **hard-refresh the browser** (Ctrl-Shift-R) so it
-picks up the new UI. `daq --version` tells you what you are running — worth
-quoting in any bug report.
-
-Things worth knowing across an update:
-
-- **Your settings are not in the install.** They live on the digitizer itself and
-  are read back when the server opens it, so an update cannot lose them.
-- **Recorded runs are untouched** — they are under your data directory, not
-  anywhere the installer writes.
-- If the installer warns that a different `daq` comes first on your PATH, deal
-  with it: that older copy is what will actually run, and the update will look
-  like it silently did nothing.
-
-To report a problem from a distance, send `daq --version`, the **Errors** panel
-contents, what the badge says, and the server log — the console window on
-Windows, or `journalctl -u daq -n 100` on Linux.
+**Reporting a problem from a distance.**
+Send `daq --version`, the **Errors** panel contents, what the badge says, and
+the server log — the console window on Windows, or `journalctl -u daq -n 100`
+on Linux.
 
 ---
 
@@ -249,7 +245,7 @@ Windows, or `journalctl -u daq -n 100` on Linux.
 git clone https://github.com/jneuhaus-coe/caen-daq-sw.git
 cd caen-daq-sw
 
-cd server && pip install -e .        # editable install
+cd server && pip install -e ".[test]"   # editable install + test deps
 python -m daq                        # http://127.0.0.1:8000/
 python tests/test_smoke.py           # hardware-free smoke tests
 
