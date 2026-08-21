@@ -72,10 +72,13 @@ one-liner.
 "%USERPROFILE%\.local\bin\daq.exe" --host 0.0.0.0
 ```
 
-To have it start on boot and restart itself, point [NSSM](https://nssm.cc/) at
-that same `daq.exe` with arguments `--host 0.0.0.0`. Task Scheduler ("At
-startup", "Run whether user is logged on or not") also works and needs nothing
-extra installed.
+To have it start on boot, use Task Scheduler ("At startup", "Run whether user is
+logged on or not") — it needs nothing extra installed. [NSSM](https://nssm.cc/)
+works too; point it at that same `daq.exe` with arguments `--host 0.0.0.0`.
+
+If you register it either way, **stop it before updating**. Windows will not let
+a running `daq.exe` be replaced, so the installer stops with an error rather than
+half-updating.
 
 **Linux** — as a user service:
 
@@ -89,7 +92,11 @@ Wants=network-online.target
 [Service]
 User=<you>
 ExecStart=/home/<you>/.local/bin/daq --host 0.0.0.0
-Restart=always
+# on-failure, not always: it still recovers from a crash, but a deliberate
+# shutdown stays down. `always` would fight the installer, which stops the
+# server to update it — systemd would restart it mid-update and leave you
+# running the old code with nothing to show that it happened.
+Restart=on-failure
 RestartSec=3
 
 [Install]
@@ -102,7 +109,9 @@ journalctl -u daq -f          # logs
 ```
 
 Restarting the server does not disturb the digitizer — it keeps its settings,
-and they are read back on the next connect.
+and they are read back on the next connect. Auto-restart cannot rescue a
+recording, though: the run is already truncated by the time the server comes
+back, and it does not resume on its own.
 
 ## If the unit will not open
 

@@ -69,6 +69,17 @@ if ($running.Count -gt 0) {
     if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
         Die 'The running daq did not exit. Stop it yourself, then re-run this installer.'
     }
+
+    # A service manager set to restart unconditionally brings it straight back,
+    # and the install then fails against a locked daq.exe. Say what is actually
+    # happening instead of leaving a file-in-use error to be deciphered.
+    Start-Sleep -Seconds 4
+    if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
+        Warn 'The server came back on its own - something is restarting it.'
+        Warn 'Stop the service (Task Scheduler task, or NSSM/Windows service) for'
+        Warn 'the update, then re-run this installer.'
+        Die  'Refusing to update underneath a server that keeps restarting.'
+    }
     $restartHint = $true
 }
 

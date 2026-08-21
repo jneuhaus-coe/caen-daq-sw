@@ -177,6 +177,26 @@ re-running the same one-liner.
   than `command -v daq`, and warn when a different `daq` shadows it on PATH — a
   stale copy makes an update look like a no-op, which is horrible to debug
   remotely.
+- **Updating stops the server first — that is a requirement, not a side effect.**
+  Both installers find the running `daq`, refuse (naming the run) if one is
+  recording or if the process cannot be queried on `127.0.0.1:8000`, and
+  otherwise stop it and tell the operator to start it again. On Windows this is
+  also forced: a running `daq.exe` cannot be replaced at all.
+- The recommended systemd unit is **`Restart=on-failure`, never `always`**.
+  systemd counts SIGTERM as a clean exit, so `on-failure` still recovers from a
+  crash while letting a deliberate shutdown stay down. With `always` systemd
+  restarts the server mid-update, and because Linux replaces a running binary
+  happily, the update finishes with the OLD code serving and nothing to show it.
+  Both installers wait past a typical `RestartSec` and refuse loudly if the
+  server reappears. Auto-restart cannot rescue a recording anyway — the run is
+  already truncated and does not resume.
+- On Linux, `pgrep` matches **zombies**, so a correctly-killed server looks like
+  one that refused to die. `daq_pids()` filters on process state; do not
+  simplify it back to a bare `pgrep`.
+- The stop check probes the default port only. On a host with a port-forward
+  (the lima dev box forwards 8000) that probe can reach a *different* server
+  than the local process being stopped. It fails safe — unreachable means
+  refuse, not kill — and the runtime file in the launcher work is the real fix.
 - CI runs `install.ps1` for real on `windows-latest` and `install.sh` on Linux,
   then starts the installed `daq` and fetches the UI and one asset. That is the
   only Windows verification available from a Mac; keep it working.

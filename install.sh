@@ -47,15 +47,29 @@ DAQ_BIN="$TOOL_BIN/daq"
 # An update must not leave the old server serving old code, and on Windows the
 # running executable cannot even be replaced. Refuse rather than kill blind if a
 # run is recording, or if the server is somewhere we cannot ask.
+# A killed process lingers as a zombie until its parent reaps it, and pgrep
+# matches zombies — so list only pids that are actually alive, or a server that
+# stopped correctly looks like one that refused to.
+daq_pids() {
+    local p state
+    for p in $(pgrep -f "$DAQ_BIN" 2>/dev/null || true); do
+        state="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
+        case "$state" in
+            "" | Z*) ;;                       # exited, or defunct awaiting reap
+            *) printf '%s\n' "$p" ;;
+        esac
+    done
+}
+
 stop_running_server() {
-    local pids status
-    pids="$(pgrep -f "^[^ ]*python[^ ]* $DAQ_BIN( |$)" 2>/dev/null || pgrep -f "$DAQ_BIN" 2>/dev/null || true)"
-    [ -n "$pids" ] || return 0
+    local pids status run
+    pids="$(daq_pids | tr '\n' ' ')"
+    [ -n "${pids// /}" ] || return 0
 
     status="$(curl -fsS --max-time 3 "http://127.0.0.1:8000/api/status" 2>/dev/null || true)"
     if [ -z "$status" ]; then
-        warn "A daq server is running (pid $(echo "$pids" | tr '\n' ' ')) but does not answer"
-        warn "on 127.0.0.1:8000, so this installer cannot check whether it is recording."
+        warn "A daq server is running (pid $pids) but does not answer on 127.0.0.1:8000,"
+        warn "so this installer cannot check whether it is recording."
         die  "Stop it yourself, then re-run this installer."
     fi
     if printf '%s' "$status" | grep -q '"recording"[[:space:]]*:[[:space:]]*true'; then
@@ -64,15 +78,28 @@ stop_running_server() {
         die  "Stop the recording, then re-run this installer."
     fi
 
-    say "Stopping the running server (pid $(echo "$pids" | tr '\n' ' '))"
+    say "Stopping the running server (pid $pids)"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-        pgrep -f "$DAQ_BIN" >/dev/null 2>&1 || break
+        [ -z "$(daq_pids)" ] && break
         sleep 0.5
     done
-    if pgrep -f "$DAQ_BIN" >/dev/null 2>&1; then
+    if [ -n "$(daq_pids)" ]; then
         die "The running daq did not exit. Stop it yourself, then re-run this installer."
+    fi
+
+    # A service manager set to restart unconditionally brings it straight back,
+    # and on Linux replacing a running binary succeeds silently — so the update
+    # would finish with the OLD code serving and nothing to show for it. Wait
+    # past a typical RestartSec and make that case loud instead.
+    sleep 4
+    if [ -n "$(daq_pids)" ]; then
+        warn "The server came back on its own — something is restarting it."
+        warn "If it is a systemd unit, set 'Restart=on-failure' (not 'always') so a"
+        warn "deliberate shutdown stays down, or stop the unit for the update:"
+        warn "    sudo systemctl stop daq"
+        die  "Refusing to update underneath a server that keeps restarting."
     fi
     RESTART_HINT=1
 }
