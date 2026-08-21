@@ -268,13 +268,15 @@ CI rebuilds it from `web/src` for releases either way.
 
 ## Cutting a release
 
-1. Bump `__version__` in `server/daq/__init__.py`. It is the single source of
-   truth; `pyproject.toml` reads it.
-2. Tag it and push the tag:
+```bash
+./release.sh 0.2.0     # set the version, commit it, tag it, push
+./release.sh           # tag and push whatever version is already set
+```
 
-   ```bash
-   git tag v0.2.0 && git push origin v0.2.0
-   ```
+`__version__` in `server/daq/__init__.py` is the single source of truth —
+`pyproject.toml` reads it, and the tag is always `v$__version__`. `release.sh`
+is what knows that, so nothing has to be kept in step by hand. It refuses on a
+dirty tree, off `main`, or if the tag already exists.
 
 The `Release` workflow builds the UI from source, builds the wheel, and refuses
 to publish unless the tag matches `__version__` and the wheel actually contains
