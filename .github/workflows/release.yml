@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # One source of truth for the tag, so a tag push and a manual re-run of an
+      # existing tag build and label the release identically.
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Build the UI from source rather than trusting the committed bundle, so a
+      # release can never ship a static/ that lags web/src.
+      - name: Build web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build
+          cd server
+          python -m build
+
+      # daq/static is not an importable package, so setuptools will silently drop
+      # it if package-data is ever broken. That failure looks like a blank page in
+      # the browser, not a build error, so assert it here instead.
+      - name: Verify the UI is inside the wheel
+        run: |
+          python - <<'EOF'
+          import glob, sys, zipfile
+          wheel = sorted(glob.glob("server/dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          static = [n for n in names if "/static/" in n]
+          print(f"{wheel}: {len(static)} static entries")
+          for n in static:
+              print("   ", n)
+          if not any(n.endswith("daq/static/index.html") for n in names):
+              sys.exit("FAIL: daq/static/index.html is missing from the wheel")
+          if not any(n.endswith(".js") for n in static):
+              sys.exit("FAIL: no JS bundle in the wheel")
+          print("OK: UI is present in the wheel")
+          EOF
+
+      - name: Verify the tag matches the package version
+        run: |
+          VER=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"',pathlib.Path('server/daq/__init__.py').read_text()).group(1))")
+          echo "tag=$TAG  daq.__version__=$VER"
+          if [ "$TAG" != "v$VER" ]; then
+            echo "FAIL: tag $TAG does not match version $VER (expected tag v$VER)."
+            echo "Bump __version__ in server/daq/__init__.py, or retag."
+            exit 1
+          fi
+
+      - name: Smoke test the built wheel
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --quiet server/dist/*.whl
+          /tmp/v/bin/daq --version
+          /tmp/v/bin/daq --no-open --port 8123 &
+          for i in $(seq 1 60); do sleep 0.5; curl -sf -o /dev/null http://127.0.0.1:8123/ && break; done
+          curl -fsS -o /dev/null -w 'index %{http_code}\n' http://127.0.0.1:8123/
+          ASSET=$(curl -s http://127.0.0.1:8123/ | grep -o '/assets/[^"]*\.js' | head -1)
+          test -n "$ASSET" || { echo "FAIL: index.html references no JS bundle"; exit 1; }
+          curl -fsS -o /dev/null -w "asset %{http_code} $ASSET\n" "http://127.0.0.1:8123$ASSET"
+          curl -fsS -o /dev/null -w 'api %{http_code}\n' http://127.0.0.1:8123/api/status
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          generate_release_notes: true
+          files: |
+            server/dist/*.whl
+            server/dist/*.tar.gz
+            install.sh
+            install.ps1

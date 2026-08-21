@@ -106,83 +106,74 @@ writes.
 
 # Install
 
-**Live runs are on Windows.** Linux notes follow the Windows section.
+**Live runs are on Windows.** Linux notes are inline below.
 
-The web UI is prebuilt and committed, so the DAQ machine needs **no Node.js**.
+Installing is one command — but CAEN's own software is account-gated and cannot
+be installed for you, so that part comes first.
 
-## Windows
+## 1. CAEN's software, once, by hand
 
-**Prerequisites**
+**Windows** — install CAEN's bundle (CAENDigitizer, CAENComm, CAENVMELib) and
+the Windows USB driver for the DT5xxx. Confirm Device Manager shows the
+digitizer with no warning triangle before going any further.
 
-- CAEN digitizer libraries: CAENDigitizer, CAENComm, CAENVMELib
-- CAEN's Windows USB driver for the DT5xxx
-- Python 3.11+ (64-bit)
-- Git
+**Linux** — the same three libraries, the `CAENUSBdrvB` kernel module, and a
+udev rule for non-root access.
 
-Install CAEN's software bundle first and confirm Windows sees the digitizer in
-Device Manager before going further.
+> `CAENUSBdrvB` is an out-of-tree module built against one kernel version. **A
+> kernel upgrade leaves it unloadable**, which shows up as the unit failing to
+> open. Install it with `dkms` so it rebuilds itself, or pin the kernel.
 
-> **Bitness has to match.** 64-bit Python cannot load 32-bit CAEN DLLs or the
-> reverse, and the error it gives is unhelpful. Use 64-bit for both.
+## 2. The DAQ
+
+**Windows** — in PowerShell:
 
 ```powershell
-git clone git@github-coe:jneuhaus-coe/caen-daq-sw.git
-cd caen-daq-sw\server
-py -m pip install -e .
-py -m daq --host 0.0.0.0
+irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
 ```
 
-Then open `http://<host>:8000/`.
+**Linux**:
 
-Runs are written to `%USERPROFILE%\daq-runs`. Set `DAQ_DATA_DIR` to move them.
+```bash
+curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
+```
 
-### Keeping it running
+That is the whole install. It needs no Python, no Node and no Git on the
+machine: it fetches the newest release along with its own private Python, so the
+32-bit/64-bit mismatch that used to be the most common failure here cannot
+happen. It finishes by checking for the CAEN libraries and naming anything that
+is missing.
 
-Simplest is a shortcut or a `.bat` on the desktop:
+Open a new terminal afterwards so `daq` is on your PATH, then:
+
+```
+daq                    serve on 127.0.0.1:8000 (this machine only)
+daq --host 0.0.0.0     serve to the network
+daq --help             all options
+```
+
+Open `http://<daq-host>:8000/`. Runs are written to `%USERPROFILE%\daq-runs` on
+Windows and `~/daq-runs` on Linux; set `DAQ_DATA_DIR` to move them.
+
+To install a specific version rather than the newest, set `DAQ_VERSION` to a tag
+(`v0.1.0`) — or to `source` to build from the tip of `main` — before running the
+one-liner.
+
+## Keeping it running
+
+**Windows** — simplest is a `.bat` on the desktop:
 
 ```bat
 @echo off
-cd /d C:\caen-daq-sw\server
-py -m daq --host 0.0.0.0
+"%USERPROFILE%\.local\bin\daq.exe" --host 0.0.0.0
 ```
 
-To have it start on boot and restart itself, register it as a service with
-[NSSM](https://nssm.cc/): point it at your `python.exe`, with arguments
-`-m daq --host 0.0.0.0` and *Startup directory* set to the `server` folder.
-Task Scheduler ("At startup", "Run whether user is logged on or not") also
-works and needs nothing extra installed.
+To have it start on boot and restart itself, point [NSSM](https://nssm.cc/) at
+that same `daq.exe` with arguments `--host 0.0.0.0`. Task Scheduler ("At
+startup", "Run whether user is logged on or not") also works and needs nothing
+extra installed.
 
-### If the unit will not open on Windows
-
-- Check Device Manager shows the digitizer with no warning triangle.
-- Make sure the CAEN library `bin` directory is on `PATH` — that is how
-  `CAENDigitizer.dll` gets found.
-- Confirm Python is 64-bit: `py -c "import struct; print(struct.calcsize('P')*8)"`
-  should print `64`.
-
-## Linux
-
-**Prerequisites**
-
-- CAENDigitizer, CAENComm, CAENVMELib
-- CAEN USB kernel driver (`CAENUSBdrvB`)
-- udev rule for non-root access
-- Python 3.11+
-
-```bash
-git clone git@github-coe:jneuhaus-coe/caen-daq-sw.git
-cd caen-daq-sw/server
-pip install -e .
-python -m daq --host 0.0.0.0
-```
-
-Runs are written to `~/daq-runs`.
-
-`CAENUSBdrvB` is an out-of-tree module built against one kernel version. **A
-kernel upgrade leaves it unloadable**, which shows up as the unit failing to
-open. Install it with `dkms` so it rebuilds itself, or pin the kernel.
-
-To run it as a service:
+**Linux** — as a user service:
 
 ```ini
 # /etc/systemd/system/daq.service
@@ -193,10 +184,7 @@ Wants=network-online.target
 
 [Service]
 User=<you>
-# Use the interpreter you ran `pip install -e .` with. If that was a virtualenv,
-# point at its python — /usr/bin/python3 will not have the package.
-ExecStart=/usr/bin/python3 -m daq --host 0.0.0.0
-WorkingDirectory=/opt/caen-daq-sw/server
+ExecStart=/home/<you>/.local/bin/daq --host 0.0.0.0
 Restart=always
 RestartSec=3
 
@@ -209,59 +197,58 @@ sudo systemctl enable --now daq
 journalctl -u daq -f          # logs
 ```
 
-## Options
-
-`--host 0.0.0.0` serves to the network; drop it to keep it on the machine only.
-`--port` changes the port. `--no-open` skips opening the board at startup.
-
 Restarting the server does not disturb the digitizer — it keeps its settings,
 and they are read back on the next connect.
+
+## If the unit will not open
+
+- **Windows** — check Device Manager shows the digitizer without a warning
+  triangle, and that the CAEN library `bin` directory is on `PATH`; that is how
+  `CAENDigitizer.dll` gets found. Re-running the installer re-checks both and
+  reports what it finds, including whether the DLL is 32- or 64-bit.
+- **Linux** — `lsmod | grep CAENUSBdrvB`. `OpenDigitizer` returning `-1` while
+  `lsusb` shows the board means the USB driver is missing or unloadable.
 
 ---
 
 # Updating
 
-**Windows**
+Run the same one-liner again. It replaces the installed version in place.
 
 ```powershell
-cd C:\caen-daq-sw
-git pull
-py -m pip install -e .\server     # only if dependencies changed
+irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
 ```
-
-Then restart the server: close the window and re-run the shortcut, or
-`Restart-Service` / restart the Task Scheduler task if you registered one.
-
-**Linux**
 
 ```bash
-cd caen-daq-sw
-git pull
-pip install -e ./server
-sudo systemctl restart daq
+curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
 ```
 
-Then **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new UI.
+Then restart the server, and **hard-refresh the browser** (Ctrl-Shift-R) so it
+picks up the new UI. `daq --version` tells you what you are running — worth
+quoting in any bug report.
 
 Things worth knowing across an update:
 
-- **Your settings are not in the repo.** They live on the digitizer itself and
+- **Your settings are not in the install.** They live on the digitizer itself and
   are read back when the server opens it, so an update cannot lose them.
-- **Recorded runs are not in the repo either** — they are under your data
-  directory and are untouched by `git pull`.
-- The UI bundle is committed, so `git pull` is enough; nothing needs building.
-- If `git pull` reports a conflict in `server/daq/static/`, take the incoming
-  version (`git checkout --theirs server/daq/static`) — it is generated output.
+- **Recorded runs are untouched** — they are under your data directory, not
+  anywhere the installer writes.
+- If the installer warns that a different `daq` comes first on your PATH, deal
+  with it: that older copy is what will actually run, and the update will look
+  like it silently did nothing.
 
-To report a problem from a distance, send the **Errors** panel contents, what
-the badge says, and the server log — the console window on Windows, or
-`journalctl -u daq -n 100` on Linux.
+To report a problem from a distance, send `daq --version`, the **Errors** panel
+contents, what the badge says, and the server log — the console window on
+Windows, or `journalctl -u daq -n 100` on Linux.
 
 ---
 
 # For developers
 
 ```bash
+git clone https://github.com/jneuhaus-coe/caen-daq-sw.git
+cd caen-daq-sw
+
 cd server && pip install -e .        # editable install
 python -m daq                        # http://127.0.0.1:8000/
 python tests/test_smoke.py           # hardware-free smoke tests
@@ -271,7 +258,28 @@ npm run dev                          # UI hot-reload, proxies API/WS to :8000
 npm run build                        # rebuild the bundle into server/daq/static
 ```
 
-Commit the rebuilt `server/daq/static/` — that is what deployments get.
+Commit the rebuilt `server/daq/static/` — it is what a source install gets, and
+CI rebuilds it from `web/src` for releases either way.
+
+## Cutting a release
+
+1. Bump `__version__` in `server/daq/__init__.py`. It is the single source of
+   truth; `pyproject.toml` reads it.
+2. Tag it and push the tag:
+
+   ```bash
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+
+The `Release` workflow builds the UI from source, builds the wheel, and refuses
+to publish unless the tag matches `__version__` and the wheel actually contains
+`daq/static/index.html`. It then attaches the wheel, the sdist and both install
+scripts to the release, which is what the one-liners download.
+
+`daq/static/` is not an importable package, so setuptools will drop it from the
+wheel if `[tool.setuptools.package-data]` is ever broken — and the symptom is a
+blank page rather than a build error. Both CI and the release workflow assert it
+is there; leave those checks in place.
 
 ## Architecture
 
@@ -327,4 +335,5 @@ actually lands, and the recorded file layout byte-for-byte against WaveDump.
 - [ ] Verify against a pulser: waveforms, trigger position, file layout
 - [ ] Write the x742 TR traces (`TR_*` files) — currently skipped
 - [ ] ROOT / HDF5 writers behind the existing `Writer` interface
-- [ ] Packaging for Windows
+- [x] One-command install on Windows and Linux, published as a GitHub release
+- [ ] Launcher: `daq` opens the UI and attaches to an already-running server, with a tray icon

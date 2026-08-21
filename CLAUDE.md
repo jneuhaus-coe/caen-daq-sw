@@ -154,6 +154,33 @@ cd web && npm install && npm run build   # rebuild UI into server/daq/static
 cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8000
 ```
 
+## Packaging and install
+
+Operators install with a one-liner (`install.sh` / `install.ps1` at the repo
+root) that installs **uv**, which brings its own pinned 64-bit CPython and then
+installs the release wheel as a uv tool. Bringing the interpreter along is the
+point: it makes the Python/CAEN-DLL bitness mismatch impossible. Updating is
+re-running the same one-liner.
+
+- **`daq/static/` is not an importable package**, so `packages.find` cannot see
+  it and setuptools silently drops the UI from the wheel unless
+  `[tool.setuptools.package-data]` names it. The symptom is a blank page, not a
+  build error. Both workflows assert `daq/static/index.html` is inside the built
+  wheel — leave those assertions alone.
+- **`__version__` in `daq/__init__.py` is the single source of truth.**
+  `pyproject.toml` reads it via `[tool.setuptools.dynamic]`, and the release
+  workflow refuses to publish if the git tag is not `v$__version__`.
+- Releases are tag-driven: push `vX.Y.Z`, the workflow builds the UI from
+  `web/src`, builds wheel + sdist, smoke-tests the wheel, and attaches the
+  artifacts plus both install scripts. The one-liners download from there.
+- The installers resolve the installed binary with `uv tool dir --bin` rather
+  than `command -v daq`, and warn when a different `daq` shadows it on PATH — a
+  stale copy makes an update look like a no-op, which is horrible to debug
+  remotely.
+- CI runs `install.ps1` for real on `windows-latest` and `install.sh` on Linux,
+  then starts the installed `daq` and fetches the UI and one asset. That is the
+  only Windows verification available from a Mac; keep it working.
+
 Run the server on the machine physically attached to the board.
 
 **`server/daq/static/` is committed on purpose.** Deployments update by
@@ -244,4 +271,14 @@ downloaded or deleted.
 
 Verify against a pulser (waveforms, trigger position, byte-compare a run against
 WaveDump) · write the x742 TR traces · ROOT/HDF5 writers behind `Writer` ·
-in-app help · client/server over a real socket · Windows packaging.
+in-app help · client/server over a real socket.
+
+**Next, decided but not built:** the server becomes the durable thing and a
+browser window is just a view. `daq` reads a runtime file (pid/port/version),
+probes `/api/status`, and *attaches* to a live server rather than starting a
+second one or killing it; only if nothing answers does it start server+tray.
+The tray icon carries the status (grey/green/red-while-recording) and owns the
+only Quit, which confirms solely when a run is recording. `daq --serve` keeps
+the headless lima/systemd mode with no tray and no self-exit. This removes the
+need for session tokens, `beforeunload` and close grace periods entirely —
+closing a window can never affect a run.

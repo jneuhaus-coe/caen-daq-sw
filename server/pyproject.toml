@@ -1,13 +1,29 @@
 [project]
 name = "dt5742b-daq"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Dead-simple, fast, bulletproof DAQ for the CAEN DT5742B"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "John Neuhaus", email = "jneuhaus@coe.edu" }]
+keywords = ["daq", "caen", "dt5742b", "drs4", "digitizer", "physics"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "numpy>=1.26",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jneuhaus-coe/caen-daq-sw"
+Source = "https://github.com/jneuhaus-coe/caen-daq-sw"
+Issues = "https://github.com/jneuhaus-coe/caen-daq-sw/issues"
 
 [project.scripts]
 daq = "daq.__main__:main"
@@ -16,6 +32,16 @@ daq = "daq.__main__:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.dynamic]
+version = { attr = "daq.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["daq*"]
+
+# The built web UI lives under daq/static/ and is NOT an importable package, so
+# `packages.find` cannot see it. Without this the wheel installs a server that
+# serves a 404 for its own UI. The release workflow asserts index.html is in the
+# wheel so this can never silently regress.
+[tool.setuptools.package-data]
+daq = ["static/index.html", "static/**/*"]

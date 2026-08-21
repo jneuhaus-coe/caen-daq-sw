@@ -4,12 +4,14 @@ import argparse
 
 import uvicorn
 
+from . import __version__
 from .acquisition import AcquisitionEngine
 from .server import create_app
 
 
 def main():
     p = argparse.ArgumentParser(description="DT5742B DAQ server")
+    p.add_argument("--version", action="version", version=f"dt5742b-daq {__version__}")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--no-open", action="store_true",
@@ -26,7 +28,7 @@ def main():
             print("[daq] will retry on first Start.")
 
     app = create_app(engine)
-    print(f"[daq] UI at http://{args.host}:{args.port}/")
+    print(f"[daq] dt5742b-daq {__version__} — UI at http://{args.host}:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Smoke tests and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Smoke tests
+        run: |
+          cd server
+          python -m pip install --quiet -e .
+          python tests/test_smoke.py
+
+      - name: Build wheel and check the UI is in it
+        run: |
+          python -m pip install --quiet --upgrade build
+          cd server && python -m build --wheel
+          python - <<'EOF'
+          import glob, sys, zipfile
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          if not any(n.endswith("daq/static/index.html") for n in names):
+              sys.exit("FAIL: daq/static/index.html missing from the wheel")
+          print("OK:", wheel, "contains the UI")
+          EOF
+
+      - name: Shellcheck the installer
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck install.sh
+
+  install-windows:
+    name: install.ps1 on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Run the real installer against the tip of main. There is no CAEN stack on
+      # a runner, so the preflight is expected to report it missing - what this
+      # proves is that the script parses, installs, and produces a working daq.
+      - name: Run the installer
+        shell: pwsh
+        env:
+          DAQ_VERSION: source
+        run: ./install.ps1
+
+      - name: The installed daq starts and serves its UI
+        shell: pwsh
+        run: |
+          # A new step does not inherit the PATH the installer set, so re-add it.
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+          $daq = Join-Path (uv tool dir --bin) 'daq.exe'
+          $p = Start-Process $daq -ArgumentList '--no-open','--port','8123' -PassThru
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $r = Invoke-WebRequest 'http://127.0.0.1:8123/' -UseBasicParsing
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+          }
+          if (-not $ok) { $p | Stop-Process -Force; throw 'server never answered on 8123' }
+          $html = (Invoke-WebRequest 'http://127.0.0.1:8123/' -UseBasicParsing).Content
+          $asset = ([regex]'/assets/[^"]*\.js').Match($html).Value
+          if (-not $asset) { $p | Stop-Process -Force; throw 'index.html references no JS bundle' }
+          $a = Invoke-WebRequest "http://127.0.0.1:8123$asset" -UseBasicParsing
+          $s = Invoke-WebRequest 'http://127.0.0.1:8123/api/status' -UseBasicParsing
+          Write-Host "index 200, asset $($a.StatusCode) ($asset), api $($s.StatusCode)"
+          $p | Stop-Process -Force
+
+  install-linux:
+    name: install.sh on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the installer
+        env:
+          DAQ_VERSION: source
+        run: ./install.sh
+      - name: The installed daq reports its version
+        run: |
+          # A new step does not inherit the PATH the installer set, so re-add it.
+          export PATH="$HOME/.local/bin:$PATH"
+          "$(uv tool dir --bin)/daq" --version
