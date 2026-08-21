@@ -87,8 +87,8 @@ one-liner.
 
 **Windows** — you mostly do not have to. `daq` starts the server itself and
 leaves it running with a **tray icon** next to the clock, so it survives closing
-the window and outlives the terminal you started it from. The icon is the status
-at a glance:
+the window and outlives the terminal you started it from. The icon is a pulse on
+a coloured chip, and the colour is the status at a glance:
 
 | Icon | Meaning |
 |---|---|
@@ -96,8 +96,10 @@ at a glance:
 | Green | Unit connected — idle or acquiring |
 | Red | A run is recording |
 
-Right-click it for **Open DAQ**, the current run and event count, **Stop
-recording**, and **Quit**. Quit asks first only when a run is recording.
+**Click it — either button — for the menu.** The top line names the unit and what
+it is doing; click that line to open the DAQ, or to bring the window you already
+have back to the front. Below it are **Stop recording** (only while a run is
+recording) and **Quit**. Quit asks first only when a run is recording.
 
 For a desktop shortcut, point it at `%USERPROFILE%\.local\bin\daq.exe` with
 arguments `--host 0.0.0.0`.

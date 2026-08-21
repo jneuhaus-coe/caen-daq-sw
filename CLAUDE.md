@@ -334,6 +334,26 @@ Built. `daq` is the only command an operator needs.
   `_install_runtime_cleanup` handles the signal, clears the runtime file, then
   re-raises to the default disposition so the process still reports "killed by
   SIGTERM" — which is what keeps `Restart=on-failure` from restarting it.
-- Tray behaviour is verified only by `tests/test_tray.py` on the Windows CI
-  runner (colour mapping, icon image, menu construction). It cannot be shown
-  headlessly, so the icon has never actually been seen by an automated test.
+- **Tray interaction details, all found by using it on Windows:**
+  - pystray shows the menu on right-click only and runs the *default* item on
+    left-click. Two behaviours on one 16px target is confusing, and right-click
+    is awkward on a touchpad, so `_icon_class()` subclasses the win32 backend
+    and remaps `WM_LBUTTONUP` to `WM_RBUTTONUP`. It reaches into pystray
+    internals; the fallback is plain `pystray.Icon`, and a test asserts the
+    subclass is actually in use on Windows.
+  - **A modal dialog must not be opened from a menu callback.** Those callbacks
+    run inside the tray's window procedure, so `MessageBoxW` there blocks the
+    message pump the dialog itself needs — it appears with dead buttons that
+    cannot be dismissed. The quit confirmation runs on its own thread, and the
+    poll thread stops touching the icon while it is up.
+  - Opening the UI **raises an existing window** (`EnumWindows` by page title)
+    instead of launching another. Clicking the tray repeatedly used to leave a
+    pile of identical windows.
+  - The menu's status line *is* the open action. An "Open" item above a dead
+    label naming what it would open is two rows saying one thing, with the
+    obvious-looking row unclickable.
+- Tray behaviour is verified by `tests/test_tray.py`, which runs anywhere
+  pystray imports (`pip install pystray pillow` locally) and on the Windows CI
+  runner. It covers colour mapping, the icon at 16px, and menu shape — but the
+  icon has never been *seen* by a test, and the quit dialog cannot be exercised
+  headlessly at all.

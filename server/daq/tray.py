@@ -1,7 +1,9 @@
 """System-tray icon for the running server (Windows).
 
 The icon is the status you can see from across the room without a window open:
-grey when no unit is attached, green when it is, red while a run is recording.
+a scope pulse on a chip of colour — grey when no unit is attached, green when it
+is, red while a run is recording.
+
 It also owns the only Quit in the product, and that Quit asks first — but only
 when a run is actually recording, which is the one moment the answer matters.
 """
@@ -14,6 +16,7 @@ from typing import Callable, Optional
 _GREY = (128, 134, 139)
 _GREEN = (61, 174, 99)
 _RED = (211, 63, 63)
+_TRACE = (255, 255, 255)
 
 _POLL_S = 1.0
 
@@ -27,28 +30,32 @@ def available() -> bool:
     return True
 
 
-def _icon_image(color):
+def _icon_image(color, size: int = 256):
+    """A rounded chip in the status colour with a white scope pulse across it.
+
+    Drawn large and downscaled by the tray, which renders at 16px — every
+    proportion here was chosen by looking at it at that size, where a thinner
+    stroke turns to mush and a thicker one closes up the peak.
+    """
     from PIL import Image, ImageDraw
 
-    size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, size - 5, size - 5), fill=color)
+    d.rounded_rectangle((10, 10, size - 11, size - 11),
+                        radius=int(size * 0.24), fill=color)
+
+    inset = size * 0.15
+    x0, x1 = inset, size - inset
+    span = x1 - x0
+    baseline, peak = size * 0.62, size * 0.26
+    d.line([(x0, baseline),
+            (x0 + span * 0.28, baseline),
+            (x0 + span * 0.40, peak),
+            (x0 + span * 0.52, baseline * 0.97),
+            (x0 + span * 0.66, baseline),
+            (x1, baseline)],
+           fill=_TRACE, width=int(size * 0.105), joint="curve")
     return img
-
-
-def _confirm_quit(run_id: str, events: int) -> bool:
-    """Windows message box. Anywhere else, refuse rather than quit unasked."""
-    text = (f'A run is recording: "{run_id}" ({events:,} events).\n\n'
-            "Stop the run and shut the server down?")
-    if os.name != "nt":
-        return False
-    import ctypes
-
-    MB_YESNO, MB_ICONWARNING, MB_TOPMOST, IDYES = 0x4, 0x30, 0x40000, 6
-    result = ctypes.windll.user32.MessageBoxW(
-        0, text, "DT5742B DAQ", MB_YESNO | MB_ICONWARNING | MB_TOPMOST)
-    return result == IDYES
 
 
 def _summary(status: dict) -> tuple:
@@ -70,6 +77,73 @@ def _summary(status: dict) -> tuple:
     return _GREEN, f"{who} — idle"
 
 
+def _confirm_quit(run_id: str, events: int) -> bool:
+    """Windows message box. Anywhere else, refuse rather than quit unasked."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR,
+                                   wintypes.LPCWSTR, wintypes.UINT]
+    user32.MessageBoxW.restype = ctypes.c_int
+
+    MB_YESNO, MB_ICONWARNING = 0x4, 0x30
+    MB_SETFOREGROUND, MB_TOPMOST = 0x10000, 0x40000
+    IDYES = 6
+
+    text = (f'A run is recording: "{run_id}" ({events:,} events).\n\n'
+            "Stop the run and shut the server down?")
+    result = user32.MessageBoxW(
+        None, text, "DT5742B DAQ",
+        MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+    return result == IDYES
+
+
+def _icon_class():
+    """pystray shows the menu on right-click only, and left-click invokes the
+    default item instead.
+
+    Two separate behaviours on one small target is confusing, and right-clicking
+    a tray icon on a laptop touchpad is genuinely awkward — so remap left-click
+    to do exactly what right-click does. The backend dispatches through
+    `self._on_notify`, looked up per instance, so overriding it is enough.
+    """
+    import pystray
+
+    if os.name != "nt" or not hasattr(pystray.Icon, "_on_notify"):
+        return pystray.Icon
+
+    from pystray._win32 import win32
+
+    class _MenuOnEitherButton(pystray.Icon):
+        def _on_notify(self, wparam, lparam):
+            if lparam == win32.WM_LBUTTONUP:
+                lparam = win32.WM_RBUTTONUP
+            return super()._on_notify(wparam, lparam)
+
+    return _MenuOnEitherButton
+
+
+def _make_menu(text, on_open, on_stop_recording, is_recording, on_quit):
+    """The status line IS the open action.
+
+    An "Open" item above a dead label naming what would be opened is two rows
+    saying one thing, and the obvious row is the unclickable one. Clicking the
+    line that tells you what is connected opens it.
+    """
+    import pystray
+
+    return pystray.Menu(
+        pystray.MenuItem(text, on_open, default=True),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Stop recording", on_stop_recording, visible=is_recording),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quit", on_quit),
+    )
+
+
 def run(engine, url: str, shutdown: Callable[[], None],
         open_ui: Optional[Callable[[str], None]] = None) -> None:
     """Show the tray icon and block until the user quits.
@@ -78,7 +152,7 @@ def run(engine, url: str, shutdown: Callable[[], None],
     """
     import pystray
 
-    state = {"status": engine.status(), "text": "", "stop": False}
+    state = {"status": engine.status(), "text": "", "stop": False, "dialog": False}
 
     def status() -> dict:
         return state["status"]
@@ -95,25 +169,33 @@ def run(engine, url: str, shutdown: Callable[[], None],
 
     def on_quit(icon, item):
         s = status()
-        if s.get("recording"):
-            if not _confirm_quit(s.get("run_id") or "run", s.get("recorded") or 0):
-                return
-            engine.stop_recording()
-        state["stop"] = True
-        icon.stop()
+        if not s.get("recording"):
+            state["stop"] = True
+            icon.stop()
+            return
 
-    menu = pystray.Menu(
-        pystray.MenuItem("Open DAQ", on_open, default=True),
-        pystray.MenuItem(lambda item: state["text"], None, enabled=False),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Stop recording", on_stop_recording, visible=is_recording),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit", on_quit),
-    )
+        # Ask on a thread of our own. This callback runs inside the tray's
+        # window procedure, and a modal dialog opened there blocks the message
+        # pump that the dialog itself needs — the buttons come up dead.
+        def ask():
+            state["dialog"] = True
+            try:
+                agreed = _confirm_quit(s.get("run_id") or "run", s.get("recorded") or 0)
+            finally:
+                state["dialog"] = False
+            if agreed:
+                engine.stop_recording()
+                state["stop"] = True
+                icon.stop()
+
+        threading.Thread(target=ask, daemon=True).start()
+
+    menu = _make_menu(lambda item: state["text"], on_open,
+                      on_stop_recording, is_recording, on_quit)
 
     colour, text = _summary(state["status"])
     state["text"] = text
-    icon = pystray.Icon("dt5742b-daq", _icon_image(colour), text, menu)
+    icon = _icon_class()("dt5742b-daq", _icon_image(colour), text, menu)
 
     def poll():
         last = None
@@ -122,7 +204,9 @@ def run(engine, url: str, shutdown: Callable[[], None],
                 state["status"] = engine.status()
                 colour, text = _summary(state["status"])
                 state["text"] = text
-                if (colour, text) != last:
+                # Never touch the icon or menu while a modal dialog is up: those
+                # are cross-thread Win32 calls against a blocked owner thread.
+                if not state["dialog"] and (colour, text) != last:
                     icon.icon = _icon_image(colour)
                     icon.title = text
                     icon.update_menu()

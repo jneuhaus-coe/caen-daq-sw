@@ -44,8 +44,60 @@ def _find_chromium() -> Optional[str]:
     return None
 
 
-def open_ui(url: str) -> str:
+# Matches <title> in the UI. Chromium puts the page title on an --app window, so
+# this is how an already-open window is recognised.
+WINDOW_TITLE = "DT5742B DAQ"
+
+
+def focus_existing_window(title: str = WINDOW_TITLE) -> bool:
+    """Raise an already-open DAQ window. True if one was found.
+
+    Launching another window every time the tray is clicked leaves a pile of
+    identical windows and no way to tell which is which.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        needle = title.lower()
+        found = []
+
+        def visit(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if not length:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if needle in buf.value.lower():
+                found.append(hwnd)
+                return False                  # stop at the first match
+            return True
+
+        user32.EnumWindows(proc_type(visit), 0)
+        if not found:
+            return False
+
+        hwnd = found[0]
+        SW_RESTORE = 9
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False                          # raising a window is never worth an error
+
+
+def open_ui(url: str, reuse: bool = True) -> str:
     """Show the UI. Returns how it was opened, for the caller to report."""
+    if reuse and focus_existing_window():
+        return "raised the open window"
+
     browser = _find_chromium()
     if browser:
         try:
