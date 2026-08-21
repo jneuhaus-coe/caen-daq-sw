@@ -11,6 +11,7 @@ from fastapi import (BackgroundTasks, FastAPI, HTTPException, Request, Response,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__
 from .acquisition import AcquisitionEngine
 from .config import BoardConfig, default_config
 from .catalog import catalog
@@ -27,7 +28,9 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.get("/api/status")
     def status():
         engine.probe()          # keeps `opened` honest between polls
-        return engine.status()
+        # `app` identifies us to the launcher, which must not mistake some other
+        # program holding the port for a DAQ server it can attach to.
+        return {**engine.status(), "app": "dt5742b-daq", "version": __version__}
 
     @app.post("/api/board/reconnect")
     def reconnect():

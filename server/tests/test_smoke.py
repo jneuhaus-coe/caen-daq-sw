@@ -1,8 +1,12 @@
 """Hardware-free smoke tests. Run: `python -m pytest` or
 `python tests/test_smoke.py` from the server/ dir.
 
-These cover the config tiers, the aggregation math, and the HTTP surface.
+These cover the config tiers, the aggregation math, the HTTP surface, and the
+runtime record the launcher uses to find a running server.
 The acquisition loop itself needs the board and is not covered here."""
+import json
+import os
+import tempfile
 import time
 import numpy as np
 from fastapi.testclient import TestClient
@@ -12,6 +16,7 @@ from daq.config import default_config, BoardConfig
 from daq.stats import RollingAverage, TriggerRateMeter, decimate
 from daq.server import create_app
 from daq import constants as C
+from daq import runtime
 
 
 def test_tiers_and_enable_is_per_group():
@@ -99,12 +104,90 @@ def test_probe_and_reconnect_without_hardware():
     assert c.post("/api/board/reconnect").json()["opened"] is False
 
 
+def test_runtime_url_is_always_loopback_for_a_local_window():
+    """A server bound to every interface is still opened at 127.0.0.1 locally."""
+    assert runtime.url_for("0.0.0.0", 8000) == "http://127.0.0.1:8000/"
+    assert runtime.url_for("", 8000) == "http://127.0.0.1:8000/"
+    assert runtime.url_for("127.0.0.1", 8800) == "http://127.0.0.1:8800/"
+    assert runtime.url_for("10.0.0.5", 8000) == "http://10.0.0.5:8000/"
+
+
+def test_runtime_record_roundtrips_and_clears():
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["XDG_STATE_HOME"] = d
+        os.environ["LOCALAPPDATA"] = d
+        runtime.write("0.0.0.0", 8123)
+        rec = runtime.read()
+        assert rec["port"] == 8123 and rec["pid"] == os.getpid()
+        assert rec["url"] == "http://127.0.0.1:8123/"
+        runtime.clear()
+        assert runtime.read() is None
+
+
+def test_stale_and_foreign_servers_are_not_attached_to():
+    """The runtime file is a hint, not an authority. A dead port, and a port held
+    by some other program, must both read as 'no server' — never as one to
+    attach to and drive."""
+    import http.server
+    import threading
+
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["XDG_STATE_HOME"] = d
+        os.environ["LOCALAPPDATA"] = d
+
+        # 1. Nothing listening: the record is stale and must be cleared.
+        os.makedirs(runtime.state_dir(), exist_ok=True)
+        with open(runtime.runtime_path(), "w") as f:
+            json.dump({"app": runtime.APP_ID, "pid": 1, "host": "127.0.0.1",
+                       "port": 9, "url": "http://127.0.0.1:9/"}, f)
+        assert runtime.find_server() is None
+        assert runtime.read() is None
+
+        # 2. Something answers on the port, but it is not us.
+        class Impostor(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"app": "something-else", "opened": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Impostor)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            assert runtime.probe(port, timeout=2.0) is None
+            with open(runtime.runtime_path(), "w") as f:
+                json.dump({"app": runtime.APP_ID, "pid": 1, "host": "127.0.0.1",
+                           "port": port, "url": f"http://127.0.0.1:{port}/"}, f)
+            assert runtime.find_server() is None
+        finally:
+            srv.shutdown()
+
+
+def test_status_endpoint_identifies_the_app():
+    """The launcher keys off these two fields; losing them would make every
+    running server invisible to `daq`."""
+    c = TestClient(create_app(AcquisitionEngine()))
+    body = c.get("/api/status").json()
+    assert body["app"] == "dt5742b-daq"
+    assert body["version"]
+
+
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
                test_http_api, test_config_write_is_refused_with_no_unit,
                test_rate_meter_total_and_last_bucket,
-               test_probe_and_reconnect_without_hardware]:
+               test_probe_and_reconnect_without_hardware,
+               test_runtime_url_is_always_loopback_for_a_local_window,
+               test_runtime_record_roundtrips_and_clears,
+               test_stale_and_foreign_servers_are_not_attached_to,
+               test_status_endpoint_identifies_the_app]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")

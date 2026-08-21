@@ -47,13 +47,21 @@ CAEN libraries and naming anything that is missing.
 Open a new terminal afterwards so `daq` is on your PATH, then:
 
 ```
-daq                    serve on 127.0.0.1:8000 (this machine only)
-daq --host 0.0.0.0     serve to the network
+daq                    open the DAQ (starts the server if it is not up yet)
+daq --host 0.0.0.0     same, but reachable from other machines
+daq status             what is running, and whether it is recording
+daq stop               shut the server down
+daq --serve            run the server only: no window, no tray icon
 daq --help             all options
 ```
 
-Open `http://<daq-host>:8000/`. Runs are written to `%USERPROFILE%\daq-runs` on
-Windows and `~/daq-runs` on Linux; set `DAQ_DATA_DIR` to move them.
+**`daq` is the only command you need.** Run it and the DAQ opens in its own
+window. Run it again — from a shortcut, a second terminal, whenever — and it
+finds the server already running and opens another window onto it. It never
+starts a second server and never disturbs the one that is running.
+
+Runs are written to `%USERPROFILE%\daq-runs` on Windows and `~/daq-runs` on
+Linux; set `DAQ_DATA_DIR` to move them.
 
 If the installer warns that a different `daq` comes first on your PATH, deal with
 it — that older copy is what will actually run, and every future update will look
@@ -77,16 +85,26 @@ one-liner.
 
 ## Keeping it running
 
-**Windows** — simplest is a `.bat` on the desktop:
+**Windows** — you mostly do not have to. `daq` starts the server itself and
+leaves it running with a **tray icon** next to the clock, so it survives closing
+the window and outlives the terminal you started it from. The icon is the status
+at a glance:
 
-```bat
-@echo off
-"%USERPROFILE%\.local\bin\daq.exe" --host 0.0.0.0
-```
+| Icon | Meaning |
+|---|---|
+| Grey | No unit connected |
+| Green | Unit connected — idle or acquiring |
+| Red | A run is recording |
+
+Right-click it for **Open DAQ**, the current run and event count, **Stop
+recording**, and **Quit**. Quit asks first only when a run is recording.
+
+For a desktop shortcut, point it at `%USERPROFILE%\.local\bin\daq.exe` with
+arguments `--host 0.0.0.0`.
 
 To have it start on boot, use Task Scheduler ("At startup", "Run whether user is
 logged on or not") — it needs nothing extra installed. [NSSM](https://nssm.cc/)
-works too; point it at that same `daq.exe` with arguments `--host 0.0.0.0`.
+works too; point it at that same `daq.exe` with arguments `--serve --host 0.0.0.0`.
 
 If you register it either way, **stop it before updating**. Windows will not let
 a running `daq.exe` be replaced, so the installer stops with an error rather than
@@ -103,7 +121,8 @@ Wants=network-online.target
 
 [Service]
 User=<you>
-ExecStart=/home/<you>/.local/bin/daq --host 0.0.0.0
+# --serve: no window and no tray icon, and it never exits on its own.
+ExecStart=/home/<you>/.local/bin/daq --serve --host 0.0.0.0
 # on-failure, not always: it still recovers from a crash, but a deliberate
 # shutdown stays down. `always` would fight the installer, which stops the
 # server to update it — systemd would restart it mid-update and leave you
@@ -159,10 +178,15 @@ Afterwards, **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new U
 
 # Taking a shift
 
-Open **http://\<daq-host\>:8000/** (on the DAQ machine itself,
-<http://127.0.0.1:8000/>).
+Run **daq** on the DAQ machine, or open **http://\<daq-host\>:8000/** from
+anywhere else.
 
 The **?** button at the top right walks you through this in three steps.
+
+> **Closing the window does not stop anything.** The window is only a view — the
+> server keeps running, the board stays open, and a recording keeps recording.
+> Open it again with **daq** whenever you want to look. To shut the server down
+> for real, use **Quit** on the tray icon, or `daq stop`.
 
 ### 1. Check the unit is connected
 
@@ -355,4 +379,4 @@ actually lands, and the recorded file layout byte-for-byte against WaveDump.
 - [ ] Write the x742 TR traces (`TR_*` files) — currently skipped
 - [ ] ROOT / HDF5 writers behind the existing `Writer` interface
 - [x] One-command install on Windows and Linux, published as a GitHub release
-- [ ] Launcher: `daq` opens the UI and attaches to an already-running server, with a tray icon
+- [x] `daq` opens the UI, attaching to an already-running server; tray icon on Windows

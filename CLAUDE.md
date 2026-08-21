@@ -293,12 +293,40 @@ Verify against a pulser (waveforms, trigger position, byte-compare a run against
 WaveDump) · write the x742 TR traces · ROOT/HDF5 writers behind `Writer` ·
 in-app help · client/server over a real socket.
 
-**Next, decided but not built:** the server becomes the durable thing and a
-browser window is just a view. `daq` reads a runtime file (pid/port/version),
-probes `/api/status`, and *attaches* to a live server rather than starting a
-second one or killing it; only if nothing answers does it start server+tray.
-The tray icon carries the status (grey/green/red-while-recording) and owns the
-only Quit, which confirms solely when a run is recording. `daq --serve` keeps
-the headless lima/systemd mode with no tray and no self-exit. This removes the
-need for session tokens, `beforeunload` and close grace periods entirely —
-closing a window can never affect a run.
+## Running: the server is durable, the window is a view
+
+Built. `daq` is the only command an operator needs.
+
+- **Closing a window can never affect a run.** There are no session tokens, no
+  `beforeunload`, no close grace period — that whole mechanism was designed and
+  then deleted, because making the server durable dissolves the problem it
+  solved. Do not reintroduce it.
+- `daq` reads `runtime.json` (`%LOCALAPPDATA%` / `$XDG_STATE_HOME`), probes
+  `/api/status` on the recorded port, and **attaches** if a server answers —
+  opening another window, never a second server. Otherwise it starts one.
+- **The runtime file is a hint, never an authority.** It outlives crashes and
+  can name a port something else has taken, so every read is confirmed by the
+  `app: "dt5742b-daq"` field in `/api/status`. Deleting that field makes every
+  running server invisible to `daq`; a smoke test guards it.
+- `daq --serve` is the headless mode (lima, systemd, NSSM): no window, no tray,
+  never exits on its own. `daq --open URL` views a remote server and starts
+  nothing. `daq stop` / `daq status` work on the recorded server.
+- **Windows detaches, POSIX stays in the foreground.** Windows has a tray icon
+  to see and stop the server with, so the launcher detaches it via `pythonw.exe`
+  and returns. Without a tray there would be no handle on a detached server, so
+  elsewhere `daq` runs it in the foreground and Ctrl-C ends it.
+- The tray is **Windows-only by dependency marker** (`pystray`, `pillow`). Linux
+  is the headless case and must not grow an X dependency.
+- The window is a **chromeless Chromium `--app` window** when Edge/Chrome is
+  present, else the default browser. Cosmetic only — nothing depends on it.
+- `_ThreadedServer` suppresses uvicorn's signal handlers and is for the **tray
+  path only**. Using it for `--serve` would leave SIGTERM at its default
+  disposition, so systemd's stop would skip the graceful shutdown.
+- uvicorn captures SIGTERM/SIGINT and re-raises them to the handler installed
+  *before* it, so a `finally` after `server.run()` never runs.
+  `_install_runtime_cleanup` handles the signal, clears the runtime file, then
+  re-raises to the default disposition so the process still reports "killed by
+  SIGTERM" — which is what keeps `Restart=on-failure` from restarting it.
+- Tray behaviour is verified only by `tests/test_tray.py` on the Windows CI
+  runner (colour mapping, icon image, menu construction). It cannot be shown
+  headlessly, so the icon has never actually been seen by an automated test.

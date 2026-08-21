@@ -55,6 +55,21 @@ jobs:
           DAQ_VERSION: source
         run: ./install.ps1
 
+      # The tray is Windows-only, so this runner is the only place it can be
+      # exercised at all. It cannot be shown headlessly, but this catches the
+      # failures that matter: a missing dependency, a bad pystray call, a
+      # broken image, or the wrong colour for a state.
+      - name: Tray checks
+        shell: pwsh
+        run: |
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+          $py = Join-Path (uv tool dir) 'dt5742b-daq\Scripts\python.exe'
+          if (-not (Test-Path $py)) { throw "tool python not found at $py" }
+          Push-Location server
+          & $py tests/test_tray.py
+          if ($LASTEXITCODE -ne 0) { throw 'tray checks failed' }
+          Pop-Location
+
       - name: The installed daq starts and serves its UI
         shell: pwsh
         run: |

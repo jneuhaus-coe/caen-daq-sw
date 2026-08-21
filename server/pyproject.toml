@@ -18,6 +18,10 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "numpy>=1.26",
+    # Tray icon. Windows only on purpose: it is the deployment target, and on
+    # Linux pystray wants an X display that the headless DAQ box does not have.
+    "pystray>=0.19; sys_platform == 'win32'",
+    "pillow>=10; sys_platform == 'win32'",
 ]
 
 # The smoke tests drive the API through starlette's TestClient, which needs an
