@@ -122,7 +122,12 @@ if ($Version -eq 'source') {
 Say "Installing $Pkg on Python $PyVer"
 uv tool install --python $PyVer --force $Spec
 if ($LASTEXITCODE -ne 0) { Die 'uv tool install failed.' }
-uv tool update-shell 2>$null | Out-Null
+# Only when it is needed, and never fatally: uv errors out if the directory is
+# already on PATH, and with ErrorActionPreference=Stop a native command's stderr
+# becomes a terminating error — which would kill the script after a good install.
+if (($env:Path -split ';') -notcontains $toolBin) {
+    try { uv tool update-shell | Out-Null } catch { }
+}
 
 if (-not (Test-Path $daqBin)) { Die "install finished but no daq.exe was produced in $toolBin." }
 
