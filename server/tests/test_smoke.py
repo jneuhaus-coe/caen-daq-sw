@@ -178,6 +178,46 @@ def test_status_endpoint_identifies_the_app():
     assert body["version"]
 
 
+def test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port():
+    """Closing a server leaves its connections in TIME_WAIT, and a bind without
+    SO_REUSEADDR fails there — so a plain probe reports "port already in use" for
+    a port uvicorn (which sets SO_REUSEADDR) would take happily. That refuses the
+    server a port it could have had, for minutes after every restart."""
+    import socket
+
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.listen(1)
+    client = socket.create_connection(("127.0.0.1", port))
+    accepted, _ = srv.accept()
+    client.close()
+    accepted.close()
+    srv.close()
+
+    assert runtime.bind_probe("127.0.0.1", port) is None, \
+        "the probe must mirror uvicorn's SO_REUSEADDR or restarts are refused"
+    assert runtime.port_is_free("127.0.0.1", port)
+
+
+def test_bind_probe_still_reports_a_port_that_is_really_taken():
+    import socket
+
+    held = socket.socket()
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
+    port = held.getsockname()[1]
+    held.listen(1)
+    try:
+        if os.name != "nt":
+            # On Windows SO_REUSEADDR permits binding over a live socket, so this
+            # only holds on POSIX; there the real conflict surfaces from uvicorn.
+            assert runtime.bind_probe("127.0.0.1", port) is not None
+    finally:
+        held.close()
+
+
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
@@ -187,7 +227,9 @@ if __name__ == "__main__":
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,
                test_stale_and_foreign_servers_are_not_attached_to,
-               test_status_endpoint_identifies_the_app]:
+               test_status_endpoint_identifies_the_app,
+               test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port,
+               test_bind_probe_still_reports_a_port_that_is_really_taken]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")

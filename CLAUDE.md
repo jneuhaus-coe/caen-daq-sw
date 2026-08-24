@@ -200,6 +200,19 @@ re-running the same one-liner.
   test of mine once started a run on the real board. They confirm the answer
   carries `app: "dt5742b-daq"`, and fall back to a process scan that refuses
   rather than kills when there is no usable record.
+- **The bind pre-check must mirror uvicorn's socket options.** uvicorn sets
+  `SO_REUSEADDR` unconditionally; a probe without it fails with `EADDRINUSE`
+  while the previous server's connections sit in TIME_WAIT. That made `daq`
+  refuse to start for minutes after every `daq stop` — "port 8800 is already in
+  use" with nothing holding it — because the pre-check rejected a port uvicorn
+  would have taken happily. `runtime.bind_probe()` is the one place that binds,
+  and a smoke test fails if the option is dropped.
+- `os.kill(pid, 0)` is the usual liveness test and is **catastrophic on
+  Windows**: os.kill ignores the signal there and calls TerminateProcess, so
+  asking "is it alive?" kills it. Use `runtime.process_alive()`.
+- `daq stop` verifies the process actually died and clears the runtime file
+  itself — on Windows the kill is TerminateProcess, so the server never gets to
+  run its own cleanup — and names whatever still holds the port if one does.
 - The **default port is 8800**, not 8000. 8000 collides with everything and was
   inside a Hyper-V reserved range on the Windows box, where it cannot be bound
   at all. `web/vite.config.ts` proxies to 8800 too — that is dev-server config

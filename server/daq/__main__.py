@@ -4,9 +4,9 @@ import argparse
 import errno
 import os
 import signal
-import socket
 import sys
 import threading
+import time
 
 import uvicorn
 
@@ -30,27 +30,30 @@ def _check_bindable(host: str, port: int) -> None:
     reserved by Hyper-V or WSL, and that needs a different fix from a port that
     is merely taken, so the two are worth telling apart.
     """
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind((host, port))
-    except OSError as e:
-        if e.errno == errno.EADDRINUSE:
-            _err(f"port {port} is already in use — another daq is probably running.")
-            _err("stop that one, or start this one on another port: daq --port 9100")
-        elif e.errno in (errno.EACCES, errno.EPERM):
-            _err(f"not allowed to bind {host}:{port}.")
-            if os.name == "nt":
-                _err("on Windows this usually means the port sits inside a range reserved")
-                _err("by Hyper-V or WSL. List the reserved ranges with:")
-                _err("    netsh interface ipv4 show excludedportrange protocol=tcp")
-                _err("then pick a port outside them: daq --port 9100")
-            elif port < 1024:
-                _err("ports below 1024 need root. Use the default 8800, or any port above 1024.")
+    e = runtime.bind_probe(host, port)
+    if e is None:
+        return
+
+    if e.errno == errno.EADDRINUSE:
+        _err(f"port {port} is already in use.")
+        owner = runtime.port_owner(port)
+        if owner:
+            _err(f"it is held by {owner}.")
         else:
-            _err(f"cannot bind {host}:{port}: {e}")
-        raise SystemExit(2)
-    finally:
-        probe.close()
+            _err("could not identify what is holding it.")
+        _err("stop that process, or start this one elsewhere: daq --port 9100")
+    elif e.errno in (errno.EACCES, errno.EPERM):
+        _err(f"not allowed to bind {host}:{port}.")
+        if os.name == "nt":
+            _err("on Windows this usually means the port sits inside a range reserved")
+            _err("by Hyper-V or WSL. List the reserved ranges with:")
+            _err("    netsh interface ipv4 show excludedportrange protocol=tcp")
+            _err("then pick a port outside them: daq --port 9100")
+        elif port < 1024:
+            _err("ports below 1024 need root. Use the default 8800, or any port above 1024.")
+    else:
+        _err(f"cannot bind {host}:{port}: {e}")
+    raise SystemExit(2)
 
 
 class _ThreadedServer(uvicorn.Server):
@@ -124,7 +127,13 @@ def _serve(args, with_tray: bool) -> int:
         if with_tray:
             thread = threading.Thread(target=server.run, daemon=True)
             thread.start()
-            launcher.wait_for_server(args.port)
+            if launcher.wait_for_server(args.port) is None:
+                # A tray icon for a server that never came up is worse than no
+                # tray: it says "running" while nothing answers, and whatever
+                # went wrong stays invisible.
+                _err(f"the server did not come up on {args.host}:{args.port}.")
+                _err("run 'daq --serve' in a terminal to see the error.")
+                return 1
             from . import tray
             tray.run(engine, url,
                      shutdown=lambda: setattr(server, "should_exit", True),
@@ -150,6 +159,16 @@ def _launch(args) -> int:
                  f"{__version__}. Restart it to pick up the update.")
         how = launcher.open_ui(live["url"])
         _say(f"attached to the server already running at {live['url']} ({how})")
+        return 0
+
+    # The runtime record can go missing — a crash, a cleaned state directory, an
+    # older server that never wrote one. Ask the port itself before concluding
+    # nothing is there, or we would start a second server on top of a live one.
+    orphan = runtime.probe(args.port)
+    if orphan is not None:
+        url = runtime.url_for(args.host, args.port)
+        how = launcher.open_ui(url)
+        _say(f"attached to the server already running at {url} ({how})")
         return 0
 
     _check_bindable(args.host, args.port)
@@ -185,15 +204,41 @@ def _stop(_args) -> int:
         return 1
 
     pid = live.get("pid")
+    port = live["port"]
     if not pid:
         _err("the running server did not record its pid; stop it yourself.")
         return 1
+    pid = int(pid)
     try:
-        os.kill(int(pid), 15)
+        os.kill(pid, 15)
     except OSError as e:
         _err(f"could not stop pid {pid}: {e}")
         return 1
-    _say(f"stopped the server on port {live['port']}.")
+
+    # Confirm rather than assume. On Windows os.kill is TerminateProcess, which
+    # is immediate but gives the server no chance to tidy up after itself — so
+    # clearing the runtime record is this command's job, not the server's.
+    deadline = time.time() + 15
+    while time.time() < deadline and runtime.process_alive(pid):
+        time.sleep(0.25)
+    if runtime.process_alive(pid):
+        _err(f"pid {pid} is still running 15s after being asked to stop.")
+        return 1
+
+    runtime.clear()
+
+    # The process is gone; the port should be too. If it is not, say so plainly
+    # instead of leaving the next `daq` to fail with an unexplained bind error.
+    if not runtime.port_is_free("127.0.0.1", port):
+        _say(f"stopped pid {pid}, but port {port} is still in use.")
+        owner = runtime.port_owner(port)
+        if owner:
+            _err(f"port {port} is held by {owner}.")
+        else:
+            _err(f"could not identify what is holding port {port}.")
+        return 1
+
+    _say(f"stopped the server on port {port}.")
     return 0
 
 

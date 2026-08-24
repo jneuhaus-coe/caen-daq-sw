@@ -115,12 +115,97 @@ def find_server() -> Optional[dict]:
     }
 
 
-def port_is_free(host: str, port: int) -> bool:
+def process_alive(pid: int) -> bool:
+    """Is that pid still running?
+
+    `os.kill(pid, 0)` is the usual test, but on Windows os.kill ignores the
+    signal and calls TerminateProcess — asking "are you alive?" would kill it.
+    """
+    pid = int(pid)
+    if os.name == "nt":
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        WAIT_OBJECT_0 = 0
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False           # gone, or owned by someone we cannot query
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                # exists, just not ours
+    return True
+
+
+def port_owner(port: int) -> Optional[str]:
+    """Whatever is listening on that port, described for a human.
+
+    "Port 8800 is already in use" is a dead end on its own; naming the process
+    is the difference between a shrug and a fix.
+    """
+    import subprocess
+
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=15,
+                                 capture_output=True, text=True).stdout
+            pid = None
+            for line in out.splitlines():
+                f = line.split()
+                if (len(f) >= 5 and f[0].upper() == "TCP"
+                        and f[3].upper() == "LISTENING"
+                        and f[1].rsplit(":", 1)[-1] == str(port)):
+                    pid = f[4]
+                    break
+            if not pid:
+                return None
+            listing = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                timeout=15, capture_output=True, text=True).stdout.strip()
+            name = ""
+            if listing and not listing.upper().startswith("INFO"):
+                name = listing.split(",")[0].strip('"')
+            return f"{name or 'process'} (pid {pid})"
+
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+                             timeout=15, capture_output=True, text=True).stdout
+        rows = [r for r in out.splitlines()[1:] if r.strip()]
+        if not rows:
+            return None
+        f = rows[0].split()
+        return f"{f[0]} (pid {f[1]})"
+    except Exception:
+        return None                # a diagnostic must never be the thing that fails
+
+
+def bind_probe(host: str, port: int) -> Optional[OSError]:
+    """Can the server bind here? Returns the error if not.
+
+    This MUST mirror how uvicorn binds, or it answers a different question than
+    the one that matters. uvicorn sets SO_REUSEADDR unconditionally; without it
+    a probe fails with EADDRINUSE whenever the previous server left connections
+    in TIME_WAIT — so a perfectly bindable port reads as taken for minutes after
+    a restart, and the server is refused a port it could have had.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind((host, port))
-        return True
-    except OSError:
-        return False
+        return None
+    except OSError as e:
+        return e
     finally:
         s.close()
+
+
+def port_is_free(host: str, port: int) -> bool:
+    return bind_probe(host, port) is None
