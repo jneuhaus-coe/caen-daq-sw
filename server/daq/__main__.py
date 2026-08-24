@@ -71,24 +71,21 @@ def _open_board_in_background(engine, wait_s: float) -> threading.Thread:
     board_log = logsetup.get("daq.board")
 
     def work():
-        started = time.monotonic()
-        board_log.info("opening the digitizer...")
+        # engine.open() logs the transaction itself, so this only has to report
+        # the outcome the operator cares about.
         try:
-            info = engine.open()
-            board_log.info("digitizer open: %s serial %s (ROC %s, AMC %s) in %.1fs",
-                           info.model, info.serial, info.roc_firmware,
-                           info.amc_firmware, time.monotonic() - started)
-        except Exception as e:
-            board_log.warning("could not open the digitizer after %.1fs: %s",
-                              time.monotonic() - started, e)
-            board_log.info("the UI will show it disconnected and keep retrying; "
-                           "press Reconnect once the unit is ready")
+            engine.open()
+        except Exception:
+            # The step above already logged what failed and why; say only what
+            # it means from here.
+            board_log.info("no unit at startup - the UI will show it "
+                           "disconnected and keep retrying on its own")
 
     thread = threading.Thread(target=work, name="board-open", daemon=True)
     thread.start()
     thread.join(wait_s)
     if thread.is_alive():
-        board_log.info("digitizer still opening after %.0fs — bringing the UI up now; "
+        board_log.info("digitizer still opening after %.0fs - bringing the UI up now; "
                        "it will connect on its own", wait_s)
     return thread
 
@@ -122,7 +119,7 @@ def _install_runtime_cleanup() -> None:
     where no handler of ours would run at all.
     """
     def handler(signum, _frame):
-        log.info("signal %s received — shutting down", signal.Signals(signum).name)
+        log.info("signal %s received - shutting down", signal.Signals(signum).name)
         runtime.clear()
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
@@ -136,10 +133,13 @@ def _install_runtime_cleanup() -> None:
 
 def _serve(args, with_tray: bool) -> int:
     """Run the server. Blocks until it is shut down."""
-    log.info("dt5742b-daq %s starting on %s:%s", __version__, args.host, args.port)
+    boot = time.monotonic()
+    log.info("starting dt5742b-daq %s (pid %d) on %s:%s...",
+             __version__, os.getpid(), args.host, args.port)
     log.debug("python %s from %s", sys.version.split()[0], sys.executable)
-    _check_bindable(args.host, args.port)
-    log.debug("port %s is bindable", args.port)
+
+    with logsetup.step(log, f"checking port {args.port} is free"):
+        _check_bindable(args.host, args.port)
 
     engine = AcquisitionEngine()
     if not args.no_open:
@@ -157,7 +157,7 @@ def _serve(args, with_tray: bool) -> int:
     # `daq stop` and the installer's shutdown hang with no way to tell why.
     config = uvicorn.Config(app, host=args.host, port=args.port,
                             log_config=None,          # keep our handlers
-                            access_log=(args.log_level == "debug"),
+                            access_log=False,         # a request is not a transaction
                             timeout_graceful_shutdown=10)
     server = _ThreadedServer(config) if with_tray else uvicorn.Server(config)
 
@@ -176,13 +176,15 @@ def _serve(args, with_tray: bool) -> int:
                 _err("run 'daq --serve' in a terminal to see the error.")
                 return 1
             from . import tray
-            log.info("showing the tray icon; the server keeps running until you quit it")
+            log.info("started in %.1fs - running in the tray until you quit it",
+                     time.monotonic() - boot)
             tray.run(engine, url,
                      shutdown=lambda: setattr(server, "should_exit", True),
                      open_ui=launcher.open_ui)
             thread.join(timeout=10)
         else:
-            log.info("ready — press Ctrl-C to stop")
+            log.info("started in %.1fs - ready, press Ctrl-C to stop",
+                     time.monotonic() - boot)
             server.run()
     finally:
         log.info("shutting down")
@@ -228,7 +230,7 @@ def _launch(args) -> int:
             return 1
         url = runtime.url_for(args.host, args.port)
         how = launcher.open_ui(url)
-        _say(f"server started at {url} ({how}) — it keeps running in the tray.")
+        _say(f"server started at {url} ({how}) - it keeps running in the tray.")
         return 0
 
     url = runtime.url_for(args.host, args.port)
@@ -299,7 +301,7 @@ def _status(_args) -> int:
     else:
         _say("unit: not connected")
     if s.get("recording"):
-        _say(f'recording "{s.get("run_id")}" · {s.get("recorded") or 0:,} events')
+        _say(f'recording "{s.get("run_id")}" - {s.get("recorded") or 0:,} events')
     else:
         _say("acquiring" if s.get("running") else "idle")
     # Report the server's own log file, not where this command would write one:

@@ -55,9 +55,19 @@ daq --serve            run the server only: no window, no tray icon
 daq --help             all options
 ```
 
-Logging goes to the console and to a file. `--log-level debug` adds detail
-(including every HTTP request), `--log-file PATH` moves the file, and
-`--no-log-file` turns it off.
+Logging goes to the console and to a file, and reads as what the DAQ tried to do
+and how it turned out:
+
+```
+16:18:26 INFO    starting acquisition...
+16:18:26 INFO      opening the digitizer...
+16:18:26 INFO      opening the digitizer: ok - DT5742B S/N 53364 (1.8s)
+16:18:26 INFO    starting acquisition: ok (1.9s)
+```
+
+`--log-level debug` adds detail, `--log-file PATH` moves the file, and
+`--no-log-file` turns it off. `daq status` prints where the running server is
+writing its log.
 
 **`daq` is the only command you need.** Run it and the DAQ opens in its own
 window. Run it again — from a shortcut, a second terminal, whenever — and it

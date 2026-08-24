@@ -218,6 +218,60 @@ def test_bind_probe_still_reports_a_port_that_is_really_taken():
         held.close()
 
 
+def _collecting_logger(name):
+    import logging
+    seen = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    log = logging.getLogger(name)
+    log.handlers = [Collect()]
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
+    return log, seen
+
+
+def test_log_steps_nest_outside_in_then_close_inside_out():
+    """The ordering rule: entries appear when the work happened. A recursion
+    three deep must log three opening lines outside-in, then three closing lines
+    inside-out - never interleaved, never reordered."""
+    from daq import logsetup
+
+    log, seen = _collecting_logger("daq.test.steps")
+
+    def recurse(depth):
+        with logsetup.step(log, f"level {depth}"):
+            if depth < 3:
+                recurse(depth + 1)
+
+    recurse(1)
+
+    opens = [m for m in seen if m.endswith("...")]
+    closes = [m for m in seen if ": ok" in m]
+    assert len(opens) == 3 and len(closes) == 3
+    assert [m.strip() for m in opens] == ["level 1...", "level 2...", "level 3..."]
+    assert [m.strip().split(":")[0] for m in closes] == ["level 3", "level 2", "level 1"]
+    # The deepest open precedes the first close: starts, then ends.
+    assert seen.index(opens[2]) < seen.index(closes[0])
+    # Indentation reflects nesting.
+    assert not opens[0].startswith(" ")
+    assert opens[1].startswith("  ") and not opens[1].startswith("    ")
+    assert opens[2].startswith("    ")
+
+
+def test_log_step_reports_a_finished_but_unsuccessful_outcome():
+    """A reconnect that finds no unit did not fail, but it is not 'ok'."""
+    from daq import logsetup
+
+    log, seen = _collecting_logger("daq.test.outcome")
+    with logsetup.step(log, "reconnecting") as st:
+        st.result("no unit found")
+    assert any("reconnecting: no unit found" in m for m in seen)
+    assert not any(": ok" in m for m in seen)
+
+
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
@@ -229,7 +283,9 @@ if __name__ == "__main__":
                test_stale_and_foreign_servers_are_not_attached_to,
                test_status_endpoint_identifies_the_app,
                test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port,
-               test_bind_probe_still_reports_a_port_that_is_really_taken]:
+               test_bind_probe_still_reports_a_port_that_is_really_taken,
+               test_log_steps_nest_outside_in_then_close_inside_out,
+               test_log_step_reports_a_finished_but_unsuccessful_outcome]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")

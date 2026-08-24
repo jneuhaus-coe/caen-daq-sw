@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from . import logsetup
+
+log = logsetup.get("daq.api")
 from .acquisition import AcquisitionEngine
 from .config import BoardConfig, default_config
 from .catalog import catalog
@@ -66,11 +68,14 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     async def load_config_file(request: Request):
         """Accepts our JSON or a CAEN WaveDumpConfig.txt."""
         text = (await request.body()).decode("utf-8", errors="replace")
-        try:
-            loaded, notes = configfile.from_text(text)
-        except Exception as e:
-            return {"ok": False, "errors": [f"could not parse: {e}"], "notes": [],
-                    "config": engine.get_config().to_dict(), "restart": []}
+        with logsetup.step(log, "loading a settings file") as loading:
+            try:
+                loaded, notes = configfile.from_text(text)
+            except Exception as e:
+                log.error("  could not parse the file: %s", e)
+                return {"ok": False, "errors": [f"could not parse: {e}"], "notes": [],
+                        "config": engine.get_config().to_dict(), "restart": []}
+            loading.note(f"{len(notes)} notes" if notes else "parsed")
         restart = configfile.needs_restart(engine.get_config(), loaded)
         before = len(engine.status()["errors"])
         cfg = engine.set_config(loaded)
@@ -112,7 +117,9 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.delete("/api/runs/{run_id}")
     def delete_run(run_id: str):
+        log.info("deleting run %r", run_id)
         if engine.status()["run_id"] == run_id:
+            log.warning("refused: %r is still recording", run_id)
             raise HTTPException(409, "that run is still recording")
         if not runs.delete(run_id):
             raise HTTPException(404, "no such run")

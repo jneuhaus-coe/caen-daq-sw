@@ -12,15 +12,39 @@ hardware layer appear in one chronological account instead of two.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
+import threading
+import time
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 from . import runtime
 
 LEVELS = ("debug", "info", "warning", "error")
+
+# Libraries that describe their own plumbing at DEBUG. None of it says anything
+# about what the DAQ was doing, and websockets in particular dumps every frame
+# of every telemetry push - a wall of `> TEXT '{...}'` between us and the answer.
+_NOISY = {
+    "websockets": logging.WARNING,
+    "websockets.server": logging.WARNING,
+    "websockets.client": logging.WARNING,
+    "websockets.protocol": logging.WARNING,
+    "uvicorn.access": logging.CRITICAL,   # HTTP requests are not transactions
+    # uvicorn.error carries connection chatter, not errors - "WebSocket
+    # /ws/telemetry [accepted]", "connection open" - and uvicorn hands this same
+    # logger to the websockets library. Its startup and shutdown lines duplicate
+    # ours. At WARNING, real uvicorn failures still come through.
+    "uvicorn.error": logging.WARNING,
+    "uvicorn": logging.WARNING,
+    "asyncio": logging.WARNING,
+    "watchfiles": logging.WARNING,
+    "urllib3": logging.WARNING,
+    "multipart": logging.WARNING,
+}
 
 _MAX_BYTES = 2_000_000
 _KEEP = 5
@@ -90,6 +114,9 @@ def configure(level: str = "info", log_file: Optional[str] = None,
         logger.handlers.clear()
         logger.propagate = True
 
+    for name, level in _NOISY.items():
+        logging.getLogger(name).setLevel(level)
+
     _configured = True
     _active_path = path
     return path
@@ -102,3 +129,66 @@ def active_log_path() -> Optional[str]:
 
 def get(name: str = "daq") -> logging.Logger:
     return logging.getLogger(name)
+
+
+# --- transactions ------------------------------------------------------------
+# A log should read as what was attempted and how it turned out. Each `step`
+# writes an opening line when the work starts and a closing line when it
+# finishes, so entries appear in the order the work happened and nesting is
+# visible. Depth is per-thread: the readout thread and a request handler nest
+# independently rather than corrupting each other's indentation.
+
+_depth = threading.local()
+
+
+class _Step:
+    """Handle for the running step, so it can report how it turned out."""
+
+    def __init__(self):
+        self.detail = None
+        self.outcome = "ok"
+
+    def note(self, text: str) -> None:
+        """Add detail to the result line, which still reads as ok."""
+        self.detail = text
+
+    def result(self, outcome: str) -> None:
+        """Replace 'ok'. Work that finished without achieving anything - a
+        reconnect that found no unit - is not an error, but it is not ok."""
+        self.outcome = outcome
+
+
+def _indent() -> str:
+    return "  " * getattr(_depth, "level", 0)
+
+
+@contextlib.contextmanager
+def step(logger: logging.Logger, what: str, level: int = logging.INFO):
+    """Log the start and the outcome of one piece of work.
+
+        with step(log, "opening the digitizer") as s:
+            s.note("DT5742B S/N 53364")
+
+        opening the digitizer...
+        opening the digitizer: ok - DT5742B S/N 53364 (2.1s)
+    """
+    logger.log(level, "%s%s...", _indent(), what)
+    _depth.level = getattr(_depth, "level", 0) + 1
+    started = time.monotonic()
+    handle = _Step()
+    try:
+        yield handle
+    except BaseException as e:
+        _depth.level -= 1
+        # An expected failure logged at DEBUG - the automatic reconnect attempts
+        # while no unit is plugged in - must not shout ERROR every few seconds.
+        fail_level = logging.DEBUG if level <= logging.DEBUG else logging.ERROR
+        logger.log(fail_level, "%s%s: FAILED after %.1fs - %s",
+                   _indent(), what, time.monotonic() - started, e)
+        raise
+    else:
+        _depth.level -= 1
+        suffix = f" - {handle.detail}" if handle.detail else ""
+        logger.log(level, "%s%s: %s%s (%.1fs)",
+                   _indent(), what, handle.outcome, suffix,
+                   time.monotonic() - started)

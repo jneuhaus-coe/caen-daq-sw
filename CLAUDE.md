@@ -163,6 +163,31 @@ cd web && npm run dev                     # UI hot-reload, proxies API/WS to :88
   HTTP and hardware appear in one chronological account instead of two streams.
   Access logging is on only at `--log-level debug`; the UI polls status every
   second and would otherwise bury everything.
+- **Log along transactional boundaries, not events.** Every piece of real work
+  goes through `logsetup.step()`: an opening line when it starts, a closing line
+  with the outcome and how long it took. Entries appear in the order the work
+  happened - a recursion three deep writes three opens outside-in, then three
+  closes inside-out - and nesting shows as indentation, kept per-thread so the
+  readout thread and a request handler do not corrupt each other. Smoke tests
+  assert that ordering.
+  - `s.note("...")` adds detail to a successful result.
+  - `s.result("no unit found")` replaces "ok" for work that finished without
+    achieving anything. A reconnect that finds nothing is not an error, but
+    saying "ok" about it is a lie.
+  - Pass `level=logging.DEBUG` for expected failures (the automatic reconnect
+    retries); the closing line drops to DEBUG with it, instead of shouting ERROR
+    every few seconds while no unit is plugged in.
+- **HTTP is not a transaction.** Access logging is off unconditionally, and
+  `uvicorn.error`, `uvicorn`, `websockets*` and `asyncio` are pinned to WARNING
+  in `_NOISY`. The websockets library logs every frame at DEBUG, which buried
+  the log under `> TEXT '{...}'` on every telemetry push, and uvicorn lends its
+  own logger to websockets so silencing one without the other does nothing. Our
+  own lines already cover startup and shutdown.
+- **Starting acquisition with no unit refuses**, it does not raise: an exception
+  through the API produced a full ASGI traceback in the log and a 500 in the UI,
+  saying nothing the badge did not.
+- Keep log message text ASCII - a Windows console in cp1252 cannot encode an em
+  dash, and the handler raises when it tries.
 - Prefer `log.info(...)` over `print`. `print` block-buffers when stdout is not
   a terminal, so a service log stays empty until the buffer fills — which reads
   as a hang. Handlers flush on every record.
