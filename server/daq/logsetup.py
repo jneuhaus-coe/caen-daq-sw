@@ -26,6 +26,7 @@ _MAX_BYTES = 2_000_000
 _KEEP = 5
 
 _configured = False
+_active_path: Optional[str] = None
 
 
 def log_dir() -> str:
@@ -42,7 +43,7 @@ def configure(level: str = "info", log_file: Optional[str] = None,
 
     Safe to call more than once; the second call replaces the first.
     """
-    global _configured
+    global _configured, _active_path
 
     numeric = getattr(logging, level.upper(), logging.INFO)
     root = logging.getLogger()
@@ -54,11 +55,16 @@ def configure(level: str = "info", log_file: Optional[str] = None,
         except Exception:
             pass
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(numeric)
-    console.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S"))
-    root.addHandler(console)
+    # pythonw.exe - which is how the detached Windows server runs - has no
+    # stdout and no stderr at all. A StreamHandler on None fails on every record,
+    # so only attach one when there is somewhere for it to go.
+    stream = sys.stdout if sys.stdout is not None else sys.stderr
+    if stream is not None:
+        console = logging.StreamHandler(stream)
+        console.setLevel(numeric)
+        console.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S"))
+        root.addHandler(console)
 
     path = None
     if to_file:
@@ -85,7 +91,13 @@ def configure(level: str = "info", log_file: Optional[str] = None,
         logger.propagate = True
 
     _configured = True
+    _active_path = path
     return path
+
+
+def active_log_path() -> Optional[str]:
+    """The log file actually in use, or None if there is not one."""
+    return _active_path
 
 
 def get(name: str = "daq") -> logging.Logger:

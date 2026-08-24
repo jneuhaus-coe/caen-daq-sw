@@ -115,6 +115,34 @@ def find_server() -> Optional[dict]:
     }
 
 
+_kernel32 = None
+
+
+def _win_kernel32():
+    """kernel32 with real signatures.
+
+    ctypes defaults every return type to a 32-bit int, which truncates the
+    64-bit HANDLE from OpenProcess. The truncated handle then fails every call
+    made with it — and WaitForSingleObject answering WAIT_FAILED reads as "still
+    running", so a process that had already exited looked alive forever. Build
+    our own WinDLL rather than annotating the shared ctypes.windll.kernel32.
+    """
+    global _kernel32
+    if _kernel32 is None:
+        import ctypes
+        from ctypes import wintypes
+
+        lib = ctypes.WinDLL("kernel32", use_last_error=True)
+        lib.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        lib.OpenProcess.restype = wintypes.HANDLE
+        lib.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        lib.WaitForSingleObject.restype = wintypes.DWORD
+        lib.CloseHandle.argtypes = (wintypes.HANDLE,)
+        lib.CloseHandle.restype = wintypes.BOOL
+        _kernel32 = lib
+    return _kernel32
+
+
 def process_alive(pid: int) -> bool:
     """Is that pid still running?
 
@@ -123,17 +151,17 @@ def process_alive(pid: int) -> bool:
     """
     pid = int(pid)
     if os.name == "nt":
-        import ctypes
-
         SYNCHRONIZE = 0x00100000
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         WAIT_OBJECT_0 = 0
-        kernel32 = ctypes.windll.kernel32
+
+        kernel32 = _win_kernel32()
         handle = kernel32.OpenProcess(
             SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False           # gone, or owned by someone we cannot query
         try:
+            # WAIT_OBJECT_0 means the process object is signalled, i.e. exited.
             return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
         finally:
             kernel32.CloseHandle(handle)

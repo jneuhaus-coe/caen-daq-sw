@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from . import logsetup
 from .acquisition import AcquisitionEngine
 from .config import BoardConfig, default_config
 from .catalog import catalog
@@ -30,7 +31,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         engine.probe()          # keeps `opened` honest between polls
         # `app` identifies us to the launcher, which must not mistake some other
         # program holding the port for a DAQ server it can attach to.
-        return {**engine.status(), "app": "dt5742b-daq", "version": __version__}
+        return {**engine.status(), "app": "dt5742b-daq", "version": __version__,
+                "log_file": logsetup.active_log_path()}
 
     @app.post("/api/board/reconnect")
     def reconnect():

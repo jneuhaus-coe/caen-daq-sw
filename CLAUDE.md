@@ -271,6 +271,24 @@ re-running the same one-liner.
   use" with nothing holding it — because the pre-check rejected a port uvicorn
   would have taken happily. `runtime.bind_probe()` is the one place that binds,
   and a smoke test fails if the option is dropped.
+- **ctypes needs explicit `argtypes`/`restype` for every Win32 call.** Its
+  default return type is a 32-bit int, which truncates the 64-bit `HANDLE` from
+  `OpenProcess`; `WaitForSingleObject` on the truncated handle answers
+  `WAIT_FAILED`, which read as "still running" — so `daq stop` reported failure
+  about a process it had just killed, for every pid. `runtime._win_kernel32()`
+  declares the signatures on its own `WinDLL`, not on the shared
+  `ctypes.windll`. `tests/test_runtime.py` watches a child go from running to
+  gone and runs on the Windows CI runner, where this is reachable.
+- **`pythonw.exe` has no stdout and no stderr**, and that is how the detached
+  Windows server runs. A `StreamHandler` on `None` fails on every record, so
+  `logsetup` attaches a console handler only when a stream exists.
+- **`daq status` reports the *server's* log path**, published in `/api/status`,
+  not where the status command itself would write one. Those differ whenever the
+  server was started with other options or is an older build — which is how a
+  path got reported for a file that was never created.
+- The server's interpreter can be uv's **managed** Python (`pythonw3.11.exe`),
+  which lives outside the tool environment, so `install.ps1` searches both
+  `uv tool dir` and `uv python dir` for it.
 - `os.kill(pid, 0)` is the usual liveness test and is **catastrophic on
   Windows**: os.kill ignores the signal there and calls TerminateProcess, so
   asking "is it alive?" kills it. Use `runtime.process_alive()`.

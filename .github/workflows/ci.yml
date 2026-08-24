@@ -21,6 +21,7 @@ jobs:
           cd server
           python -m pip install --quiet -e ".[test]"
           python tests/test_smoke.py
+          python tests/test_runtime.py
 
       - name: Build wheel and check the UI is in it
         run: |
@@ -86,6 +87,19 @@ jobs:
       # exercised at all. It cannot be shown headlessly, but this catches the
       # failures that matter: a missing dependency, a bad pystray call, a
       # broken image, or the wrong colour for a state.
+      # process_alive is implemented with ctypes against the Win32 API, so the
+      # Linux run cannot exercise it at all - and it is exactly what broke.
+      - name: Runtime checks
+        shell: pwsh
+        run: |
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+          $py = Join-Path (uv tool dir) 'dt5742b-daq\Scripts\python.exe'
+          if (-not (Test-Path $py)) { throw "tool python not found at $py" }
+          Push-Location server
+          & $py tests/test_runtime.py
+          if ($LASTEXITCODE -ne 0) { throw 'runtime checks failed' }
+          Pop-Location
+
       - name: Tray checks
         shell: pwsh
         run: |

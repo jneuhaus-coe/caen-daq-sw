@@ -302,8 +302,15 @@ def _status(_args) -> int:
         _say(f'recording "{s.get("run_id")}" · {s.get("recorded") or 0:,} events')
     else:
         _say("acquiring" if s.get("running") else "idle")
-    if not _args.no_log_file:
-        _say(f"log: {_args.log_file or logsetup.default_log_path()}")
+    # Report the server's own log file, not where this command would write one:
+    # they differ whenever the server was started with different options, or is
+    # an older build entirely.
+    server_log = s.get("log_file")
+    if server_log:
+        missing = "" if os.path.exists(server_log) else "   (file not found)"
+        _say(f"log: {server_log}{missing}")
+    else:
+        _say("log: the running server is not writing one")
     return 0
 
 

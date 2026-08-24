@@ -56,22 +56,31 @@ function Get-UvPath {
 $toolBin  = Get-UvPath -UvArgs @('tool', 'dir', '--bin') -Fallback "$env:USERPROFILE\.local\bin"
 $daqBin   = Join-Path $toolBin 'daq.exe'
 $toolRoot = Get-UvPath -UvArgs @('tool', 'dir') -Fallback "$env:USERPROFILE\AppData\Roaming\uv\tools"
+# The interpreter actually running the server can be uv's managed Python
+# (pythonw3.11.exe), which lives outside the tool environment - so search there
+# too, or the process is invisible and uv fails to replace files it is using.
+$pyRoot = Get-UvPath -UvArgs @('python', 'dir') -Fallback "$env:LOCALAPPDATA\uv\python"
+$searchRoots = @($toolRoot, $pyRoot)
 
 # Find the server by where its executable lives, not by process name. The
 # detached server runs as pythonw.exe from inside the uv tool environment, so
 # `Get-Process -Name daq` never sees it - and uv then fails to replace that
 # environment with "Access is denied", because a file in it is still open.
 function Get-DaqProcesses {
-    param([string]$Root)
+    param([string[]]$Roots)
     $found = @()
     # An empty root would match every process on the machine via StartsWith.
-    if ([string]::IsNullOrWhiteSpace($Root)) { return , $found }
+    $Roots = @($Roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($Roots.Count -eq 0) { return , $found }
     foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
         $path = $null
         try { $path = $proc.Path } catch { $path = $null }   # protected processes throw
         if (-not $path) { continue }
-        if ($path.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $found += $proc
+        foreach ($root in $Roots) {
+            if ($path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $found += $proc
+                break
+            }
         }
     }
     # daq.exe lives in the bin directory rather than the tool environment.
@@ -113,7 +122,7 @@ if ($status) {
     if ($rt.pid) {
         # Confirm the pid is still one of ours before killing it: pids are
         # recycled, and the record may have outlived the process that wrote it.
-        $target = @(Get-DaqProcesses -Root $toolRoot) | Where-Object { $_.Id -eq $rt.pid }
+        $target = @(Get-DaqProcesses -Roots $searchRoots) | Where-Object { $_.Id -eq $rt.pid }
         if ($target) {
             Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue
         } else {
@@ -123,7 +132,7 @@ if ($status) {
     $restartHint = $true
 } else {
     # No usable record - fall back to finding it by where it runs from.
-    $running = @(Get-DaqProcesses -Root $toolRoot)
+    $running = @(Get-DaqProcesses -Roots $searchRoots)
     if ($running.Count -gt 0) {
         $pids = ($running | ForEach-Object { $_.Id }) -join ', '
         Warn "A daq server is running (pid $pids) but did not record a port we can"
@@ -138,9 +147,9 @@ if ($restartHint) {
     # is already on its way out.
     foreach ($i in 1..30) {
         Start-Sleep -Milliseconds 500
-        if (-not (Get-DaqProcesses -Root $toolRoot)) { break }
+        if (-not (Get-DaqProcesses -Roots $searchRoots)) { break }
     }
-    $left = @(Get-DaqProcesses -Root $toolRoot)
+    $left = @(Get-DaqProcesses -Roots $searchRoots)
     if ($left) {
         foreach ($proc in $left) {
             Warn ("still running: {0} (pid {1})" -f $proc.ProcessName, $proc.Id)
@@ -153,7 +162,7 @@ if ($restartHint) {
     # and the install then fails against a locked daq.exe. Say what is actually
     # happening instead of leaving a file-in-use error to be deciphered.
     Start-Sleep -Seconds 4
-    if (Get-DaqProcesses -Root $toolRoot) {
+    if (Get-DaqProcesses -Roots $searchRoots) {
         Warn 'The server came back on its own - something is restarting it.'
         Warn 'Stop the service (Task Scheduler task, or NSSM/Windows service) for'
         Warn 'the update, then re-run this installer.'
