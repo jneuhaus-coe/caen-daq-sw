@@ -233,14 +233,30 @@ re-running the same one-liner.
   deleted. `Get-DaqProcesses` matches on executable **path** under `uv tool dir`
   instead; do not put the name check back. The install also retries three times,
   because Windows can hold a handle for a moment after the process exits.
-- **`install.ps1` runs uv with a deadline** (`Invoke-Uv`, 10 min) and retries
-  three times, clearing the tool environment between attempts. Killing the
-  server mid-install leaves that environment half-removed, and uv then sits
-  retrying a directory Windows will not release, printing nothing — a silent
-  hang, which is worse than a failure. Note `Invoke-Uv` takes a **command-line
-  string**, not an array: `Start-Process` joins an array with spaces and quotes
-  nothing, so the PEP 508 spec (`dt5742b-daq @ https://...`) would arrive as
-  three arguments.
+- **`Die` must `throw`, never `exit`.** The documented invocation is
+  `irm ... | iex`, and `exit` inside `Invoke-Expression` terminates the caller's
+  PowerShell session - closing the window on the very message the user needs.
+  Verified both ways under pwsh.
+- **Never redirect a native command's stderr** (`2>$null`, `2>&1`) in this
+  script. Under `ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns
+  those records into a terminating error; that is what killed the script at
+  `uv tool update-shell`. Use try/catch. Note pwsh 7 does *not* reproduce it, so
+  local testing on 7.x will not show the bug.
+- **Keep `install.ps1` pure ASCII.** Without a BOM, PowerShell 5.1 decodes the
+  file as ANSI, so an em dash arrives as mojibake. CI lints for this.
+- CI parses and lints `install.ps1` with PSScriptAnalyzer, the counterpart to
+  shellcheck on `install.sh`. PowerShell can be run locally for the same checks:
+  download a self-contained pwsh and `Save-Module PSScriptAnalyzer`.
+- **Call uv directly in `install.ps1`; never through `Start-Process`.** A
+  `Start-Process -PassThru` wrapper was added to impose a timeout and broke the
+  installer two ways: the returned object's `ExitCode` is frequently `$null`, so
+  `$null -eq 0` judged a *successful* install a failure and the retry then
+  uninstalled it; and `Start-Process` does not quote its arguments, which splits
+  the PEP 508 spec (`dt5742b-daq @ https://...`) into three. Native invocation
+  quotes correctly and sets `$LASTEXITCODE` reliably.
+- **Judge the install by what is on disk**, not by uv's exit code: `daq.exe`
+  exists and `daq --version` runs. The retry deletes the tool environment, so
+  believing a wrong failure report destroys a working install.
 - **The installers read `runtime.json` for the pid and port** rather than
   guessing at the default. Guessing was wrong twice over: the server may be on
   any port, and on a host with a port-forward (the lima dev box) a probe of the

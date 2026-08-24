@@ -19,7 +19,10 @@ $Version = if ($env:DAQ_VERSION) { $env:DAQ_VERSION } else { 'latest' }
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn ($m) { Write-Host " !  $m" -ForegroundColor Yellow }
-function Die  ($m) { Write-Host " xx $m" -ForegroundColor Red; exit 1 }
+# throw, not exit: this script is normally run as `irm ... | iex`, and `exit`
+# inside Invoke-Expression terminates the caller's PowerShell session - closing
+# the window on the very message the user needs to read.
+function Die  ($m) { Write-Host " xx $m" -ForegroundColor Red; throw $m }
 
 # --- 1. uv, which also supplies a known-good 64-bit Python -------------------
 # Letting uv provide the interpreter removes the 32/64-bit mismatch against the
@@ -37,21 +40,32 @@ Say "uv $((uv --version) -split ' ' | Select-Object -Index 1)"
 # Ask uv where the executable goes rather than trusting PATH: a leftover `daq`
 # from an older pip install shadows the new one and makes an update look like a
 # no-op, which is a miserable thing to debug over the phone.
-$toolBin = (uv tool dir --bin 2>$null | Select-Object -First 1)
-if ($toolBin) { $toolBin = $toolBin.Trim() }
-if (-not $toolBin) { $toolBin = "$env:USERPROFILE\.local\bin" }
-$daqBin = Join-Path $toolBin 'daq.exe'
-$toolRoot = (uv tool dir 2>$null | Select-Object -First 1)
-if ($toolRoot) { $toolRoot = $toolRoot.Trim() }
-if (-not $toolRoot) { $toolRoot = "$env:USERPROFILE\AppData\Roaming\uv\tools" }
+# Anything uv prints that is not a usable path - a warning, an error, a future
+# change of format - would otherwise reach Join-Path and fail with "Cannot find
+# drive", which says nothing about what actually went wrong.
+function Get-UvPath {
+    param([string[]]$UvArgs, [string]$Fallback)
+    $value = $null
+    try { $value = (& uv @UvArgs | Select-Object -First 1) } catch { $value = $null }
+    if ($value) { $value = $value.Trim() }
+    if ($value -and (Test-Path -IsValid -Path $value)) { return $value }
+    if ($value) { Warn "uv $UvArgs returned something unusable ('$value'); using $Fallback" }
+    return $Fallback
+}
+
+$toolBin  = Get-UvPath -UvArgs @('tool', 'dir', '--bin') -Fallback "$env:USERPROFILE\.local\bin"
+$daqBin   = Join-Path $toolBin 'daq.exe'
+$toolRoot = Get-UvPath -UvArgs @('tool', 'dir') -Fallback "$env:USERPROFILE\AppData\Roaming\uv\tools"
 
 # Find the server by where its executable lives, not by process name. The
 # detached server runs as pythonw.exe from inside the uv tool environment, so
-# `Get-Process -Name daq` never sees it — and uv then fails to replace that
+# `Get-Process -Name daq` never sees it - and uv then fails to replace that
 # environment with "Access is denied", because a file in it is still open.
 function Get-DaqProcesses {
     param([string]$Root)
     $found = @()
+    # An empty root would match every process on the machine via StartsWith.
+    if ([string]::IsNullOrWhiteSpace($Root)) { return , $found }
     foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
         $path = $null
         try { $path = $proc.Path } catch { $path = $null }   # protected processes throw
@@ -96,10 +110,19 @@ if ($status) {
         Die  'Stop the recording, then re-run this installer.'
     }
     Say "Stopping the running server (pid $($rt.pid) on port $($rt.port))"
-    if ($rt.pid) { Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue }
+    if ($rt.pid) {
+        # Confirm the pid is still one of ours before killing it: pids are
+        # recycled, and the record may have outlived the process that wrote it.
+        $target = @(Get-DaqProcesses -Root $toolRoot) | Where-Object { $_.Id -eq $rt.pid }
+        if ($target) {
+            Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue
+        } else {
+            Warn "pid $($rt.pid) is no longer a daq process; not killing it."
+        }
+    }
     $restartHint = $true
 } else {
-    # No usable record — fall back to finding it by where it runs from.
+    # No usable record - fall back to finding it by where it runs from.
     $running = @(Get-DaqProcesses -Root $toolRoot)
     if ($running.Count -gt 0) {
         $pids = ($running | ForEach-Object { $_.Id }) -join ', '
@@ -175,30 +198,18 @@ if ($Version -eq 'source') {
 
 # --- 4. Install --------------------------------------------------------------
 
-# Run uv with a deadline. An installer that hangs with no output is worse than
-# one that fails: killing the server mid-install can leave the tool environment
-# half-removed, and uv then sits retrying a directory Windows will not let it
-# delete, saying nothing.
-# Takes one pre-built command line, not an array: Start-Process joins an array
-# with spaces and quotes nothing, which would split the PEP 508 spec
-# ("dt5742b-daq @ https://...") into three arguments.
-function Invoke-Uv {
-    param([string]$CommandLine, [int]$TimeoutSec)
-    $proc = Start-Process -FilePath 'uv' -ArgumentList $CommandLine -NoNewWindow -PassThru
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        Warn "uv has run for $TimeoutSec seconds without finishing; stopping it."
-        try { $proc.Kill(); $proc.WaitForExit() } catch { }
-        return 124
-    }
-    return $proc.ExitCode
-}
+# Call uv directly. An earlier version wrapped it in Start-Process to impose a
+# timeout, which was a mistake twice over: the returned object's ExitCode is
+# frequently $null, so a perfectly good install read as a failure and the retry
+# then uninstalled it; and Start-Process does not quote its arguments, which
+# would split the PEP 508 spec ("dt5742b-daq @ https://...") into three. Native
+# invocation quotes properly and sets $LASTEXITCODE reliably.
 
 $envDir = Join-Path $toolRoot $Pkg
 $installed = $false
 
 # uv takes an exclusive lock on its tools directory, so another uv - typically
 # one orphaned by a Ctrl-C on an earlier run - makes this one wait in silence.
-# Say so before starting, not after the deadline expires.
 $otherUv = @(Get-Process -Name uv -ErrorAction SilentlyContinue)
 if ($otherUv.Count -gt 0) {
     foreach ($proc in $otherUv) {
@@ -212,20 +223,38 @@ if ($otherUv.Count -gt 0) {
 
 foreach ($attempt in 1..3) {
     Say "Installing $Pkg on Python $PyVer (attempt $attempt of 3)"
-    $line = "tool install --python $PyVer --force"
-    if ($attempt -gt 1) { $line += ' --verbose' }    # say where it is stuck
-    $line += ' "' + $Spec + '"'
+    if ($attempt -gt 1) {
+        uv tool install --python $PyVer --force --verbose $Spec
+    } else {
+        uv tool install --python $PyVer --force $Spec
+    }
+    $code = $LASTEXITCODE
 
-    $code = Invoke-Uv -CommandLine $line -TimeoutSec 600
-    if ($code -eq 0) { $installed = $true; break }
+    # What is on disk decides, not the exit code. uv can report oddly while
+    # having installed perfectly well, and the cost of believing it is that the
+    # retry deletes a working install.
+    $works = $false
+    if (Test-Path $daqBin) {
+        try {
+            & $daqBin --version | Out-Null
+            $works = ($LASTEXITCODE -eq 0)
+        } catch { $works = $false }
+    }
+
+    if ($works) {
+        if ($code -ne 0) {
+            Warn "uv exited $code, but $daqBin is installed and runs - continuing."
+        }
+        $installed = $true
+        break
+    }
 
     if ($attempt -lt 3) {
-        Warn "install attempt $attempt did not succeed (exit $code)."
-        # Clear the environment out rather than asking uv to repair one that is
-        # locked or half-deleted. Nothing of value lives in it - it is rebuilt
-        # from the wheel every time.
+        Warn "install attempt $attempt did not produce a working daq (uv exit $code)."
         Warn 'clearing the tool environment and trying again...'
-        Invoke-Uv -CommandLine "tool uninstall $Pkg" -TimeoutSec 120 | Out-Null
+        # try/catch, not a redirect: `2>&1` turns a native command's stderr into
+        # error records, which terminate under ErrorActionPreference=Stop.
+        try { uv tool uninstall $Pkg | Out-Null } catch { }
         if (Test-Path $envDir) {
             Remove-Item -Recurse -Force $envDir -ErrorAction SilentlyContinue
         }
@@ -247,7 +276,7 @@ if (-not $installed) {
 
 # Only when it is needed, and never fatally: uv errors out if the directory is
 # already on PATH, and with ErrorActionPreference=Stop a native command's stderr
-# becomes a terminating error — which would kill the script after a good install.
+# becomes a terminating error - which would kill the script after a good install.
 if (($env:Path -split ';') -notcontains $toolBin) {
     try { uv tool update-shell | Out-Null } catch { }
 }

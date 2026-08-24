@@ -40,6 +40,33 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck install.sh
 
+      # The Windows job runs install.ps1, but only down one path. Parsing and
+      # linting it catches the rest - and PowerShell mistakes are the ones that
+      # have actually bitten here.
+      - name: Parse and lint install.ps1
+        shell: pwsh
+        run: |
+          $errors = $null; $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              "$PWD/install.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) {
+              $errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }
+              throw "install.ps1 has parse errors"
+          }
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          # Write-Host is deliberate (a coloured installer), the plural noun is
+          # deliberate, the empty catches are deliberate, and Invoke-Expression
+          # is uv's own documented bootstrap.
+          $ignore = @('PSAvoidUsingWriteHost', 'PSUseSingularNouns',
+                      'PSAvoidUsingEmptyCatchBlock', 'PSAvoidUsingInvokeExpression')
+          $found = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning |
+                   Where-Object { $_.RuleName -notin $ignore }
+          if ($found) {
+              $found | Format-Table Line, RuleName, Message -AutoSize | Out-String | Write-Host
+              throw "PSScriptAnalyzer findings in install.ps1"
+          }
+          Write-Host "install.ps1: parse OK, lint clean"
+
   install-windows:
     name: install.ps1 on Windows
     runs-on: windows-latest
