@@ -217,44 +217,85 @@ def _serve(args, with_tray: bool) -> int:
 
 def _launch(args) -> int:
     """Attach to a running server if there is one; otherwise start it."""
-    live = runtime.find_server()
+    with logsetup.step(log, "looking for a server already running") as looking:
+        live = runtime.find_server()
+        if live is None:
+            # The runtime record can go missing - a crash, a cleaned state
+            # directory, an older server that never wrote one. Ask the port
+            # itself before concluding nothing is there, or we would start a
+            # second server on top of a live one.
+            if runtime.probe(args.port) is not None:
+                live = {"url": runtime.url_for(args.host, args.port),
+                        "version": __version__}
+        looking.result(f"found one at {live['url']}" if live else "none running")
+
     if live:
-        if live["version"] != __version__:
-            _say(f"note: the running server is {live['version']}, this command is "
-                 f"{__version__}. Restart it to pick up the update.")
-        how = launcher.open_ui(live["url"])
-        _say(f"attached to the server already running at {live['url']} ({how})")
+        if live.get("version") != __version__:
+            log.warning("the running server is %s, this command is %s - "
+                        "restart it to pick up the update",
+                        live.get("version"), __version__)
+        with logsetup.step(log, "opening a window on it") as opening:
+            opening.note(launcher.open_ui(live["url"]))
         return 0
-
-    # The runtime record can go missing — a crash, a cleaned state directory, an
-    # older server that never wrote one. Ask the port itself before concluding
-    # nothing is there, or we would start a second server on top of a live one.
-    orphan = runtime.probe(args.port)
-    if orphan is not None:
-        url = runtime.url_for(args.host, args.port)
-        how = launcher.open_ui(url)
-        _say(f"attached to the server already running at {url} ({how})")
-        return 0
-
-    _check_bindable(args.host, args.port)
 
     # Windows gets a tray icon, so the server can detach and this command can
     # return. Without one there would be no way to see or stop it, so elsewhere
     # it stays in the foreground and Ctrl-C ends it.
     from . import tray
+    url = runtime.url_for(args.host, args.port)
+
     if os.name == "nt" and tray.available():
-        launcher.start_server_detached(args.host, args.port, args.no_open, tray=True)
-        if launcher.wait_for_server(args.port) is None:
-            _err("the server did not come up. Run 'daq --serve' to see why.")
-            return 1
-        url = runtime.url_for(args.host, args.port)
-        how = launcher.open_ui(url)
-        _say(f"server started at {url} ({how}) - it keeps running in the tray.")
+        # Check here as well as in the server: spawning a detached process only
+        # to have it fail invisibly is worth one cheap test to avoid.
+        with logsetup.step(log, f"checking port {args.port} is free"):
+            _check_bindable(args.host, args.port)
+        with logsetup.step(log, "starting the server in the background") as starting:
+            proc = launcher.start_server_detached(args.host, args.port,
+                                                  args.no_open, tray=True)
+            if not _wait_for_detached(proc, args.port):
+                starting.result("it did not come up")
+                _report_failed_start(proc)
+                return 1
+            starting.note(f"pid {proc.pid}")
+        with logsetup.step(log, f"opening the DAQ at {url}") as opening:
+            opening.note(launcher.open_ui(url))
+        log.info("the server keeps running in the tray after this window closes")
         return 0
 
-    url = runtime.url_for(args.host, args.port)
     threading.Timer(1.5, launcher.open_ui, args=(url,)).start()
     return _serve(args, with_tray=False)
+
+
+def _wait_for_detached(proc, port: int, timeout: float = 30.0) -> bool:
+    """Wait for the detached server to answer, saying so while it happens.
+
+    Silence here was indistinguishable from a hang: the command sat for the
+    whole timeout with no output whatever the server was doing.
+    """
+    deadline = time.monotonic() + timeout
+    announced = 0.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            log.error("the server process exited immediately (code %s)", proc.returncode)
+            return False
+        if runtime.probe(port, timeout=1.0) is not None:
+            return True
+        waited = timeout - (deadline - time.monotonic())
+        if waited - announced >= 3.0:
+            announced = waited
+            log.info("  still waiting for the server (%.0fs)...", waited)
+        time.sleep(0.25)
+    log.error("the server did not answer on port %s within %.0fs", port, timeout)
+    return False
+
+
+def _report_failed_start(proc) -> None:
+    """The detached server writes nowhere this console can see, so say where to
+    look rather than leaving the operator with a bare failure."""
+    path = logsetup.active_log_path()
+    if path:
+        log.error("its log is at %s", path)
+    log.error("run 'daq --serve' in this window to watch it start")
 
 
 def _stop(_args) -> int:

@@ -458,6 +458,15 @@ Built. `daq` is the only command an operator needs.
   and **returns**, so `run()` finishes, the `finally` runs (it never did before)
   and the process exits 0. That is just as clean for systemd: `on-failure` does
   not restart on exit 0 any more than on SIGTERM.
+- **The launcher narrates too.** `daq` used to log nothing at all: it looked for
+  a running server, spawned a detached one and waited up to 30s in complete
+  silence, which is indistinguishable from a hang. Every stage is a `step` now,
+  and the wait reports progress every few seconds.
+- **Detect a detached server that died rather than waiting out the timeout.**
+  `start_server_detached` returns the `Popen` so `_wait_for_detached` can poll
+  `proc.poll()`; a server that fails on startup is reported in a fraction of a
+  second instead of after 30. Its own output goes nowhere the launching console
+  can see, so the failure message names the log file and suggests `daq --serve`.
 - **A second signal always exits**, via `os._exit(1)`. Whatever is wedged, a
   second Ctrl-C must end the process rather than leave a console sitting there.
 - Tray behaviour is verified by `tests/test_tray.py`, which runs anywhere

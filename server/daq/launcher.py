@@ -133,8 +133,14 @@ def _windowless_python() -> str:
     return exe
 
 
-def start_server_detached(host: str, port: int, no_open: bool, tray: bool = True) -> None:
-    """Start the server as its own process, outliving this one."""
+def start_server_detached(host: str, port: int, no_open: bool,
+                          tray: bool = True) -> subprocess.Popen:
+    """Start the server as its own process, outliving this one.
+
+    Returns the handle so the caller can tell "still starting" from "died on the
+    way up" - otherwise a server that fails immediately looks identical to a
+    slow one, for the whole timeout.
+    """
     argv = _server_argv(host, port, no_open)
     argv[0] = _windowless_python()
     if tray:
@@ -148,7 +154,7 @@ def start_server_detached(host: str, port: int, no_open: bool, tray: bool = True
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(argv, **kwargs)
+    return subprocess.Popen(argv, **kwargs)
 
 
 def wait_for_server(port: int, timeout: float = 30.0, stop=None) -> Optional[dict]:
