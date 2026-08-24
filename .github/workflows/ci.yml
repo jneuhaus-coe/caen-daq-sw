@@ -7,16 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-# `release.sh` pushes the version-bump commit and its tag together, which would
-# otherwise start CI and Release on the same code at the same time. The Release
-# workflow builds and tests that exact commit itself, and a bump commit contains
-# nothing but the version string — release.sh refuses to run on a dirty tree —
-# so the installer and shellcheck results cannot differ from the commit before
-# it. Skip CI there and let Release be the single build.
   tests:
     name: Smoke tests and wheel
     runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.event.head_commit.message, 'Release v') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,7 +43,6 @@ jobs:
   install-windows:
     name: install.ps1 on Windows
     runs-on: windows-latest
-    if: ${{ !startsWith(github.event.head_commit.message, 'Release v') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -105,7 +97,6 @@ jobs:
   install-linux:
     name: install.sh on Linux
     runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.event.head_commit.message, 'Release v') }}
     steps:
       - uses: actions/checkout@v4
       - name: Run the installer

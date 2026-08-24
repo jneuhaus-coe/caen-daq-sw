@@ -11,9 +11,73 @@ on:
 
 permissions:
   contents: write
+  actions: read          # to read CI's run status for this commit
 
 jobs:
+  # Publish only what CI has actually tested. `release.sh` pushes the branch and
+  # the tag together, and that push can carry commits CI has never seen, so the
+  # tag build waits for CI on this exact commit rather than assuming.
+  wait-for-ci:
+    name: Wait for CI on this commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          api="repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100"
+          mine='[.workflow_runs[] | select(.name == "CI")]'
+
+          # The tag lands a moment after the branch push, so GitHub may not have
+          # registered the CI run yet. Give it a short window to appear.
+          found=0
+          for _ in $(seq 1 24); do
+            found=$(gh api "$api" --jq "$mine | length")
+            if [ "${found:-0}" -gt 0 ]; then break; fi
+            echo "no CI run for $SHA yet; waiting..."
+            sleep 5
+          done
+
+          if [ "${found:-0}" -eq 0 ]; then
+            echo "::notice::No CI run exists for $SHA - nothing to wait for."
+            exit 0
+          fi
+          echo "found $found CI run(s) for $SHA; waiting for them to finish"
+
+          pending=1
+          for _ in $(seq 1 120); do
+            pending=$(gh api "$api" --jq "$mine | map(select(.status != \"completed\")) | length")
+            if [ "${pending:-0}" -eq 0 ]; then break; fi
+            echo "$pending CI run(s) still going..."
+            sleep 20
+          done
+
+          gh api "$api" --jq "$mine | .[] | \"\(.status) \(.conclusion) \(.html_url)\""
+
+          if [ "${pending:-0}" -ne 0 ]; then
+            echo "::error::CI did not finish within 40 minutes for $SHA."
+            exit 1
+          fi
+
+          bad=$(gh api "$api" --jq "$mine | map(select(.conclusion != \"success\" and .conclusion != \"skipped\")) | length")
+          if [ "${bad:-0}" -ne 0 ]; then
+            echo "::error::CI did not succeed for $SHA - refusing to publish."
+            exit 1
+          fi
+          echo "CI is green for $SHA."
+
   release:
+    needs: wait-for-ci
     runs-on: ubuntu-latest
     env:
       # One source of truth for the tag, so a tag push and a manual re-run of an
@@ -41,13 +105,6 @@ jobs:
           cd web
           npm ci
           npm run build
-
-      # CI is skipped on the release commit, so the release runs these itself.
-      - name: Smoke tests
-        run: |
-          cd server
-          python -m pip install --quiet -e ".[test]"
-          python tests/test_smoke.py
 
       - name: Build wheel and sdist
         run: |

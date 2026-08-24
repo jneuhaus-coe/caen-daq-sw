@@ -56,14 +56,15 @@ if [ -t 0 ]; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-    # The "Release v..." prefix is load-bearing: CI skips commits with it, so
-    # that pushing the bump and its tag together starts one build (Release)
-    # rather than two. Change the wording here and in ci.yml together.
     git commit -q -am "Release $tag"
 fi
 git tag "$tag"
 git push -q origin "$branch"
 git push -q origin "$tag"
+
+# The branch push starts CI; the tag push starts the release, which waits for
+# that CI run to finish before publishing. Pushing the branch first is what lets
+# it find the run.
 
 url="$(git remote get-url origin)"
 case "$url" in
