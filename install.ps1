@@ -174,23 +174,77 @@ if ($Version -eq 'source') {
 }
 
 # --- 4. Install --------------------------------------------------------------
-Say "Installing $Pkg on Python $PyVer"
+
+# Run uv with a deadline. An installer that hangs with no output is worse than
+# one that fails: killing the server mid-install can leave the tool environment
+# half-removed, and uv then sits retrying a directory Windows will not let it
+# delete, saying nothing.
+# Takes one pre-built command line, not an array: Start-Process joins an array
+# with spaces and quotes nothing, which would split the PEP 508 spec
+# ("dt5742b-daq @ https://...") into three arguments.
+function Invoke-Uv {
+    param([string]$CommandLine, [int]$TimeoutSec)
+    $proc = Start-Process -FilePath 'uv' -ArgumentList $CommandLine -NoNewWindow -PassThru
+    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+        Warn "uv has run for $TimeoutSec seconds without finishing; stopping it."
+        try { $proc.Kill(); $proc.WaitForExit() } catch { }
+        return 124
+    }
+    return $proc.ExitCode
+}
+
+$envDir = Join-Path $toolRoot $Pkg
 $installed = $false
+
+# uv takes an exclusive lock on its tools directory, so another uv - typically
+# one orphaned by a Ctrl-C on an earlier run - makes this one wait in silence.
+# Say so before starting, not after the deadline expires.
+$otherUv = @(Get-Process -Name uv -ErrorAction SilentlyContinue)
+if ($otherUv.Count -gt 0) {
+    foreach ($proc in $otherUv) {
+        $started = '?'
+        try { $started = $proc.StartTime } catch { }   # throws if not queryable
+        Warn ("another uv is already running: pid {0}, started {1}" -f $proc.Id, $started)
+    }
+    Warn 'It holds a lock on the uv tools directory, so this install will wait for it.'
+    Warn 'If it is left over from an interrupted run, end it: Stop-Process -Name uv -Force'
+}
+
 foreach ($attempt in 1..3) {
-    uv tool install --python $PyVer --force $Spec
-    if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+    Say "Installing $Pkg on Python $PyVer (attempt $attempt of 3)"
+    $line = "tool install --python $PyVer --force"
+    if ($attempt -gt 1) { $line += ' --verbose' }    # say where it is stuck
+    $line += ' "' + $Spec + '"'
+
+    $code = Invoke-Uv -CommandLine $line -TimeoutSec 600
+    if ($code -eq 0) { $installed = $true; break }
+
     if ($attempt -lt 3) {
-        # "Access is denied" here is almost always a handle Windows has not
-        # released yet on the tool environment we are replacing.
-        Warn "install attempt $attempt failed; waiting for Windows to release the files..."
+        Warn "install attempt $attempt did not succeed (exit $code)."
+        # Clear the environment out rather than asking uv to repair one that is
+        # locked or half-deleted. Nothing of value lives in it - it is rebuilt
+        # from the wheel every time.
+        Warn 'clearing the tool environment and trying again...'
+        Invoke-Uv -CommandLine "tool uninstall $Pkg" -TimeoutSec 120 | Out-Null
+        if (Test-Path $envDir) {
+            Remove-Item -Recurse -Force $envDir -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Seconds 3
     }
 }
+
 if (-not $installed) {
-    Warn 'If this says "Access is denied" on the uv scripts directory, something is'
-    Warn 'still using it. Check for a running daq (daq stop) or pythonw.exe.'
+    Warn 'The install did not complete. The usual causes, in order:'
+    Warn '  1. Something is still using the tool environment. Close any daq'
+    Warn "     window, run 'daq stop', and look for pythonw.exe in Task Manager."
+    Warn "  2. The console is in selection mode - click it and press Esc, since"
+    Warn '     that pauses whatever is running.'
+    Warn "  3. An orphaned uv holding the tools lock: Stop-Process -Name uv -Force"
+    Warn "  4. A wedged download cache: uv cache clean"
+    Warn "  5. Remove the environment by hand and re-run: $envDir"
     Die  'uv tool install failed.'
 }
+
 # Only when it is needed, and never fatally: uv errors out if the directory is
 # already on PATH, and with ErrorActionPreference=Stop a native command's stderr
 # becomes a terminating error — which would kill the script after a good install.

@@ -233,6 +233,14 @@ re-running the same one-liner.
   deleted. `Get-DaqProcesses` matches on executable **path** under `uv tool dir`
   instead; do not put the name check back. The install also retries three times,
   because Windows can hold a handle for a moment after the process exits.
+- **`install.ps1` runs uv with a deadline** (`Invoke-Uv`, 10 min) and retries
+  three times, clearing the tool environment between attempts. Killing the
+  server mid-install leaves that environment half-removed, and uv then sits
+  retrying a directory Windows will not release, printing nothing — a silent
+  hang, which is worse than a failure. Note `Invoke-Uv` takes a **command-line
+  string**, not an array: `Start-Process` joins an array with spaces and quotes
+  nothing, so the PEP 508 spec (`dt5742b-daq @ https://...`) would arrive as
+  three arguments.
 - **The installers read `runtime.json` for the pid and port** rather than
   guessing at the default. Guessing was wrong twice over: the server may be on
   any port, and on a host with a port-forward (the lima dev box) a probe of the
