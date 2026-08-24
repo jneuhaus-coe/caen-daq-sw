@@ -55,6 +55,10 @@ daq --serve            run the server only: no window, no tray icon
 daq --help             all options
 ```
 
+Logging goes to the console and to a file. `--log-level debug` adds detail
+(including every HTTP request), `--log-file PATH` moves the file, and
+`--no-log-file` turns it off.
+
 **`daq` is the only command you need.** Run it and the DAQ opens in its own
 window. Run it again — from a shortcut, a second terminal, whenever — and it
 finds the server already running and opens another window onto it. It never
@@ -279,10 +283,23 @@ check the USB cable, then see [Install](#install).
 Check the indicator is red and counting. **Start** only watches; **Record**
 writes.
 
+**The badge is red for the first few seconds after starting.**
+That is normal. The server brings the UI up without waiting for the digitizer,
+because opening it loads the DRS4 correction tables and takes a moment. The
+badge turns green on its own. If it stays red, see above.
+
 **Reporting a problem from a distance.**
-Send `daq --version`, the **Errors** panel contents, what the badge says, and
-the server log — the console window on Windows, or `journalctl -u daq -n 100`
-on Linux.
+Send `daq --version` and **the log file** — that is the whole story, including
+what the server was doing when it went wrong. `daq status` prints its location:
+
+```
+%LOCALAPPDATA%\dt5742b-daq\logs\daq.log      Windows
+~/.local/state/dt5742b-daq/logs/daq.log       Linux
+```
+
+The file always records full detail regardless of what the console shows, and
+rotates at 2 MB keeping the last five. The **Errors** panel contents and what
+the badge says are still worth including.
 
 ---
 

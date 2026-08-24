@@ -156,7 +156,7 @@ def port_owner(port: int) -> Optional[str]:
 
     try:
         if os.name == "nt":
-            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=15,
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=5,
                                  capture_output=True, text=True).stdout
             pid = None
             for line in out.splitlines():
@@ -170,14 +170,14 @@ def port_owner(port: int) -> Optional[str]:
                 return None
             listing = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                timeout=15, capture_output=True, text=True).stdout.strip()
+                timeout=5, capture_output=True, text=True).stdout.strip()
             name = ""
             if listing and not listing.upper().startswith("INFO"):
                 name = listing.split(",")[0].strip('"')
             return f"{name or 'process'} (pid {pid})"
 
         out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
-                             timeout=15, capture_output=True, text=True).stdout
+                             timeout=5, capture_output=True, text=True).stdout
         rows = [r for r in out.splitlines()[1:] if r.strip()]
         if not rows:
             return None

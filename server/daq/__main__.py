@@ -10,17 +10,20 @@ import time
 
 import uvicorn
 
-from . import __version__, launcher, runtime
+from . import __version__, launcher, logsetup, runtime
 from .acquisition import AcquisitionEngine
 from .server import create_app
 
 
+log = logsetup.get("daq")
+
+
 def _err(msg: str) -> None:
-    print(f"[daq] {msg}", file=sys.stderr)
+    log.error(msg)
 
 
 def _say(msg: str) -> None:
-    print(f"[daq] {msg}")
+    log.info(msg)
 
 
 def _check_bindable(host: str, port: int) -> None:
@@ -35,7 +38,7 @@ def _check_bindable(host: str, port: int) -> None:
         return
 
     if e.errno == errno.EADDRINUSE:
-        _err(f"port {port} is already in use.")
+        _err(f"port {port} is already in use. Looking up what holds it...")
         owner = runtime.port_owner(port)
         if owner:
             _err(f"it is held by {owner}.")
@@ -54,6 +57,40 @@ def _check_bindable(host: str, port: int) -> None:
     else:
         _err(f"cannot bind {host}:{port}: {e}")
     raise SystemExit(2)
+
+
+# How long startup waits for the digitizer before bringing the UI up anyway.
+# Opening it loads the DRS4 correction tables, and there is no reason the web UI
+# should be unreachable while that happens — it renders a disconnected badge
+# perfectly well, and the badge turns green by itself when the open completes.
+BOARD_OPEN_WAIT_S = 5.0
+
+
+def _open_board_in_background(engine, wait_s: float) -> threading.Thread:
+    """Start opening the digitizer on a worker; wait a little, then carry on."""
+    board_log = logsetup.get("daq.board")
+
+    def work():
+        started = time.monotonic()
+        board_log.info("opening the digitizer...")
+        try:
+            info = engine.open()
+            board_log.info("digitizer open: %s serial %s (ROC %s, AMC %s) in %.1fs",
+                           info.model, info.serial, info.roc_firmware,
+                           info.amc_firmware, time.monotonic() - started)
+        except Exception as e:
+            board_log.warning("could not open the digitizer after %.1fs: %s",
+                              time.monotonic() - started, e)
+            board_log.info("the UI will show it disconnected and keep retrying; "
+                           "press Reconnect once the unit is ready")
+
+    thread = threading.Thread(target=work, name="board-open", daemon=True)
+    thread.start()
+    thread.join(wait_s)
+    if thread.is_alive():
+        board_log.info("digitizer still opening after %.0fs — bringing the UI up now; "
+                       "it will connect on its own", wait_s)
+    return thread
 
 
 class _ThreadedServer(uvicorn.Server):
@@ -85,6 +122,7 @@ def _install_runtime_cleanup() -> None:
     where no handler of ours would run at all.
     """
     def handler(signum, _frame):
+        log.info("signal %s received — shutting down", signal.Signals(signum).name)
         runtime.clear()
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
@@ -98,30 +136,33 @@ def _install_runtime_cleanup() -> None:
 
 def _serve(args, with_tray: bool) -> int:
     """Run the server. Blocks until it is shut down."""
+    log.info("dt5742b-daq %s starting on %s:%s", __version__, args.host, args.port)
+    log.debug("python %s from %s", sys.version.split()[0], sys.executable)
     _check_bindable(args.host, args.port)
+    log.debug("port %s is bindable", args.port)
 
     engine = AcquisitionEngine()
     if not args.no_open:
-        try:
-            info = engine.open()
-            _say(f"opened: {info.model} (sw={info.sw_release})")
-        except Exception as e:
-            _say(f"WARNING: could not open board at startup: {e}")
-            _say("will retry on first Start.")
+        _open_board_in_background(engine, BOARD_OPEN_WAIT_S)
+    else:
+        log.info("--no-open: not opening the digitizer; it opens on first Start")
 
     app = create_app(engine)
     url = runtime.url_for(args.host, args.port)
-    _say(f"dt5742b-daq {__version__} — UI at {url}")
+    log.info("serving the UI at %s", url)
 
     # Bound the graceful shutdown. Measured at ~0.5s with a client on the
     # telemetry socket, so this never bites in practice — but uvicorn's default
     # is to wait forever, and one wedged connection would be enough to make
     # `daq stop` and the installer's shutdown hang with no way to tell why.
     config = uvicorn.Config(app, host=args.host, port=args.port,
-                            log_level="warning", timeout_graceful_shutdown=10)
+                            log_config=None,          # keep our handlers
+                            access_log=(args.log_level == "debug"),
+                            timeout_graceful_shutdown=10)
     server = _ThreadedServer(config) if with_tray else uvicorn.Server(config)
 
     runtime.write(args.host, args.port)
+    log.debug("runtime record written to %s", runtime.runtime_path())
     _install_runtime_cleanup()
     try:
         if with_tray:
@@ -135,13 +176,16 @@ def _serve(args, with_tray: bool) -> int:
                 _err("run 'daq --serve' in a terminal to see the error.")
                 return 1
             from . import tray
+            log.info("showing the tray icon; the server keeps running until you quit it")
             tray.run(engine, url,
                      shutdown=lambda: setattr(server, "should_exit", True),
                      open_ui=launcher.open_ui)
             thread.join(timeout=10)
         else:
+            log.info("ready — press Ctrl-C to stop")
             server.run()
     finally:
+        log.info("shutting down")
         runtime.clear()
         try:
             engine.close()
@@ -258,6 +302,8 @@ def _status(_args) -> int:
         _say(f'recording "{s.get("run_id")}" · {s.get("recorded") or 0:,} events')
     else:
         _say("acquiring" if s.get("running") else "idle")
+    if not _args.no_log_file:
+        _say(f"log: {_args.log_file or logsetup.default_log_path()}")
     return 0
 
 
@@ -283,7 +329,19 @@ def main():
                    help="open a window onto an existing server and exit, starting nothing")
     p.add_argument("--no-open", action="store_true",
                    help="do not open the board at startup (open on first Start)")
+    p.add_argument("--log-level", default="info", choices=logsetup.LEVELS,
+                   help="console detail (default: %(default)s); the log file "
+                        "always records everything")
+    p.add_argument("--log-file", metavar="PATH",
+                   help=f"where to write the log (default: {logsetup.default_log_path()})")
+    p.add_argument("--no-log-file", action="store_true",
+                   help="console only, write no log file")
     args = p.parse_args()
+
+    path = logsetup.configure(level=args.log_level, log_file=args.log_file,
+                              to_file=not args.no_log_file)
+    if path:
+        log.debug("logging to %s", path)
 
     if args.command == "stop":
         return _stop(args)

@@ -32,6 +32,10 @@ class AcquisitionEngine:
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
         self._lock = threading.Lock()
+        # Serialises opening the board. Startup now opens on a worker thread, so
+        # a status poll arriving mid-open would otherwise call _try_open and put
+        # a second thread inside libCAENDigitizer on the same handle.
+        self._open_lock = threading.RLock()
         self._events_seen = 0
         self._errors: list[str] = []
         self._opened = False
@@ -39,16 +43,22 @@ class AcquisitionEngine:
 
     # ---------- lifecycle ----------
     def open(self):
-        self._backend = make_backend()
-        self._board_info = self._backend.open()
-        self._opened = True
-        # The board, not our last-used file, is the source of truth.
-        cfg, errs = self._backend.read_settings(self._cfg)
-        with self._lock:
-            self._cfg = cfg
-        for e in errs:
-            self._record_error(f"read settings: {e}")
-        return self._board_info
+        with self._open_lock:
+            backend = make_backend()
+            board_info = backend.open()
+            self._backend = backend
+            self._board_info = board_info
+            # The board, not our last-used file, is the source of truth.
+            cfg, errs = backend.read_settings(self._cfg)
+            with self._lock:
+                self._cfg = cfg
+            for e in errs:
+                self._record_error(f"read settings: {e}")
+            # Last, not first: while this is False every other path treats the
+            # unit as absent and keeps off the wire, so nothing talks to a board
+            # that is still being set up.
+            self._opened = True
+            return self._board_info
 
     def get_config(self) -> BoardConfig:
         with self._lock:
@@ -151,6 +161,16 @@ class AcquisitionEngine:
         now = time.monotonic()
         if not force and now - self._last_open_attempt < C.RECONNECT_RETRY_S:
             return
+        # An open is already running: leave it alone rather than starting a
+        # second one on the same hardware.
+        if not self._open_lock.acquire(blocking=False):
+            return
+        try:
+            self._open_locked(force, now)
+        finally:
+            self._open_lock.release()
+
+    def _open_locked(self, force: bool, now: float):
         self._last_open_attempt = now
         if self._backend is not None:
             try:

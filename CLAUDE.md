@@ -154,6 +154,30 @@ cd web && npm install && npm run build   # rebuild UI into server/daq/static
 cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8800
 ```
 
+## Logging and startup
+
+- **`logsetup.configure()` owns logging.** Console at the chosen level, plus a
+  rotating file at DEBUG always (`<state dir>/logs/daq.log`, 2 MB x 5) so a
+  problem reported from a distance can be answered from a file. uvicorn's
+  loggers are re-parented onto ours (`log_config=None` in `uvicorn.Config`), so
+  HTTP and hardware appear in one chronological account instead of two streams.
+  Access logging is on only at `--log-level debug`; the UI polls status every
+  second and would otherwise bury everything.
+- Prefer `log.info(...)` over `print`. `print` block-buffers when stdout is not
+  a terminal, so a service log stays empty until the buffer fills — which reads
+  as a hang. Handlers flush on every record.
+- **The digitizer opens on a worker thread**, and startup waits only
+  `BOARD_OPEN_WAIT_S` (5 s) before serving the UI anyway. The badge renders
+  disconnected and turns green by itself. Announce before slow work: with no
+  output until the open finished, a normal startup was indistinguishable from a
+  hang, which is exactly how it was reported.
+- That made `AcquisitionEngine._open_lock` necessary. `probe()` runs on every
+  status poll and calls `_try_open()`, so a poll arriving mid-open would have
+  started a **second** open on the same handle. `_try_open` now takes the lock
+  non-blockingly and gives up if an open is already running, and `open()` sets
+  `_opened` **last** so every other path keeps off the wire until the unit is
+  fully set up.
+
 ## Packaging and install
 
 Operators install with a one-liner (`install.sh` / `install.ps1` at the repo
