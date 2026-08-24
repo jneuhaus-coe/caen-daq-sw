@@ -37,9 +37,33 @@ Say "uv $((uv --version) -split ' ' | Select-Object -Index 1)"
 # Ask uv where the executable goes rather than trusting PATH: a leftover `daq`
 # from an older pip install shadows the new one and makes an update look like a
 # no-op, which is a miserable thing to debug over the phone.
-$toolBin = (uv tool dir --bin 2>$null)
+$toolBin = (uv tool dir --bin 2>$null | Select-Object -First 1)
+if ($toolBin) { $toolBin = $toolBin.Trim() }
 if (-not $toolBin) { $toolBin = "$env:USERPROFILE\.local\bin" }
 $daqBin = Join-Path $toolBin 'daq.exe'
+$toolRoot = (uv tool dir 2>$null | Select-Object -First 1)
+if ($toolRoot) { $toolRoot = $toolRoot.Trim() }
+if (-not $toolRoot) { $toolRoot = "$env:USERPROFILE\AppData\Roaming\uv\tools" }
+
+# Find the server by where its executable lives, not by process name. The
+# detached server runs as pythonw.exe from inside the uv tool environment, so
+# `Get-Process -Name daq` never sees it — and uv then fails to replace that
+# environment with "Access is denied", because a file in it is still open.
+function Get-DaqProcesses {
+    param([string]$Root)
+    $found = @()
+    foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $proc.Path } catch { $path = $null }   # protected processes throw
+        if (-not $path) { continue }
+        if ($path.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $found += $proc
+        }
+    }
+    # daq.exe lives in the bin directory rather than the tool environment.
+    $found += @(Get-Process -Name daq -ErrorAction SilentlyContinue)
+    , ($found | Sort-Object -Property Id -Unique)
+}
 
 # --- 2. Stop a server that is already running --------------------------------
 # Windows will not let a running executable be replaced, so an update simply
@@ -75,8 +99,8 @@ if ($status) {
     if ($rt.pid) { Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue }
     $restartHint = $true
 } else {
-    # No usable record — fall back to finding the process by name.
-    $running = @(Get-Process -Name daq -ErrorAction SilentlyContinue)
+    # No usable record — fall back to finding it by where it runs from.
+    $running = @(Get-DaqProcesses -Root $toolRoot)
     if ($running.Count -gt 0) {
         $pids = ($running | ForEach-Object { $_.Id }) -join ', '
         Warn "A daq server is running (pid $pids) but did not record a port we can"
@@ -91,17 +115,22 @@ if ($restartHint) {
     # is already on its way out.
     foreach ($i in 1..30) {
         Start-Sleep -Milliseconds 500
-        if (-not (Get-Process -Name daq -ErrorAction SilentlyContinue)) { break }
+        if (-not (Get-DaqProcesses -Root $toolRoot)) { break }
     }
-    if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
-        Die 'The daq server was still running 15s after being asked to stop. Stop it yourself (daq stop), then re-run this installer.'
+    $left = @(Get-DaqProcesses -Root $toolRoot)
+    if ($left) {
+        foreach ($proc in $left) {
+            Warn ("still running: {0} (pid {1})" -f $proc.ProcessName, $proc.Id)
+        }
+        Warn 'uv cannot replace files these are using.'
+        Die  'Stop them (daq stop, or end them in Task Manager), then re-run this installer.'
     }
 
     # A service manager set to restart unconditionally brings it straight back,
     # and the install then fails against a locked daq.exe. Say what is actually
     # happening instead of leaving a file-in-use error to be deciphered.
     Start-Sleep -Seconds 4
-    if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
+    if (Get-DaqProcesses -Root $toolRoot) {
         Warn 'The server came back on its own - something is restarting it.'
         Warn 'Stop the service (Task Scheduler task, or NSSM/Windows service) for'
         Warn 'the update, then re-run this installer.'
@@ -146,8 +175,22 @@ if ($Version -eq 'source') {
 
 # --- 4. Install --------------------------------------------------------------
 Say "Installing $Pkg on Python $PyVer"
-uv tool install --python $PyVer --force $Spec
-if ($LASTEXITCODE -ne 0) { Die 'uv tool install failed.' }
+$installed = $false
+foreach ($attempt in 1..3) {
+    uv tool install --python $PyVer --force $Spec
+    if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+    if ($attempt -lt 3) {
+        # "Access is denied" here is almost always a handle Windows has not
+        # released yet on the tool environment we are replacing.
+        Warn "install attempt $attempt failed; waiting for Windows to release the files..."
+        Start-Sleep -Seconds 3
+    }
+}
+if (-not $installed) {
+    Warn 'If this says "Access is denied" on the uv scripts directory, something is'
+    Warn 'still using it. Check for a running daq (daq stop) or pythonw.exe.'
+    Die  'uv tool install failed.'
+}
 # Only when it is needed, and never fatally: uv errors out if the directory is
 # already on PATH, and with ErrorActionPreference=Stop a native command's stderr
 # becomes a terminating error — which would kill the script after a good install.

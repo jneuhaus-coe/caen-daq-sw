@@ -224,6 +224,14 @@ re-running the same one-liner.
 - On Linux, `pgrep` matches **zombies**, so a correctly-killed server looks like
   one that refused to die. `daq_pids()` filters on process state; do not
   simplify it back to a bare `pgrep`.
+- **On Windows the server is `pythonw.exe`, not `daq.exe`.** The launcher starts
+  it windowless from inside the uv tool environment, so `Get-Process -Name daq`
+  never sees it. When the installer missed it, uv failed to replace that
+  environment with *"failed to remove directory (the uv scripts directory):
+  Access is denied"* — the running interpreter lives in the directory being
+  deleted. `Get-DaqProcesses` matches on executable **path** under `uv tool dir`
+  instead; do not put the name check back. The install also retries three times,
+  because Windows can hold a handle for a moment after the process exits.
 - **The installers read `runtime.json` for the pid and port** rather than
   guessing at the default. Guessing was wrong twice over: the server may be on
   any port, and on a host with a port-forward (the lima dev box) a probe of the
