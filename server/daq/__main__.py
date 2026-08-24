@@ -104,25 +104,34 @@ class _ThreadedServer(uvicorn.Server):
         pass
 
 
-def _install_runtime_cleanup() -> None:
-    """Drop the runtime file on a signalled shutdown.
+def _install_shutdown_handler(server) -> None:
+    """Stop cleanly on SIGINT/SIGTERM, and always stop on the second one.
 
-    uvicorn captures SIGTERM/SIGINT and, on the way out, re-raises them to
-    whatever handler was installed before it — so a `finally` after
-    `server.run()` never runs. Handle it here instead, and hand the signal back
-    to the default disposition afterwards so the process still reports "killed
-    by SIGTERM"; systemd counts that as a clean exit, which is what keeps
-    `Restart=on-failure` from restarting a deliberate shutdown.
+    An earlier version re-raised the signal to its default disposition, to keep
+    the process reporting "killed by SIGTERM". That was fragile and left Ctrl-C
+    hanging: uvicorn re-raises the captured signal into whatever handler was
+    installed before it, so ours ran *after* uvicorn had already unwound, and
+    re-killing from there depends on platform behaviour that does not hold
+    everywhere. Exiting normally is just as clean for systemd - `on-failure`
+    does not restart on exit 0 any more than it does on SIGTERM.
 
-    A stale file is harmless in any case — every reader confirms it by asking
-    the port who is there — and that is what covers a crash or a power cut,
-    where no handler of ours would run at all.
+    The second signal is the important part: whatever is wedged, a second Ctrl-C
+    must always end the process rather than leave a console sitting there.
     """
+    state = {"stopping": False}
+
     def handler(signum, _frame):
-        log.info("signal %s received - shutting down", signal.Signals(signum).name)
+        name = signal.Signals(signum).name
+        if state["stopping"]:
+            log.warning("%s again - exiting immediately", name)
+            runtime.clear()
+            os._exit(1)
+        state["stopping"] = True
+        log.info("%s received - shutting down", name)
+        server.should_exit = True        # ask uvicorn to unwind if it has not
         runtime.clear()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
+        # Deliberately no re-raise: returning lets run() finish, the finally
+        # below tidy up, and the process exit 0 on its own.
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -163,12 +172,22 @@ def _serve(args, with_tray: bool) -> int:
 
     runtime.write(args.host, args.port)
     log.debug("runtime record written to %s", runtime.runtime_path())
-    _install_runtime_cleanup()
+    _install_shutdown_handler(server)
+    if with_tray:
+        from . import tray as _tray
+        if not _tray.available():
+            # Only the launcher passes --tray, and only when it is available -
+            # but crashing with an import traceback is no way to find that out.
+            log.warning("no tray support here (pystray is Windows-only); "
+                        "serving without one")
+            with_tray = False
+
     try:
         if with_tray:
             thread = threading.Thread(target=server.run, daemon=True)
             thread.start()
-            if launcher.wait_for_server(args.port) is None:
+            if launcher.wait_for_server(
+                    args.port, stop=lambda: server.should_exit) is None:
                 # A tray icon for a server that never came up is worse than no
                 # tray: it says "running" while nothing answers, and whatever
                 # went wrong stays invisible.
@@ -187,12 +206,12 @@ def _serve(args, with_tray: bool) -> int:
                      time.monotonic() - boot)
             server.run()
     finally:
-        log.info("shutting down")
-        runtime.clear()
-        try:
-            engine.close()
-        except Exception:
-            pass
+        with logsetup.step(log, "shutting down"):
+            runtime.clear()
+            try:
+                engine.close()
+            except Exception as e:
+                log.warning("  the digitizer would not close cleanly: %s", e)
     return 0
 
 

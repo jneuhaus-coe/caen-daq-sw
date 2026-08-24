@@ -151,9 +151,14 @@ def start_server_detached(host: str, port: int, no_open: bool, tray: bool = True
     subprocess.Popen(argv, **kwargs)
 
 
-def wait_for_server(port: int, timeout: float = 30.0) -> Optional[dict]:
+def wait_for_server(port: int, timeout: float = 30.0, stop=None) -> Optional[dict]:
+    """Wait for the server to answer. `stop` lets a caller abandon the wait -
+    without it, a Ctrl-C during startup leaves this polling a server that is
+    already shutting down, for the full timeout."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if stop is not None and stop():
+            return None
         status = runtime.probe(port, timeout=1.0)
         if status is not None:
             return status

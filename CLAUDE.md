@@ -449,29 +449,17 @@ Built. `daq` is the only command an operator needs.
 - `_ThreadedServer` suppresses uvicorn's signal handlers and is for the **tray
   path only**. Using it for `--serve` would leave SIGTERM at its default
   disposition, so systemd's stop would skip the graceful shutdown.
-- uvicorn captures SIGTERM/SIGINT and re-raises them to the handler installed
-  *before* it, so a `finally` after `server.run()` never runs.
-  `_install_runtime_cleanup` handles the signal, clears the runtime file, then
-  re-raises to the default disposition so the process still reports "killed by
-  SIGTERM" — which is what keeps `Restart=on-failure` from restarting it.
-- **Tray interaction details, all found by using it on Windows:**
-  - pystray shows the menu on right-click only and runs the *default* item on
-    left-click. Two behaviours on one 16px target is confusing, and right-click
-    is awkward on a touchpad, so `_icon_class()` subclasses the win32 backend
-    and remaps `WM_LBUTTONUP` to `WM_RBUTTONUP`. It reaches into pystray
-    internals; the fallback is plain `pystray.Icon`, and a test asserts the
-    subclass is actually in use on Windows.
-  - **A modal dialog must not be opened from a menu callback.** Those callbacks
-    run inside the tray's window procedure, so `MessageBoxW` there blocks the
-    message pump the dialog itself needs — it appears with dead buttons that
-    cannot be dismissed. The quit confirmation runs on its own thread, and the
-    poll thread stops touching the icon while it is up.
-  - Opening the UI **raises an existing window** (`EnumWindows` by page title)
-    instead of launching another. Clicking the tray repeatedly used to leave a
-    pile of identical windows.
-  - The menu's status line *is* the open action. An "Open" item above a dead
-    label naming what it would open is two rows saying one thing, with the
-    obvious-looking row unclickable.
+- **The shutdown handler must not re-raise the signal.** uvicorn captures
+  SIGINT/SIGTERM and re-delivers them to whatever handler was installed before
+  it, so ours runs *after* uvicorn has already unwound. An earlier version then
+  set `SIG_DFL` and re-killed the process to preserve a "killed by SIGTERM" exit
+  status - which hung Ctrl-C on Windows: the log line appeared and nothing else
+  happened. The handler now sets `server.should_exit`, clears the runtime file
+  and **returns**, so `run()` finishes, the `finally` runs (it never did before)
+  and the process exits 0. That is just as clean for systemd: `on-failure` does
+  not restart on exit 0 any more than on SIGTERM.
+- **A second signal always exits**, via `os._exit(1)`. Whatever is wedged, a
+  second Ctrl-C must end the process rather than leave a console sitting there.
 - Tray behaviour is verified by `tests/test_tray.py`, which runs anywhere
   pystray imports (`pip install pystray pillow` locally) and on the Windows CI
   runner. It covers colour mapping, the icon at 16px, and menu shape — but the
