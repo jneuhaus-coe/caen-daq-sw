@@ -110,7 +110,12 @@ def _serve(args, with_tray: bool) -> int:
     url = runtime.url_for(args.host, args.port)
     _say(f"dt5742b-daq {__version__} — UI at {url}")
 
-    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
+    # Bound the graceful shutdown. Measured at ~0.5s with a client on the
+    # telemetry socket, so this never bites in practice — but uvicorn's default
+    # is to wait forever, and one wedged connection would be enough to make
+    # `daq stop` and the installer's shutdown hang with no way to tell why.
+    config = uvicorn.Config(app, host=args.host, port=args.port,
+                            log_level="warning", timeout_graceful_shutdown=10)
     server = _ThreadedServer(config) if with_tray else uvicorn.Server(config)
 
     runtime.write(args.host, args.port)

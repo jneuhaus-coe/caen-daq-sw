@@ -86,12 +86,15 @@ if ($status) {
 }
 
 if ($restartHint) {
-    foreach ($i in 1..10) {
+    # Wait generously: a slow graceful shutdown is not a reason to abort an
+    # update, and a false "it did not exit" sends someone hunting a process that
+    # is already on its way out.
+    foreach ($i in 1..30) {
         Start-Sleep -Milliseconds 500
         if (-not (Get-Process -Name daq -ErrorAction SilentlyContinue)) { break }
     }
     if (Get-Process -Name daq -ErrorAction SilentlyContinue) {
-        Die 'The running daq did not exit. Stop it yourself, then re-run this installer.'
+        Die 'The daq server was still running 15s after being asked to stop. Stop it yourself (daq stop), then re-run this installer.'
     }
 
     # A service manager set to restart unconditionally brings it straight back,

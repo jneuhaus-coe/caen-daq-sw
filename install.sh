@@ -79,9 +79,11 @@ daq_pids() {
 }
 
 stop_running_server() {
-    local rf pid port status run pids
+    # Initialise every one of these: `local x` leaves x *unset*, and `set -u`
+    # then aborts the installer the first time an unassigned one is read — which
+    # is the ordinary fresh-install path, where there is no runtime file at all.
+    local rf="" pid="" port="" status="" run="" pids=""
     rf="$(runtime_file)"
-    pid=""; port=""
     if [ -f "$rf" ]; then
         pid="$(json_field "$rf" pid)"
         port="$(json_field "$rf" port)"
@@ -102,7 +104,9 @@ stop_running_server() {
             die  "Stop the recording, then re-run this installer."
         fi
         say "Stopping the running server (pid ${pid:-?} on port $port)"
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
     else
         # No usable record — fall back to finding the process by its path.
         pids="$(daq_pids | tr '\n' ' ')"
@@ -112,12 +116,17 @@ stop_running_server() {
         die  "Stop it yourself (daq stop), then re-run this installer."
     fi
 
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        [ -z "$(daq_pids)" ] && break
+    # Wait generously: a slow graceful shutdown is not a reason to abort an
+    # update, and a false "it did not exit" sends someone hunting a process that
+    # is already on its way out.
+    for _ in $(seq 1 30); do
+        if [ -z "$(daq_pids)" ]; then
+            break
+        fi
         sleep 0.5
     done
     if [ -n "$(daq_pids)" ]; then
-        die "The running daq did not exit. Stop it yourself, then re-run this installer."
+        die "The daq server was still running 15s after being asked to stop. Stop it yourself (daq stop), then re-run this installer."
     fi
 
     # A service manager set to restart unconditionally brings it straight back,
