@@ -49,24 +49,26 @@ class AcquisitionEngine:
     # ---------- lifecycle ----------
     def open(self, level: int = logging.INFO):
         with self._open_lock:
-            with logsetup.step(log, "opening the digitizer", level=level) as opening:
+            with logsetup.step(log, "Opening the digitizer", level=level) as opening:
                 backend = make_backend()
                 board_info = backend.open()
                 self._backend = backend
                 self._board_info = board_info
-                opening.note(f"{board_info.model} S/N {board_info.serial}, "
-                             f"ROC {board_info.roc_firmware}, AMC {board_info.amc_firmware}")
+                opening.done(f"Found {board_info.model} S/N {board_info.serial}, "
+                             f"ROC {board_info.roc_firmware}, "
+                             f"AMC {board_info.amc_firmware}")
 
             # The board, not our last-used file, is the source of truth.
-            with logsetup.step(log, "reading settings back off the unit",
+            with logsetup.step(log, "Reading settings off the unit",
                                level=level) as reading:
                 cfg, errs = backend.read_settings(self._cfg)
-                reading.note(f"{len(errs)} could not be read" if errs else "all readable")
+                for e in errs:
+                    log.warning("%sCould not read: %s", "  ", e)
+                    self._record_error(f"read settings: {e}")
+                reading.done(f"{len(errs)} settings could not be read" if errs
+                             else "All settings read")
             with self._lock:
                 self._cfg = cfg
-            for e in errs:
-                log.warning("  setting not readable: %s", e)
-                self._record_error(f"read settings: {e}")
             # Last, not first: while this is False every other path treats the
             # unit as absent and keeps off the wire, so nothing talks to a board
             # that is still being set up.
@@ -91,24 +93,24 @@ class AcquisitionEngine:
                 return self._cfg
 
         errors: list[str] = []
-        with logsetup.step(log, "writing settings to the unit") as writing:
+        with logsetup.step(log, "Writing settings to the unit") as writing:
             try:
                 cfg, errors = self._backend.write_settings(cfg)
             except Exception as e:
                 errors = [f"write settings: {e}"]
-            writing.note(f"{len(errors)} refused or mismatched" if errors
-                         else "all accepted and read back")
+            for e in errors:
+                log.warning("%s%s", "  ", e)
+                self._record_error(e)
+            writing.done(f"{len(errors)} settings refused or read back wrong"
+                         if errors else "All settings accepted and read back")
         with self._lock:
             self._cfg = cfg
-        for e in errors:
-            log.warning("  %s", e)
-            self._record_error(e)
         return cfg
 
     def start(self):
         if self._running.is_set():
             return
-        with logsetup.step(log, "starting acquisition") as starting:
+        with logsetup.step(log, "Starting acquisition") as starting:
             if not self._opened:
                 try:
                     self.open()
@@ -116,31 +118,33 @@ class AcquisitionEngine:
                     # Refuse rather than raise: with no unit there is nothing to
                     # acquire, and a traceback through the API tells the
                     # operator nothing the badge does not already say.
-                    starting.result("no unit connected")
+                    starting.done("Not started: no unit connected")
                     self._record_error(f"start: {e}")
                     return
             with self._lock:
                 cfg = self._cfg
-            with logsetup.step(log, "applying settings to the unit") as applying:
+            with logsetup.step(log, "Applying settings to the unit") as applying:
                 actual, cfg_errs = self._backend.configure(cfg)
-                applying.note(f"{len(cfg_errs)} refused" if cfg_errs else "all accepted")
+                for e in cfg_errs:
+                    log.warning("%sRefused: %s", "  ", e)
+                    self._record_error(e)
+                applying.done(f"{len(cfg_errs)} settings refused" if cfg_errs
+                              else "All settings accepted")
             with self._lock:
                 self._cfg = actual
-            for e in cfg_errs:
-                log.warning("  setting refused: %s", e)
-                self._record_error(e)
             self._events_seen = 0      # Count reflects this acquisition run
             self._rate.reset()
-            with logsetup.step(log, "arming the board"):
-                self._backend.start()
+            self._backend.start()
+            logsetup.did(log, "Arming the board", "Ok")
             self._running.set()
             self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
             self._thread.start()
+            starting.done("Acquisition running")
 
     def stop(self):
         if not self._running.is_set():
             return
-        with logsetup.step(log, "stopping acquisition") as stopping:
+        with logsetup.step(log, "Stopping acquisition") as stopping:
             self._running.clear()
             if self._thread:
                 self._thread.join(timeout=2.0)
@@ -148,15 +152,15 @@ class AcquisitionEngine:
             try:
                 self._backend.stop()
             except Exception as e:
-                log.error("  the board would not stop: %s", e)
+                log.error("%sThe board would not stop: %s", "  ", e)
                 self._record_error(f"stop: {e}")
-            stopping.note(f"{self._events_seen} events this run")
+            stopping.done(f"Acquisition stopped after {self._events_seen} events")
 
     def close(self):
         self.stop()
         if self._backend and self._opened:
-            with logsetup.step(log, "closing the digitizer"):
-                self._backend.close()
+            self._backend.close()
+            logsetup.did(log, "Closing the digitizer", "Ok")
             self._opened = False
 
     # ---------- connection health ----------
@@ -185,14 +189,11 @@ class AcquisitionEngine:
 
     def reconnect(self) -> dict:
         """Explicit user-driven reconnect: drop what we have and open again now."""
-        with logsetup.step(log, "reconnecting to the unit") as reconnecting:
+        with logsetup.step(log, "Reconnecting to the unit") as reconnecting:
             self.stop()
             self._opened = False
             self._try_open(force=True)
-            if self._opened:
-                reconnecting.note("connected")
-            else:
-                reconnecting.result("no unit found")
+            reconnecting.done("Reconnected" if self._opened else "No unit found")
         return self.status()
 
     def _try_open(self, force: bool):
@@ -213,12 +214,13 @@ class AcquisitionEngine:
     def _open_locked(self, force: bool, now: float):
         self._last_open_attempt = now
         if self._backend is not None:
-            with logsetup.step(log, "closing the previous connection",
-                               level=logging.INFO if force else logging.DEBUG):
-                try:
-                    self._backend.close()
-                except Exception as e:
-                    log.debug("  previous connection would not close: %s", e)
+            closed = "Ok"
+            try:
+                self._backend.close()
+            except Exception as e:
+                closed = f"would not close ({e})"
+            logsetup.did(log, "Closing the previous connection", closed,
+                         level=logging.INFO if force else logging.DEBUG)
             self._backend = None
         try:
             # An automatic retry every few seconds must not fill the log; a
@@ -236,13 +238,13 @@ class AcquisitionEngine:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
             return {"ok": False, "error": "no unit connected"}
-        with logsetup.step(log, f"starting a recording named {name!r}") as rec:
+        with logsetup.step(log, f"Starting a recording named {name!r}") as rec:
             if not self._running.is_set():
                 self.start()
             try:
                 run_id, path = runs.create(name, timestamp)
             except FileExistsError as e:
-                log.error("  a run named %r already exists", e.args[0])
+                rec.done(f"Not started: a run named {e.args[0]!r} already exists")
                 return {"ok": False,
                         "error": f"a run named {e.args[0]!r} already exists - "
                                  f"rename it or switch the timestamp on"}
@@ -250,12 +252,12 @@ class AcquisitionEngine:
                 cfg = self._cfg
             writer = make_writer(path, run_id)  # the directory name is the name
             try:
-                with logsetup.step(log, f"opening run directory {path}"):
-                    writer.open(cfg)
+                writer.open(cfg)
+                logsetup.did(log, "Creating the run directory", path)
             except Exception as e:
                 self._record_error(f"record: {e}")
                 return {"ok": False, "error": str(e)}
-            rec.note(run_id)
+            rec.done(f"Recording to {run_id}")
         self._recorded = 0
         self._run_started = time.time()
         self._run_id = run_id
@@ -267,13 +269,13 @@ class AcquisitionEngine:
         self._writer = None            # first: the loop stops writing
         if w is None:
             return {"ok": False, "error": "not recording"}
-        with logsetup.step(log, f"closing the recording {run_id!r}") as closing:
+        with logsetup.step(log, f"Closing the recording {run_id!r}") as closing:
             try:
                 w.close()
             except Exception as e:
-                log.error("  the writer would not close: %s", e)
+                log.error("%sThe writer would not close: %s", "  ", e)
                 self._record_error(f"record close: {e}")
-            closing.note(f"{self._recorded} events written")
+            closing.done(f"Wrote {self._recorded} events")
         self._run_id = None
         self._run_started = None
         return {"ok": True, "run": run_id}

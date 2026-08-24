@@ -78,15 +78,15 @@ def _open_board_in_background(engine, wait_s: float) -> threading.Thread:
         except Exception:
             # The step above already logged what failed and why; say only what
             # it means from here.
-            board_log.info("no unit at startup - the UI will show it "
-                           "disconnected and keep retrying on its own")
+            board_log.info("No unit at startup; the UI will show it disconnected "
+                           "and keep retrying on its own")
 
     thread = threading.Thread(target=work, name="board-open", daemon=True)
     thread.start()
     thread.join(wait_s)
     if thread.is_alive():
-        board_log.info("digitizer still opening after %.0fs - bringing the UI up now; "
-                       "it will connect on its own", wait_s)
+        board_log.info("Still opening after %.0fs; bringing the UI up now, it "
+                       "will connect on its own", wait_s)
     return thread
 
 
@@ -123,11 +123,11 @@ def _install_shutdown_handler(server) -> None:
     def handler(signum, _frame):
         name = signal.Signals(signum).name
         if state["stopping"]:
-            log.warning("%s again - exiting immediately", name)
+            log.warning("%s again, exiting immediately", name)
             runtime.clear()
             os._exit(1)
         state["stopping"] = True
-        log.info("%s received - shutting down", name)
+        log.info("%s received, shutting down", name)
         server.should_exit = True        # ask uvicorn to unwind if it has not
         runtime.clear()
         # Deliberately no re-raise: returning lets run() finish, the finally
@@ -142,23 +142,22 @@ def _install_shutdown_handler(server) -> None:
 
 def _serve(args, with_tray: bool) -> int:
     """Run the server. Blocks until it is shut down."""
-    boot = time.monotonic()
-    log.info("starting dt5742b-daq %s (pid %d) on %s:%s...",
+    log.info("Starting dt5742b-daq %s (pid %d) on %s:%s...",
              __version__, os.getpid(), args.host, args.port)
     log.debug("python %s from %s", sys.version.split()[0], sys.executable)
 
-    with logsetup.step(log, f"checking port {args.port} is free"):
-        _check_bindable(args.host, args.port)
+    _check_bindable(args.host, args.port)
+    logsetup.did(log, f"Checking port {args.port} is free", "Ok")
 
     engine = AcquisitionEngine()
     if not args.no_open:
         _open_board_in_background(engine, BOARD_OPEN_WAIT_S)
     else:
-        log.info("--no-open: not opening the digitizer; it opens on first Start")
+        log.info("Not opening the digitizer (--no-open); it opens on first Start")
 
     app = create_app(engine)
     url = runtime.url_for(args.host, args.port)
-    log.info("serving the UI at %s", url)
+    log.info("Serving the UI at %s", url)
 
     # Bound the graceful shutdown. Measured at ~0.5s with a client on the
     # telemetry socket, so this never bites in practice — but uvicorn's default
@@ -195,29 +194,28 @@ def _serve(args, with_tray: bool) -> int:
                 _err("run 'daq --serve' in a terminal to see the error.")
                 return 1
             from . import tray
-            log.info("started in %.1fs - running in the tray until you quit it",
-                     time.monotonic() - boot)
+            log.info("Ready - running in the tray until you quit it")
             tray.run(engine, url,
                      shutdown=lambda: setattr(server, "should_exit", True),
                      open_ui=launcher.open_ui)
             thread.join(timeout=10)
         else:
-            log.info("started in %.1fs - ready, press Ctrl-C to stop",
-                     time.monotonic() - boot)
+            log.info("Ready - press Ctrl-C to stop")
             server.run()
     finally:
-        with logsetup.step(log, "shutting down"):
+        with logsetup.step(log, "Shutting down") as stopping:
             runtime.clear()
             try:
                 engine.close()
             except Exception as e:
-                log.warning("  the digitizer would not close cleanly: %s", e)
+                log.warning("%sThe digitizer would not close cleanly: %s", "  ", e)
+            stopping.done("Stopped")
     return 0
 
 
 def _launch(args) -> int:
     """Attach to a running server if there is one; otherwise start it."""
-    with logsetup.step(log, "looking for a server already running") as looking:
+    with logsetup.step(log, "Looking for a server already running") as looking:
         live = runtime.find_server()
         if live is None:
             # The runtime record can go missing - a crash, a cleaned state
@@ -227,15 +225,14 @@ def _launch(args) -> int:
             if runtime.probe(args.port) is not None:
                 live = {"url": runtime.url_for(args.host, args.port),
                         "version": __version__}
-        looking.result(f"found one at {live['url']}" if live else "none running")
+        looking.done(f"Found one at {live['url']}" if live else "No server running")
 
     if live:
         if live.get("version") != __version__:
             log.warning("the running server is %s, this command is %s - "
                         "restart it to pick up the update",
                         live.get("version"), __version__)
-        with logsetup.step(log, "opening a window on it") as opening:
-            opening.note(launcher.open_ui(live["url"]))
+        logsetup.did(log, "Opening a window on it", launcher.open_ui(live["url"]))
         return 0
 
     # Windows gets a tray icon, so the server can detach and this command can
@@ -247,19 +244,18 @@ def _launch(args) -> int:
     if os.name == "nt" and tray.available():
         # Check here as well as in the server: spawning a detached process only
         # to have it fail invisibly is worth one cheap test to avoid.
-        with logsetup.step(log, f"checking port {args.port} is free"):
-            _check_bindable(args.host, args.port)
-        with logsetup.step(log, "starting the server in the background") as starting:
+        _check_bindable(args.host, args.port)
+        logsetup.did(log, f"Checking port {args.port} is free", "Ok")
+        with logsetup.step(log, "Starting the server in the background") as starting:
             proc = launcher.start_server_detached(args.host, args.port,
                                                   args.no_open, tray=True)
             if not _wait_for_detached(proc, args.port):
-                starting.result("it did not come up")
+                starting.done("The server did not start")
                 _report_failed_start(proc)
                 return 1
-            starting.note(f"pid {proc.pid}")
-        with logsetup.step(log, f"opening the DAQ at {url}") as opening:
-            opening.note(launcher.open_ui(url))
-        log.info("the server keeps running in the tray after this window closes")
+            starting.done(f"Server running as pid {proc.pid}")
+        logsetup.did(log, f"Opening the DAQ at {url}", launcher.open_ui(url))
+        log.info("It keeps running in the tray after this window closes")
         return 0
 
     threading.Timer(1.5, launcher.open_ui, args=(url,)).start()
@@ -276,16 +272,16 @@ def _wait_for_detached(proc, port: int, timeout: float = 30.0) -> bool:
     announced = 0.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            log.error("the server process exited immediately (code %s)", proc.returncode)
+            log.error("The server process exited immediately (code %s)", proc.returncode)
             return False
         if runtime.probe(port, timeout=1.0) is not None:
             return True
         waited = timeout - (deadline - time.monotonic())
         if waited - announced >= 3.0:
             announced = waited
-            log.info("  still waiting for the server (%.0fs)...", waited)
+            log.info("%sStill waiting for the server...", "  ")
         time.sleep(0.25)
-    log.error("the server did not answer on port %s within %.0fs", port, timeout)
+    log.error("The server did not answer on port %s within %.0fs", port, timeout)
     return False
 
 
@@ -294,8 +290,8 @@ def _report_failed_start(proc) -> None:
     look rather than leaving the operator with a bare failure."""
     path = logsetup.active_log_path()
     if path:
-        log.error("its log is at %s", path)
-    log.error("run 'daq --serve' in this window to watch it start")
+        log.error("Its log is at %s", path)
+    log.error("Run 'daq --serve' in this window to watch it start")
 
 
 def _stop(_args) -> int:

@@ -132,50 +132,60 @@ def get(name: str = "daq") -> logging.Logger:
 
 
 # --- transactions ------------------------------------------------------------
-# A log should read as what was attempted and how it turned out. Each `step`
-# writes an opening line when the work starts and a closing line when it
-# finishes, so entries appear in the order the work happened and nesting is
-# visible. Depth is per-thread: the readout thread and a request handler nest
-# independently rather than corrupting each other's indentation.
+# A log should read as what was attempted and how it turned out, in the order it
+# happened. There are two shapes, and no others:
+#
+#   did(log, "Checking for a config file", "Ok")
+#       -> Checking for a config file... Ok
+#     One line, for work atomic enough that nothing can be logged part-way.
+#
+#   with step(log, "Looking for a running server") as s:
+#       s.done("No server found")
+#       -> Looking for a running server...
+#          No server found
+#     Two lines, for work that logs while it runs. The conclusion is stated in
+#     its own words - repeating the opening message would make the end of one
+#     operation look like the start of another.
+#
+# Nothing is timed. Every line carries a timestamp, so elapsed time is a
+# subtraction away, and durations of "0.0s" say nothing worth the width.
 
 _depth = threading.local()
-
-
-class _Step:
-    """Handle for the running step, so it can report how it turned out."""
-
-    def __init__(self):
-        self.detail = None
-        self.outcome = "ok"
-
-    def note(self, text: str) -> None:
-        """Add detail to the result line, which still reads as ok."""
-        self.detail = text
-
-    def result(self, outcome: str) -> None:
-        """Replace 'ok'. Work that finished without achieving anything - a
-        reconnect that found no unit - is not an error, but it is not ok."""
-        self.outcome = outcome
 
 
 def _indent() -> str:
     return "  " * getattr(_depth, "level", 0)
 
 
+def did(logger: logging.Logger, what: str, result: str,
+        level: int = logging.INFO) -> None:
+    """Log an atomic operation and its result on one line."""
+    logger.log(level, "%s%s... %s", _indent(), what, result)
+
+
+class _Step:
+    """Handle for a running step, through which the body states its conclusion."""
+
+    def __init__(self, what: str):
+        self._what = what
+        self.conclusion = None
+        self.failure = None
+
+    def done(self, conclusion: str) -> None:
+        """How it turned out, in its own words - not an echo of the opening."""
+        self.conclusion = conclusion
+
+    def failing(self, wording: str) -> None:
+        """Wording to use if the body raises, instead of the exception text."""
+        self.failure = wording
+
+
 @contextlib.contextmanager
 def step(logger: logging.Logger, what: str, level: int = logging.INFO):
-    """Log the start and the outcome of one piece of work.
-
-        with step(log, "opening the digitizer") as s:
-            s.note("DT5742B S/N 53364")
-
-        opening the digitizer...
-        opening the digitizer: ok - DT5742B S/N 53364 (2.1s)
-    """
+    """Open a transaction that will log while it runs; close it with its result."""
     logger.log(level, "%s%s...", _indent(), what)
     _depth.level = getattr(_depth, "level", 0) + 1
-    started = time.monotonic()
-    handle = _Step()
+    handle = _Step(what)
     try:
         yield handle
     except BaseException as e:
@@ -183,12 +193,8 @@ def step(logger: logging.Logger, what: str, level: int = logging.INFO):
         # An expected failure logged at DEBUG - the automatic reconnect attempts
         # while no unit is plugged in - must not shout ERROR every few seconds.
         fail_level = logging.DEBUG if level <= logging.DEBUG else logging.ERROR
-        logger.log(fail_level, "%s%s: FAILED after %.1fs - %s",
-                   _indent(), what, time.monotonic() - started, e)
+        logger.log(fail_level, "%s%s", _indent(), handle.failure or f"Failed: {e}")
         raise
     else:
         _depth.level -= 1
-        suffix = f" - {handle.detail}" if handle.detail else ""
-        logger.log(level, "%s%s: %s%s (%.1fs)",
-                   _indent(), what, handle.outcome, suffix,
-                   time.monotonic() - started)
+        logger.log(level, "%s%s", _indent(), handle.conclusion or "Done")

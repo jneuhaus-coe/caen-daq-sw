@@ -59,10 +59,13 @@ Logging goes to the console and to a file, and reads as what the DAQ tried to do
 and how it turned out:
 
 ```
-16:18:26 INFO    starting acquisition...
-16:18:26 INFO      opening the digitizer...
-16:18:26 INFO      opening the digitizer: ok - DT5742B S/N 53364 (1.8s)
-16:18:26 INFO    starting acquisition: ok (1.9s)
+16:18:26 INFO    Starting acquisition...
+16:18:26 INFO      Opening the digitizer...
+16:18:28 INFO      Found DT5742B S/N 53364, ROC 04.29, AMC 01.06
+16:18:28 INFO      Applying settings to the unit...
+16:18:28 INFO      All settings accepted
+16:18:28 INFO      Arming the board... Ok
+16:18:28 INFO    Acquisition running
 ```
 
 `--log-level debug` adds detail, `--log-file PATH` moves the file, and

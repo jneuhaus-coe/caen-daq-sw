@@ -163,17 +163,26 @@ cd web && npm run dev                     # UI hot-reload, proxies API/WS to :88
   HTTP and hardware appear in one chronological account instead of two streams.
   Access logging is on only at `--log-level debug`; the UI polls status every
   second and would otherwise bury everything.
-- **Log along transactional boundaries, not events.** Every piece of real work
-  goes through `logsetup.step()`: an opening line when it starts, a closing line
-  with the outcome and how long it took. Entries appear in the order the work
-  happened - a recursion three deep writes three opens outside-in, then three
-  closes inside-out - and nesting shows as indentation, kept per-thread so the
-  readout thread and a request handler do not corrupt each other. Smoke tests
-  assert that ordering.
-  - `s.note("...")` adds detail to a successful result.
-  - `s.result("no unit found")` replaces "ok" for work that finished without
-    achieving anything. A reconnect that finds nothing is not an error, but
-    saying "ok" about it is a lie.
+- **Log along transactional boundaries, and in exactly two shapes.**
+  - Atomic work is one line: `logsetup.did(log, "Checking for a config file",
+    "Ok")` -> `Checking for a config file... Ok`. Use it whenever nothing can be
+    logged between starting and finishing.
+  - Work that logs while it runs is two lines: `with step(log, "Looking for a
+    running server") as s: s.done("No server found")`. **The conclusion is
+    stated in its own words and must never echo the opening** - a closing line
+    that repeats its opening reads as a new operation starting, which is what
+    made an earlier version unusable. A test enforces it.
+  - **Nothing is timed.** Every line is timestamped, so elapsed time is a
+    subtraction away; printed durations were noise and mostly read `0.0s`.
+  - Entries appear in the order the work happened - a recursion three deep
+    writes three opens outside-in, then three closes inside-out - and nesting
+    shows as indentation, kept per-thread so the readout thread and a request
+    handler do not corrupt each other. Tests assert that ordering.
+  - `s.failing("...")` supplies failure wording *for a raise*; an early
+    `return` is not a raise, so use `s.done("Not started: ...")` there or the
+    step cheerfully concludes "Done" about work that did not happen.
+  - Do not override the failure wording where the exception carries the cause:
+    "No digitizer found" hid "libCAENDigitizer not found. Install ...".
   - Pass `level=logging.DEBUG` for expected failures (the automatic reconnect
     retries); the closing line drops to DEBUG with it, instead of shouting ERROR
     every few seconds while no unit is plugged in.
