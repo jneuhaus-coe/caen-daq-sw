@@ -56,6 +56,9 @@ if [ -t 0 ]; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
+    # The "Release v..." prefix is load-bearing: CI skips commits with it, so
+    # that pushing the bump and its tag together starts one build (Release)
+    # rather than two. Change the wording here and in ci.yml together.
     git commit -q -am "Release $tag"
 fi
 git tag "$tag"

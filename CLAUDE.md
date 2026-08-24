@@ -194,6 +194,13 @@ re-running the same one-liner.
 - **`__version__` in `daq/__init__.py` is the single source of truth.**
   `pyproject.toml` reads it via `[tool.setuptools.dynamic]`, and the release
   workflow refuses to publish if the git tag is not `v$__version__`.
+- **One build per release, not two.** `release.sh` pushes the bump commit and
+  its tag together, which used to start CI and Release on the same code
+  simultaneously. CI skips commits whose message starts with `Release v`, and
+  Release runs the smoke tests itself so nothing is lost. A bump commit contains
+  only the version string (release.sh refuses a dirty tree), so the installer
+  and shellcheck jobs cannot differ from the commit before it. The message
+  prefix is load-bearing — change it in `release.sh` and `ci.yml` together.
 - Releases are tag-driven: push `vX.Y.Z`, the workflow builds the UI from
   `web/src`, builds wheel + sdist, smoke-tests the wheel, and attaches the
   artifacts plus both install scripts. The one-liners download from there.
