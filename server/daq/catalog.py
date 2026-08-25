@@ -57,23 +57,23 @@ UNIT_SETTINGS = [
              "750 MS/s - 13.65 ns, every 1%\n\n"
              "The arrows walk exactly those settings."},
     {"key": "correction_level", "label": "DRS4 correction", "type": "enum",
-     "choices": [{"value": "auto", "label": "Auto"},
-                 {"value": "timing", "label": "Amplitude + true times"},
+     "choices": [{"value": "timing", "label": "Amplitude + true times"},
+                 {"value": "auto", "label": "Auto"},
                  {"value": "disabled", "label": "Disabled"},
                  {"value": "manual", "label": "Manual tables"}],
      "caen": "CAEN_DGTZ_LoadDRS4CorrectionData / GetCorrectionTables",
      "help": "The DRS4 needs cell-by-cell correction before its samples mean "
              "anything - each capacitor has its own offset, timing and peak "
              "error.\n\n"
+             "Amplitude + true times (default) - amplitude corrections with "
+             "the samples untouched in time; each event's true non-uniform "
+             "time axis is recorded alongside. Full ps-level timing "
+             "precision\n"
              "Auto - CAEN's full correction during decode. Its time step "
-             "RESAMPLES onto a uniform grid, smoothing pulse edges slightly\n"
-             "Amplitude + true times - same amplitude corrections, samples "
-             "untouched in time; each event's true non-uniform time axis is "
-             "recorded instead. The choice for ps-level timing work\n"
+             "RESAMPLES onto a uniform grid, smoothing pulse edges slightly; "
+             "use it when downstream code assumes uniform sampling\n"
              "Disabled - raw cells, for diagnosing the chip itself\n"
-             "Manual tables - supply your own\n\n"
-             "Auto for general running; Amplitude + true times when timing "
-             "resolution matters."},
+             "Manual tables - supply your own"},
     {"key": "trigger_edge", "required": True, "label": "Trigger edge", "type": "enum",
      "choices": [{"value": "rising", "label": "Rising"}, {"value": "falling", "label": "Falling"}],
      "caen": "CAEN_DGTZ_SetTriggerPolarity",

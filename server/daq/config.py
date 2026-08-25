@@ -37,7 +37,11 @@ class BoardConfig:
     drs4_frequency: int = C.DEFAULT_DRS4_FREQUENCY
     record_length: int = C.RECORD_LENGTH
     post_trigger: int = 20
-    correction_level: str = "auto"
+    # "timing" by default: amplitude corrections plus each event's true
+    # non-uniform time axis. The library's "auto" path resamples onto a
+    # uniform grid, which costs ps-level timing precision - and this group's
+    # program is a timing program.
+    correction_level: str = "timing"
     trigger_edge: str = "falling"
     external_trigger: str = "acquisition_only"
     fast_trigger: str = "acquisition_only"

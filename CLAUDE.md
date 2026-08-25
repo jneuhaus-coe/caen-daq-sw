@@ -66,7 +66,8 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   serial 53364: cell widths spread 196.6-202.0 ps around the nominal 200
   (sigma ~1 ps/cell - the aperture non-uniformity itself), the axis closes
   to exactly 204.6 ns, and baselines agree with the library path to the
-  count. Auto for general running; timing when timing resolution matters.
+  count. **"timing" is the default** - this is a timing program - with
+  "auto" kept for anything downstream that assumes uniform sampling.
 
 ### Setting tiers (verified against WaveDump's x742 branch — get these right)
 
