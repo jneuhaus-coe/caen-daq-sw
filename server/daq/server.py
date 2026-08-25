@@ -135,6 +135,15 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         engine.start()
         return engine.status()
 
+    @app.post("/api/trigger")
+    def trigger(payload: dict | None = None):
+        """Queue software triggers - the bench check when nothing external
+        can trigger the board. {"count": 100, "rate_hz": 10} both optional."""
+        p = payload or {}
+        r = engine.fire_software_triggers(int(p.get("count", 1)),
+                                          float(p.get("rate_hz", 10.0)))
+        return {**r, "status": engine.status()}
+
     @app.post("/api/acq/stop")
     def stop():
         engine.stop()

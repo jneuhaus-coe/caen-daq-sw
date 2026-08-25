@@ -19,6 +19,21 @@ from daq import constants as C
 from daq import runtime
 
 
+def _refuse_hardware():
+    raise RuntimeError("no unit: this test must never touch hardware")
+
+
+def _engine_without_a_unit() -> AcquisitionEngine:
+    """An engine whose every open fails, exactly like a machine with no board.
+
+    The default factory loads the real libCAENDigitizer, so on a machine with a
+    unit attached these "hardware-free" tests would open — or hang on — actual
+    hardware. Discovered the hard way: a wedged CAEN USB driver left this suite
+    blocked inside OpenDigitizer with no output at all.
+    """
+    return AcquisitionEngine(backend_factory=_refuse_hardware)
+
+
 def test_tiers_and_enable_is_per_group():
     cfg = default_config()
     assert cfg.groups[0].enabled and not cfg.groups[1].enabled
@@ -51,7 +66,7 @@ def test_decimate():
 def test_http_api():
     from fastapi.testclient import TestClient
     # constructing the engine does not touch hardware; opening it would
-    c = TestClient(create_app(AcquisitionEngine()))
+    c = TestClient(create_app(_engine_without_a_unit()))
     assert c.get("/api/catalog").json()["bank"]  # bank tier present
     st = c.get("/api/status").json()
     assert st["backend"] == "caen" and st["opened"] is False
@@ -62,7 +77,7 @@ def test_config_write_is_refused_with_no_unit():
     a failure and must not change the stored config. Claiming success here once
     produced a green 'applied and read back from unit' toast with no unit."""
     from fastapi.testclient import TestClient
-    c = TestClient(create_app(AcquisitionEngine()))
+    c = TestClient(create_app(_engine_without_a_unit()))
     cfg = c.get("/api/config").json()
     was = cfg["channels"][0]["dc_offset"]
 
@@ -95,13 +110,22 @@ def test_rate_meter_total_and_last_bucket():
 def test_probe_and_reconnect_without_hardware():
     """No board attached: probing and reconnecting must report disconnected
     rather than raising, so the UI can render a red badge."""
-    eng = AcquisitionEngine()
+    eng = _engine_without_a_unit()
     assert eng.probe() is False
     assert eng.status()["opened"] is False
     assert eng.reconnect()["opened"] is False
     c = TestClient(create_app(eng))
     assert c.get("/api/status").json()["opened"] is False
     assert c.post("/api/board/reconnect").json()["opened"] is False
+
+
+def test_software_trigger_is_refused_with_no_unit():
+    """No unit means nothing can fire: the request must be refused, not queued
+    for an acquisition that can never start."""
+    c = TestClient(create_app(_engine_without_a_unit()))
+    r = c.post("/api/trigger", json={"count": 100, "rate_hz": 50}).json()
+    assert r["ok"] is False
+    assert r["status"]["sw_triggers_pending"] == 0
 
 
 def test_runtime_url_is_always_loopback_for_a_local_window():
@@ -172,7 +196,7 @@ def test_stale_and_foreign_servers_are_not_attached_to():
 def test_status_endpoint_identifies_the_app():
     """The launcher keys off these two fields; losing them would make every
     running server invisible to `daq`."""
-    c = TestClient(create_app(AcquisitionEngine()))
+    c = TestClient(create_app(_engine_without_a_unit()))
     body = c.get("/api/status").json()
     assert body["app"] == "dt5742b-daq"
     assert body["version"]
@@ -303,6 +327,7 @@ if __name__ == "__main__":
                test_http_api, test_config_write_is_refused_with_no_unit,
                test_rate_meter_total_and_last_bucket,
                test_probe_and_reconnect_without_hardware,
+               test_software_trigger_is_refused_with_no_unit,
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,
                test_stale_and_foreign_servers_are_not_attached_to,

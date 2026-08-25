@@ -77,6 +77,15 @@ class DigitizerBackend(abc.ABC):
         hardware that can be powered off or unplugged underneath us."""
         return True
 
+    def trigger(self) -> None:
+        """Fire one software trigger into an armed board.
+
+        The x742 has no channel self-trigger, so a bench check with no signal
+        source relies on this. Optional: a backend without one raises, and the
+        engine surfaces that as an error instead of pretending it fired.
+        """
+        raise NotImplementedError("this backend has no software trigger")
+
     # convenience
     @property
     def record_length(self) -> int:

@@ -22,7 +22,11 @@ log = logsetup.get("daq.acq")
 
 
 class AcquisitionEngine:
-    def __init__(self):
+    def __init__(self, backend_factory=make_backend):
+        # Injectable so tests can refuse hardware outright. The default factory
+        # loads the real libCAENDigitizer, so on a machine with a unit attached
+        # a "hardware-free" test would open — or hang on — the actual board.
+        self._backend_factory = backend_factory
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
         self._cfg = default_config()   # only a seed; the board wins once open
@@ -45,12 +49,19 @@ class AcquisitionEngine:
         self._errors: list[str] = []
         self._opened = False
         self._last_open_attempt = 0.0
+        # Software triggers are queued here and fired by the readout loop, one
+        # per pass at the requested pace. Firing from the request thread that
+        # asked for them would put a second thread inside libCAENDigitizer
+        # while the loop is in ReadData on the same handle.
+        self._sw_pending = 0
+        self._sw_interval_s = 0.0
+        self._sw_next_fire = 0.0
 
     # ---------- lifecycle ----------
     def open(self, level: int = logging.INFO):
         with self._open_lock:
             with logsetup.step(log, "Opening the digitizer", level=level) as opening:
-                backend = make_backend()
+                backend = self._backend_factory()
                 board_info = backend.open()
                 self._backend = backend
                 self._board_info = board_info
@@ -141,9 +152,46 @@ class AcquisitionEngine:
             self._thread.start()
             starting.done("Acquisition running")
 
+    def fire_software_triggers(self, count: int = 1, rate_hz: float = 10.0) -> dict:
+        """Queue `count` software triggers for the readout loop to fire.
+
+        The bench check with no signal source: the x742 cannot self-trigger, so
+        the board is poked from software instead. Starts acquisition if the
+        operator has not already, the same courtesy start_recording extends.
+        """
+        if not self._running.is_set():
+            self.start()
+        if not self._running.is_set():           # start() refused: no unit
+            return {"ok": False, "error": "no unit connected"}
+        count = max(1, min(int(count), 100_000))
+        rate_hz = min(max(float(rate_hz), 0.1), 1000.0)
+        with self._lock:
+            self._sw_pending += count
+            self._sw_interval_s = 1.0 / rate_hz
+        logsetup.did(log, f"Queueing {count} software triggers at {rate_hz:g} Hz", "Ok")
+        return {"ok": True, "queued": count, "rate_hz": rate_hz}
+
+    def _fire_due_software_trigger(self):
+        """One trigger per loop pass, no sooner than the requested pace."""
+        with self._lock:
+            due = self._sw_pending > 0 and time.monotonic() >= self._sw_next_fire
+            if due:
+                self._sw_pending -= 1
+                self._sw_next_fire = time.monotonic() + self._sw_interval_s
+        if not due:
+            return
+        try:
+            self._backend.trigger()
+        except Exception as e:
+            with self._lock:
+                self._sw_pending = 0    # one report, not one per queued trigger
+            self._record_error(f"software trigger: {e}")
+
     def stop(self):
         if not self._running.is_set():
             return
+        with self._lock:
+            self._sw_pending = 0        # owed triggers die with the acquisition
         with logsetup.step(log, "Stopping acquisition") as stopping:
             self._running.clear()
             if self._thread:
@@ -284,6 +332,7 @@ class AcquisitionEngine:
     def _loop(self):
         fails = 0
         while self._running.is_set():
+            self._fire_due_software_trigger()
             try:
                 events = self._backend.read_events()
                 fails = 0
@@ -371,6 +420,7 @@ class AcquisitionEngine:
                 "sw_release": bi.sw_release,
             },
             "events_seen": self._events_seen,
+            "sw_triggers_pending": self._sw_pending,
             "recording": self._writer is not None,
             "run_id": self._run_id,
             "run_started": self._run_started,

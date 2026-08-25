@@ -429,6 +429,11 @@ class CaenBackend(DigitizerBackend):
     def stop(self) -> None:
         self._chk(self._lib.CAEN_DGTZ_SWStopAcquisition(self._h), "SWStopAcquisition")
 
+    def trigger(self) -> None:
+        # One register write, so it shares the sporadic -1 every other call can
+        # answer with; _set gives it the same single retry.
+        self._chk(self._set("SendSWtrigger"), "SendSWtrigger")
+
     def read_events(self) -> list[Event]:
         L, h = self._lib, self._h
         read = ct.c_uint32(0)
