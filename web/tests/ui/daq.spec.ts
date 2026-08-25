@@ -122,6 +122,42 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(row).toHaveCount(0);
 });
 
+test("recording a run writes run_N.root and the number advances", async ({ page }) => {
+  // Fresh test state starts at run 1; the placeholder shows the inference.
+  await expect(page.locator("#runno")).toHaveAttribute("placeholder", "1");
+
+  await page.locator("#runname").fill("ui-suite");
+  await page.locator("button.record").click();
+  await expect(page.locator(".rec-group.on")).toBeVisible();
+  // The fake board emits ~5 events/s; a moment later there is data to keep.
+  await expect
+    .poll(async () => (await (await page.request.get("/api/status")).json()).recorded)
+    .toBeGreaterThan(0);
+  await page.locator("button.danger", { hasText: "Stop recording" }).click();
+  // The click resolves before the server has closed the writer; the metadata
+  // event count exists only once recording has actually ended.
+  await expect
+    .poll(async () => (await (await page.request.get("/api/status")).json()).recording)
+    .toBe(false);
+
+  const runs = await (await page.request.get("/api/runs")).json();
+  expect(runs.runs.length).toBe(1);
+  expect(runs.runs[0].events).toBeGreaterThan(0);
+  // The number advanced, and an explicit override is respected next.
+  await expect(page.locator("#runno")).toHaveAttribute("placeholder", "2");
+  await page.locator("#runno").fill("42");
+  await page.locator("#runname").fill("ui-suite-2");
+  await page.locator("button.record").click();
+  await expect(page.locator(".rec-group.on")).toBeVisible();
+  await page.locator("button.danger", { hasText: "Stop recording" }).click();
+  await expect
+    .poll(async () => (await (await page.request.get("/api/status")).json()).recording)
+    .toBe(false);
+  await expect
+    .poll(async () => (await (await page.request.get("/api/status")).json()).next_run_number)
+    .toBe(43);
+});
+
 test("a legacy Configuration B file loads through the Load button", async ({ page }) => {
   const legacy = [
     "Module 125", "DRS4FREQ 0",

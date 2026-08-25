@@ -31,12 +31,14 @@ class Writer(abc.ABC):
     def close(self) -> None: ...
 
 
-def write_run_metadata(directory: str, cfg, run_name: str) -> None:
+def write_run_metadata(directory: str, cfg, run_name: str,
+                       run_number: int | None = None) -> None:
     """Channel names and settings go in a sidecar next to the data, whatever
     the format - the data files' own layouts are fixed by compatibility.
     Names are stored bare, without the UI's "CH n - " prefix."""
     meta = {
         "run_name": run_name,
+        "run_number": run_number,
         "started": time.time(),
         "channels": {
             str(ch): {"name": cfg.channels[ch].name,
@@ -74,13 +76,15 @@ class NullWriter(Writer):
 
 
 class WaveDumpWriter(Writer):
-    def __init__(self, directory: str, run_name: str = ""):
+    def __init__(self, directory: str, run_name: str = "",
+                 run_number: int | None = None):
         self._files = {}
         self._cfg = None
         self._ascii = True
         self._header = False
         self._dir = directory
         self._run_name = run_name
+        self._run_number = run_number
         self._events = 0
 
     def open(self, cfg) -> None:
@@ -94,7 +98,7 @@ class WaveDumpWriter(Writer):
         for ch in cfg.enabled_channels():
             path = os.path.join(self._dir, f"wave_{ch}.{ext}")
             self._files[ch] = open(path, mode)
-        write_run_metadata(self._dir, cfg, self._run_name)
+        write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
 
     def write(self, ev: Event) -> None:
         self._events += 1
@@ -165,9 +169,11 @@ class RootWriter(Writer):
     BATCH = 64
     N_CHANNELS_OUT = 18            # matches maketree's channel[18][1024]
 
-    def __init__(self, directory: str, run_name: str = ""):
+    def __init__(self, directory: str, run_name: str = "",
+                 run_number: int | None = None):
         self._dir = directory
         self._run_name = run_name
+        self._run_number = run_number
         self._file = None
         self._tree = None
         self._cfg = None
@@ -182,7 +188,11 @@ class RootWriter(Writer):
         self._cfg = cfg
         os.makedirs(self._dir, exist_ok=True)
         n = cfg.record_length
-        self._file = uproot.recreate(os.path.join(self._dir, "waveforms.root"))
+        # run_<N>.root: the number is the analysis-facing identity of the file
+        # (test-beam convention), inferred or set at record time.
+        fname = (f"run_{self._run_number}.root" if self._run_number
+                 else "waveforms.root")
+        self._file = uproot.recreate(os.path.join(self._dir, fname))
         self._tree = self._file.mktree(
             "pulse",
             {"event": np.int32, "trigger_time_tag": np.uint32,
@@ -191,7 +201,7 @@ class RootWriter(Writer):
             title="Digitized waveforms")
         dt = C.sample_period_ns(cfg.drs4_frequency)
         self._times = np.tile(np.arange(n, dtype=np.float32) * dt, (2, 1))
-        write_run_metadata(self._dir, cfg, self._run_name)
+        write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
 
     def write(self, ev: Event) -> None:
         n = self._cfg.record_length
@@ -231,7 +241,8 @@ class RootWriter(Writer):
 
 
 def make_writer(directory: str, run_name: str = "",
-                output_format: str = "ascii") -> Writer:
+                output_format: str = "ascii",
+                run_number: int | None = None) -> Writer:
     if (output_format or "").lower() == "root":
-        return RootWriter(directory, run_name)
-    return WaveDumpWriter(directory, run_name)
+        return RootWriter(directory, run_name, run_number)
+    return WaveDumpWriter(directory, run_name, run_number)

@@ -150,8 +150,15 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.post("/api/rec/start")
     def rec_start(payload: dict | None = None):
         p = payload or {}
+        rn = p.get("run_number")
+        try:
+            rn = int(rn) if rn not in (None, "") else None
+        except (TypeError, ValueError):
+            rn = None                # a mistyped number falls back to inferred
+        if rn is not None and rn < 1:
+            rn = None
         r = engine.start_recording((p.get("name") or "").strip(),
-                                   bool(p.get("timestamp", True)))
+                                   bool(p.get("timestamp", True)), rn)
         return {**r, "status": engine.status()}
 
     @app.post("/api/rec/stop")

@@ -286,14 +286,22 @@ class AcquisitionEngine:
                 self._record_error(f"reconnect: {e}")
 
     # ---------- recording ----------
-    def start_recording(self, name: str, timestamp: bool = True) -> dict:
+    def start_recording(self, name: str, timestamp: bool = True,
+                        run_number: int | None = None) -> dict:
         """Begin writing to a new run directory, starting acquisition if the
-        operator has not already. Watching and recording are separate actions."""
+        operator has not already. Watching and recording are separate actions.
+
+        The run number is the analysis-facing identity (run_<N>.root): given
+        explicitly it is taken as-is; otherwise it is one past the highest
+        number already in the data directory."""
         if self._writer is not None:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
             return {"ok": False, "error": "no unit connected"}
-        with logsetup.step(log, f"Starting a recording named {name!r}") as rec:
+        if run_number is None:
+            run_number = runs.next_run_number()
+        with logsetup.step(log, f"Starting a recording named {name!r} "
+                                f"(run {run_number})") as rec:
             if not self._running.is_set():
                 self.start()
             try:
@@ -305,7 +313,7 @@ class AcquisitionEngine:
                                  f"rename it or switch the timestamp on"}
             with self._lock:
                 cfg = self._cfg
-            writer = make_writer(path, run_id, cfg.output_format)  # dir name = run name
+            writer = make_writer(path, run_id, cfg.output_format, run_number)
             try:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)
@@ -433,5 +441,6 @@ class AcquisitionEngine:
             "run_started": self._run_started,
             "recorded": self._recorded,
             "data_dir": runs.DATA_ROOT,
+            "next_run_number": runs.next_run_number(),
             "errors": list(self._errors),
         }

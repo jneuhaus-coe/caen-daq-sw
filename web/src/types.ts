@@ -93,6 +93,7 @@ export interface Status {
   run_started: number | null;
   recorded: number;
   data_dir: string;
+  next_run_number?: number;
   backend: string;
   board: { model: string; family: string; serial: number; roc_firmware: string; amc_firmware: string; sw_release: string };
   events_seen: number;

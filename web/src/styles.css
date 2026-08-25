@@ -427,6 +427,7 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
   border: 1px solid var(--border); background: #0d1117; color: var(--text);
   font: inherit; font-size: 12px;
 }
+.rec-input.rec-no { width: 58px; font-variant-numeric: tabular-nums; }
 .rec-dot {
   width: 9px; height: 9px; border-radius: 50%; background: var(--red);
   display: inline-block; flex: none;

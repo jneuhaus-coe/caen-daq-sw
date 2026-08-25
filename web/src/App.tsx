@@ -26,6 +26,8 @@ export function App() {
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
   const [runName, setRunName] = useState("");
+  // Empty = let the server infer the next number from the data directory.
+  const [runNo, setRunNo] = useState("");
   const [stampRun, setStampRun] = useState(true);
   const [tour, setTour] = useState(false);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
@@ -141,11 +143,14 @@ export function App() {
   const start = async () => setStatus(await api.start());
   const stop = async () => setStatus(await api.stop());
   const startRec = async () => {
-    const r = await api.recStart(runName, stampRun);
+    const n = runNo.trim() === "" ? null : Number(runNo);
+    const r = await api.recStart(runName, stampRun,
+                                 Number.isFinite(n as number) ? n : null);
     setStatus(r.status);
     if (!r.ok) push("err", "Could not start recording", [r.error ?? ""]);
     else {
       push("ok", "Recording", [`${r.run}`]);
+      setRunNo("");            // the next number is inferred again
       setRunsKey((k) => k + 1);
     }
   };
@@ -214,6 +219,15 @@ export function App() {
                 <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
                   disabled={!connected}
                   onChange={(e) => setRunName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                <label className="rec-label" htmlFor="runno"
+                  title="The analysis-facing run number (run_N.root). Prefilled with one past the highest number in the data directory; type to override.">
+                  Run #
+                </label>
+                <input id="runno" className="rec-input rec-no" type="number" min={1}
+                  placeholder={String(status?.next_run_number ?? "")}
+                  value={runNo} disabled={!connected}
+                  onChange={(e) => setRunNo(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
                 <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
                   <input type="checkbox" checked={stampRun} disabled={!connected}

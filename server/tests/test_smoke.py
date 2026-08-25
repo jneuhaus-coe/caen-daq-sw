@@ -179,6 +179,27 @@ GPO_BUSY 1
     assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
 
 
+def test_run_numbers_are_inferred_and_never_reused():
+    """Next number = one past the highest anywhere in the data dir, read from
+    both metadata and run_<N>.root filenames - so files copied in from another
+    machine still count, and deleting mid-range runs reuses nothing."""
+    from daq import runs
+    old_root = runs.DATA_ROOT
+    with tempfile.TemporaryDirectory() as d:
+        runs.DATA_ROOT = d
+        try:
+            assert runs.next_run_number() == 1
+            os.makedirs(os.path.join(d, "copied-in"))
+            open(os.path.join(d, "copied-in", "run_7.root"), "wb").close()
+            assert runs.next_run_number() == 8
+            os.makedirs(os.path.join(d, "metadata-only"))
+            with open(os.path.join(d, "metadata-only", "run_metadata.json"), "w") as f:
+                json.dump({"run_number": 12}, f)
+            assert runs.next_run_number() == 13
+        finally:
+            runs.DATA_ROOT = old_root
+
+
 def test_root_writer_matches_the_radical_layout():
     """waveforms.root must read back with the structure the group's testbeam
     analysis expects (tb_fnal_radical drs2root): TTree 'pulse' with event/I,
@@ -471,6 +492,7 @@ if __name__ == "__main__":
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
+               test_run_numbers_are_inferred_and_never_reused,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
                test_sessions_and_display_roundtrip,
