@@ -103,6 +103,19 @@ Verified open on the real unit: DT5742B, serial 53364, ROC 04.29 / AMC 01.06.
 `OpenDigitizer` returning `-1` while `lsusb` shows the board means the USB
 driver is missing.
 
+- **The Windows CAEN USB driver can wedge, and the signature is distinctive:**
+  `OpenDigitizer` returns `-1` on a board Device Manager shows healthy, an
+  occasional open *hangs* inside the driver instead of returning (one took 66 s
+  to fail, another never came back), and the hung process **survives
+  TerminateProcess** — a thread blocked in an uninterruptible kernel call
+  cannot die, which is why `daq stop` reports a process still running after a
+  kill that "succeeded". Seen live on serial 53364 under CAENUSBdrv.sys 3.4.9
+  (2014 — the newest CAEN ships for the DT57xx) on Windows 11 with the unit on
+  a USB 3 root hub. The remedy is physical: power-cycle or replug the unit to
+  cancel the stuck I/O (reboot if that fails), and keep USB selective suspend
+  off for the port. Do not diagnose software from anything a wedged driver
+  says.
+
 **Windows is the deployment target.** The Mac + lima guest is a dev convenience
 for fast iteration; keep host-specific setup out of this repo.
 
@@ -219,6 +232,16 @@ root) that installs **uv**, which brings its own pinned 64-bit CPython and then
 installs the release wheel as a uv tool. Bringing the interpreter along is the
 point: it makes the Python/CAEN-DLL bitness mismatch impossible. Updating is
 re-running the same one-liner.
+
+- **`uv tool install` must pass `--managed-python`.** Without it uv builds the
+  tool on any Python 3.11 it discovers — on one beamline machine that was the
+  **Microsoft Store Python**, whose MSIX filesystem virtualization silently
+  redirects `%LOCALAPPDATA%\dt5742b-daq` (runtime.json, logs) into the
+  package's `LocalCache`. Everything *inside* that sandbox stays consistent, so
+  it mostly works — until `daq status` names a log file that does not exist at
+  the printed path, and no process outside the sandbox can see the runtime
+  record. The venv's `pyvenv.cfg` `home` pointing under `WindowsApps` is the
+  tell.
 
 - **`daq/static/` is not an importable package**, so `packages.find` cannot see
   it and setuptools silently drops the UI from the wheel unless
