@@ -24,7 +24,22 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   endpoints through its own kernel module, not libusb — see *Hardware bringup*.
 - Reference for the correct 742 init/correction/decode sequence: CAEN's WaveDump
   and the x742 sample code (github.com/cjpl/caen-suite — `WaveDump.c`,
-  `X742CorrectionRoutines.c`, `CAENDigitizerType.h`).
+  `X742CorrectionRoutines.c`, `CAENDigitizerType.h`). The 742 register map is
+  UM5698, committed under `docs/`.
+- The group's original DAQ (github.com/carlosperezlara/Dec21_RADiCAL,
+  `x742/acquire/source/daq.cc`) is hard-coded, not config-driven — the
+  "Configuration B" spreadsheet was values transcribed into the source by
+  hand, and our legacy importer reads that sheet's key format. Facts mined
+  from it: measured TR0 calibrations for this setup (threshold
+  mV ~ (DAC - 25448) * 0.0329; TR DC offset mV ~ -(DAC - 33540) * 0.0466),
+  and its GPO-busy write `(3<<18)|(1<<16)` to 0x811C — the same field value
+  `gpo_output = "busy"` writes, an independent confirmation. Do NOT copy its
+  channel DC-offset block: it is commented out and shifts the channel-select
+  field by 17 where 0x1n98 wants bits[19:16] (UM5698 sec 1.9) —
+  `SetChannelDCOffset` does this correctly. Its spreadsheet's mV labels for
+  CHNOFFSE values match no consistent model (47000 is "-350 mV" there, -434
+  nominal, -476 by this unit's measured span): the DAC words are the truth,
+  the mV annotations are folklore.
 - This board: serial **53364**, ROC 04.29 build 8716, AMC 01.06 build 6530 —
   standard 742 **waveform** firmware (not DPP). Read back off the board itself.
 - `BoardInfo.Channels` reads **2** on the x742 — it is the *group* count, not
