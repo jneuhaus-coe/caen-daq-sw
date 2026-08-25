@@ -179,8 +179,13 @@ else
 fi
 
 # --- 4. Install --------------------------------------------------------------
+# --managed-python: build the tool on uv's own pinned CPython, never on whatever
+# Python 3.11 uv discovers on the system. On Windows the discovered one can be
+# the Microsoft Store Python, whose MSIX filesystem virtualization hides the
+# app's state files (runtime.json, logs) inside the package's LocalCache; the
+# same flag here keeps both installers on the interpreter this design promises.
 say "Installing $PKG on Python $PYTHON_VERSION"
-uv tool install --python "$PYTHON_VERSION" --force "$SPEC"
+uv tool install --managed-python --python "$PYTHON_VERSION" --force "$SPEC"
 uv tool update-shell >/dev/null 2>&1 || true
 
 [ -x "$DAQ_BIN" ] || die "install finished but no 'daq' executable was produced in $TOOL_BIN."

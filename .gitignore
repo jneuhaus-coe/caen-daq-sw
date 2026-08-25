@@ -7,6 +7,9 @@ build/
 dist/
 .venv/
 venv/
+# Auto-created by `uv run` during local dev; the operator install comes from
+# the wheel, so there is nothing for a lock file to pin.
+uv.lock
 
 # Node / Vite
 node_modules/
