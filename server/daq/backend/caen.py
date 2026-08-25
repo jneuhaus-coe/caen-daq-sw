@@ -74,6 +74,9 @@ def _codec(fwd, fallback):
 
 _TRIG_ENC, _TRIG_DEC = _codec(_TRIGMODE, "disabled")
 _EDGE_ENC, _EDGE_DEC = _codec(_EDGE, "falling")
+# CAEN_DGTZ_IOLevel_t: the electrical standard of the front-panel LEMOs.
+_IOLEVEL = {"nim": 0, "ttl": 1}
+_IO_ENC, _IO_DEC = _codec(_IOLEVEL, "nim")
 _BOOL_ENC, _BOOL_DEC = (lambda v: 1 if v else 0), (lambda v: bool(v))
 _INT_ENC, _INT_DEC = int, int
 
@@ -84,7 +87,9 @@ BOARD_HW = [
     ("post_trigger", "GetPostTriggerSize", "SetPostTriggerSize", ct.c_uint32, _INT_ENC, _INT_DEC),
     ("external_trigger", "GetExtTriggerInputMode", "SetExtTriggerInputMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
     ("fast_trigger", "GetFastTriggerMode", "SetFastTriggerMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
+    ("software_trigger", "GetSWTriggerMode", "SetSWTriggerMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
     ("fast_trigger_digitizing", "GetFastTriggerDigitizing", "SetFastTriggerDigitizing", ct.c_int, _BOOL_ENC, _BOOL_DEC),
+    ("io_level", "GetIOLevel", "SetIOLevel", ct.c_int, _IO_ENC, _IO_DEC),
 ]
 GROUP_HW = [
     ("fast_trigger_threshold", "GetGroupFastTriggerThreshold", "SetGroupFastTriggerThreshold", ct.c_uint32, _INT_ENC, _INT_DEC),

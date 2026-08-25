@@ -41,7 +41,12 @@ class BoardConfig:
     trigger_edge: str = "falling"
     external_trigger: str = "acquisition_only"
     fast_trigger: str = "acquisition_only"
+    # What a software trigger (POST /api/trigger) does: acquire, pulse the
+    # GPO/TRG-OUT connector, or both. Same mode vocabulary as the other two.
+    software_trigger: str = "acquisition_only"
     fast_trigger_digitizing: bool = True
+    # Electrical standard of the front-panel LEMOs (GPO/TRG-OUT and TRG-IN).
+    io_level: str = "nim"
     max_events_blt: int = 1023   # 1024 is silently clamped to this; see CLAUDE.md
     test_pattern: bool = False
     # output

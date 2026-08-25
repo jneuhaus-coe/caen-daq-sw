@@ -67,7 +67,10 @@ def test_http_api():
     from fastapi.testclient import TestClient
     # constructing the engine does not touch hardware; opening it would
     c = TestClient(create_app(_engine_without_a_unit()))
-    assert c.get("/api/catalog").json()["bank"]  # bank tier present
+    cat = c.get("/api/catalog").json()
+    assert cat["bank"]  # bank tier present
+    unit_keys = {d["key"] for d in cat["unit"]}
+    assert {"software_trigger", "io_level"} <= unit_keys
     st = c.get("/api/status").json()
     assert st["backend"] == "caen" and st["opened"] is False
 

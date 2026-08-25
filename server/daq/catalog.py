@@ -84,12 +84,32 @@ UNIT_SETTINGS = [
              "TR0 serves bank 0, TR1 serves bank 1. Each has its own "
              "threshold and DC offset under Bank Settings. Carries about "
              "42 ns of delay."},
+    {"key": "software_trigger", "label": "Software trigger", "type": "enum",
+     "choices": TRIG_MODES + [{"value": "extout_only", "label": "TRG-OUT only"}],
+     "caen": "CAEN_DGTZ_SetSWTriggerMode",
+     "help": "What a trigger sent from this app does. The bench source when "
+             "nothing external can trigger the board - the 742 has no "
+             "channel self-trigger.\n\n"
+             "Disabled - software triggers are ignored\n"
+             "Acquisition only - capture an event\n"
+             "Acq + TRG-OUT - capture, and pulse it out on GPO/TRG-OUT\n"
+             "TRG-OUT only - pulse the connector without capturing, for "
+             "checking cabling downstream."},
     {"key": "fast_trigger_digitizing", "label": "Digitize TR traces", "type": "bool",
      "caen": "CAEN_DGTZ_SetFastTriggerDigitizing",
      "help": "Record the TR inputs alongside the channels, giving a timing "
              "reference in the data.\n\n"
              "Costs conversion time: dead time per event rises from 110 us "
              "to 181 us."},
+    {"key": "io_level", "label": "Front-panel level (GPO, TRG-IN)", "type": "enum",
+     "choices": [{"value": "nim", "label": "NIM"}, {"value": "ttl", "label": "TTL"}],
+     "caen": "CAEN_DGTZ_SetIOLevel",
+     "help": "Electrical standard of the front-panel LEMO connectors - the "
+             "GPO/TRG-OUT output and the TRG-IN input switch together.\n\n"
+             "NIM - negative logic, the usual choice with NIM crates and PMTs\n"
+             "TTL - positive logic\n\n"
+             "Match what the cabling expects, especially before trusting the "
+             "GPO pulse downstream."},
     {"key": "max_events_blt", "label": "Events per readout", "type": "int",
      "min": 1, "max": 1023, "caen": "CAEN_DGTZ_SetMaxNumEventsBLT",
      "help": "Upper bound on how many events one readout may return - a cap, "

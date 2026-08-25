@@ -163,6 +163,13 @@ class AcquisitionEngine:
             self.start()
         if not self._running.is_set():           # start() refused: no unit
             return {"ok": False, "error": "no unit connected"}
+        with self._lock:
+            mode = self._cfg.software_trigger
+        if mode == "disabled":
+            # The board would swallow every SendSWtrigger without a trace;
+            # say so now instead of reporting 100 triggers that did nothing.
+            return {"ok": False, "error": "the software trigger is disabled "
+                                          "in the unit settings"}
         count = max(1, min(int(count), 100_000))
         rate_hz = min(max(float(rate_hz), 0.1), 1000.0)
         with self._lock:

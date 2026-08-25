@@ -24,7 +24,8 @@ VERSION = 1
 RESTART_KEYS = {"drs4_frequency", "correction_level", "record_length"}
 
 _TRIG = {"DISABLED": "disabled", "ACQUISITION_ONLY": "acquisition_only",
-         "ACQUISITION_AND_TRGOUT": "acq_and_trgout"}
+         "ACQUISITION_AND_TRGOUT": "acq_and_trgout", "TRGOUT_ONLY": "extout_only"}
+_IOLEVEL = {"NIM": "nim", "TTL": "ttl"}
 _YESNO = {"YES": True, "NO": False, "TRUE": True, "FALSE": False}
 
 
@@ -146,7 +147,9 @@ def _common(cfg, key, val, rest, notes):
         vals = [dc_percent_to_dac(float(x)) for x in re.split(r"[,\s]+", " ".join(rest)) if x]
         for i, dac in enumerate(vals[:C.NUM_CHANNELS]):
             cfg.channels[i].dc_offset = dac
-    elif key in ("OPEN", "WRITE_REGISTER", "FPIO_LEVEL", "TEST_PATTERN",
+    elif key == "FPIO_LEVEL":
+        cfg.io_level = _IOLEVEL.get(val.upper(), cfg.io_level)
+    elif key in ("OPEN", "WRITE_REGISTER", "TEST_PATTERN",
                  "PULSE_POLARITY", "TRIGGER_THRESHOLD", "CHANNEL_TRIGGER",
                  "DECIMATION_FACTOR", "USE_INTERRUPT", "GNUPLOT_PATH"):
         pass                      # not applicable to this board / not ours to set
