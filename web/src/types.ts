@@ -44,11 +44,8 @@ export interface BoardConfig {
   fast_trigger: string;
   fast_trigger_digitizing: boolean;
   max_events_blt: number;
-  test_pattern: boolean;
   output_format: string;
   output_header: boolean;
-  output_dir: string;
-  write_enabled: boolean;
   groups: GroupConfig[];
   channels: ChannelConfig[];
   [key: string]: any;
@@ -81,6 +78,8 @@ export interface Telemetry {
 
 export interface Status {
   opened: boolean;
+  /** The server's own pid, so `daq stop` can tell it from a stale record. */
+  pid?: number;
   running: boolean;
   recording: boolean;
   run_id: string | null;

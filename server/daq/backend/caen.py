@@ -1,11 +1,12 @@
 """Real CAEN DT5742B backend via ctypes over libCAENDigitizer.
 
-STATUS: structurally faithful to CAEN's WaveDump x742 sequence, but NOT yet
-validated on hardware (blocked on lsusb passthrough into the lima guest). The
-call ORDER and the struct layouts are taken from CAENDigitizerType.h and
-WaveDump.c; the numeric enum values and any per-group offset math are the most
-likely things to need a tweak against the real board. Everything is isolated
-here so validating it does not touch the rest of the app.
+STATUS: driven end to end on serial 53364 - open, identify, configure, arm,
+software-trigger, read, decode (8 ch x 1024 DRS4-corrected floats), stop, close.
+The call ORDER and the struct layouts are taken from CAENDigitizerType.h and
+WaveDump.c. What is NOT verified is anything needing a real signal: waveform
+correctness, where the trigger lands in the record, and the absolute 0 V
+position of the DC-offset model - its span and sign are measured, the intercept
+rests on the nominal spec.
 
 Correction strategy: we use the library's built-in DRS4 correction
 (LoadDRS4CorrectionData + EnableDRS4Correction) so DecodeEvent returns already
@@ -36,6 +37,15 @@ CAEN_DGTZ_FunctionNotAllowed = -17
 # is given, and calling it again straight away returns 0. Retry once rather than
 # report a failure the board did not really have.
 CAEN_DGTZ_CommError = -1
+CAEN_DGTZ_InvalidParam = -3
+_ERROR_NAMES = {
+    CAEN_DGTZ_CommError: "CommError (transient USB glitch; retried once already)",
+    -2: "GenericError",
+    CAEN_DGTZ_InvalidParam: "InvalidParam (the value is out of range for this call)",
+    -5: "InvalidHandle",
+    -9: "Timeout",
+    CAEN_DGTZ_FunctionNotAllowed: "FunctionNotAllowed (unsupported on this model)",
+}
 ConnectionType_USB = 0
 AcqMode_SW_CONTROLLED = 0
 TriggerMode_DISABLED = 0
@@ -90,6 +100,14 @@ GROUP_HW = [
     ("fast_trigger_threshold", "GetGroupFastTriggerThreshold", "SetGroupFastTriggerThreshold", ct.c_uint32, _INT_ENC, _INT_DEC),
     ("fast_trigger_dc_offset", "GetGroupFastTriggerDCOffset", "SetGroupFastTriggerDCOffset", ct.c_uint32, _INT_ENC, _INT_DEC),
 ]
+
+
+def _snap_post_trigger(pct: int, drs4_freq: int) -> int:
+    """The nearest post-trigger percentage the board can actually reach."""
+    steps = C.post_trigger_steps(drs4_freq)
+    if not steps:
+        return pct
+    return min(steps, key=lambda s: (abs(s - pct), s))
 
 
 def _diff(want, got, skip=()) -> list[str]:
@@ -194,7 +212,9 @@ class CaenBackend(DigitizerBackend):
 
     def _chk(self, ret, what):
         if ret != CAEN_DGTZ_Success:
-            raise RuntimeError(f"CAEN_DGTZ error {ret} in {what}")
+            named = _ERROR_NAMES.get(ret)
+            detail = f"{ret} - {named}" if named else str(ret)
+            raise RuntimeError(f"CAEN_DGTZ error {detail} in {what}")
 
     def open(self) -> BoardInfo:
         self._lib = _load_lib()
@@ -204,11 +224,14 @@ class CaenBackend(DigitizerBackend):
         self._chk(ret, "OpenDigitizer")
         bi = _BoardInfoC()
         self._chk(self._lib.CAEN_DGTZ_GetInfo(self._h, ct.byref(bi)), "GetInfo")
+        # Purely informational - the library version shown in the badge tooltip.
+        # Not worth failing an open over, but worth knowing when it is missing.
         sw = ct.create_string_buffer(64)
         try:
-            self._lib.CAEN_DGTZ_SWRelease(sw)
-        except Exception:
-            pass
+            if self._lib.CAEN_DGTZ_SWRelease(sw) != CAEN_DGTZ_Success:
+                sw.value = b""
+        except (AttributeError, OSError):
+            sw.value = b""
         # NO Reset here. Opening must be non-destructive: the unit keeps its
         # settings across our process restarts, and read_settings is about to
         # adopt them. Resetting first wiped them and then faithfully read back
@@ -332,6 +355,10 @@ class CaenBackend(DigitizerBackend):
         still what the board last told us."""
         prev = self._state          # None => we know nothing, so do it all
         errs: list[str] = []
+        # Work on our own copy. configure() hands us the engine's live config
+        # object, and snapping post-trigger below would otherwise reach back and
+        # edit it from under everything else holding a reference.
+        cfg = self._blank(cfg)
         # Start from what was asked for, so purely app-side fields (channel
         # names, output options) survive; hardware fields are then overwritten
         # by what the board reports, and anything the board refused is rolled
@@ -353,6 +380,13 @@ class CaenBackend(DigitizerBackend):
             if rc != CAEN_DGTZ_Success:
                 errs.append(f"{name}: error {rc}")
             return True
+
+        # The post-trigger register counts ~8.5 ns steps, so most whole
+        # percentages are not reachable and the board silently snaps to the
+        # nearest one. Snapping here first means the request and the readback
+        # agree, instead of every write reporting a mismatch nobody can act on.
+        cfg.post_trigger = _snap_post_trigger(cfg.post_trigger, cfg.drs4_frequency)
+        out.post_trigger = cfg.post_trigger
 
         for spec in BOARD_HW:
             attr, _g, setter, _ct, enc, _d = spec
@@ -415,13 +449,24 @@ class CaenBackend(DigitizerBackend):
             self._chk(L.CAEN_DGTZ_LoadDRS4CorrectionData(h, cfg.drs4_frequency),
                       "LoadDRS4CorrectionData")
             self._chk(L.CAEN_DGTZ_EnableDRS4Correction(h), "EnableDRS4Correction")
-        # readout buffers
-        if self._buf:
-            L.CAEN_DGTZ_FreeReadoutBuffer(ct.byref(self._buf))
+        # Readout buffers. BOTH have to be released first: configure() runs on
+        # every arm, and an AllocateEvent without the matching FreeEvent leaked
+        # a decoded-event buffer per start/stop cycle.
+        self._free_buffers()
         self._chk(L.CAEN_DGTZ_MallocReadoutBuffer(h, ct.byref(self._buf), ct.byref(self._buf_size)),
                   "MallocReadoutBuffer")
         self._chk(L.CAEN_DGTZ_AllocateEvent(h, ct.byref(self._evtptr)), "AllocateEvent")
         return actual, errs
+
+    def _free_buffers(self) -> None:
+        """Release the readout and decoded-event buffers, if we hold any."""
+        if self._evtptr:
+            self._lib.CAEN_DGTZ_FreeEvent(self._h, ct.byref(self._evtptr))
+            self._evtptr = ct.c_void_p()
+        if self._buf:
+            self._lib.CAEN_DGTZ_FreeReadoutBuffer(ct.byref(self._buf))
+            self._buf = ct.POINTER(ct.c_char)()
+            self._buf_size = ct.c_uint32(0)
 
     def start(self) -> None:
         self._chk(self._lib.CAEN_DGTZ_SWStartAcquisition(self._h), "SWStartAcquisition")
@@ -463,13 +508,17 @@ class CaenBackend(DigitizerBackend):
         return out
 
     def close(self) -> None:
-        if not self._lib:
+        """Release everything. Raises if the library refused to close.
+
+        The handle is invalidated whatever happens, so nothing - is_alive() in
+        particular, which runs on every status poll - can go on making calls
+        against a device that has been closed.
+        """
+        if not self._lib or self._h.value < 0:
             return
         try:
-            if self._evtptr:
-                self._lib.CAEN_DGTZ_FreeEvent(self._h, ct.byref(self._evtptr))
-            if self._buf:
-                self._lib.CAEN_DGTZ_FreeReadoutBuffer(ct.byref(self._buf))
-            self._lib.CAEN_DGTZ_CloseDigitizer(self._h)
-        except Exception:
-            pass
+            self._free_buffers()
+            self._chk(self._lib.CAEN_DGTZ_CloseDigitizer(self._h), "CloseDigitizer")
+        finally:
+            self._h = ct.c_int(-1)
+            self._state = None

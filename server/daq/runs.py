@@ -89,10 +89,14 @@ def describe(run_id: str) -> Run | None:
     meta = _read_meta(path)
     files = 0
     total = 0
-    for entry in os.scandir(path):
-        if entry.is_file():
-            files += 1
-            total += entry.stat().st_size
+    with os.scandir(path) as entries:
+        for entry in entries:
+            try:
+                if entry.is_file():
+                    files += 1
+                    total += entry.stat().st_size
+            except OSError:
+                continue          # written to, or removed, while we looked
     chans = sorted(int(c) for c in (meta.get("channels") or {}))
     return Run(id=run_id,
                started=meta.get("started", os.path.getmtime(path)),
@@ -101,17 +105,44 @@ def describe(run_id: str) -> Run | None:
 
 
 def listing() -> list[dict]:
-    """Newest first."""
+    """Newest first, by the start time in the metadata.
+
+    Sorting by directory name only looks right while every run carries a
+    timestamp suffix; a run recorded without one sorted wherever its letters
+    fell, under a heading that says newest first.
+    """
     out = []
-    for entry in sorted(os.scandir(_root()), key=lambda e: e.name, reverse=True):
-        if entry.is_dir():
-            r = describe(entry.name)
-            if r:
-                out.append(r.to_dict())
+    with os.scandir(_root()) as entries:
+        names = [e.name for e in entries if e.is_dir()]
+    for name in names:
+        r = describe(name)
+        if r:
+            out.append(r.to_dict())
+    out.sort(key=lambda r: (r["started"], r["id"]), reverse=True)
     return out
 
 
+def discard_empty(run_id: str) -> bool:
+    """Remove a run directory that was created but never written to.
+
+    A run whose files could not be opened would otherwise sit in the listing
+    looking like a recording that happened and produced nothing.
+    """
+    path = path_of(run_id)
+    if path is None:
+        return False
+    with os.scandir(path) as entries:
+        if any(True for _ in entries):
+            return False
+    try:
+        os.rmdir(path)
+    except OSError:
+        return False
+    return True
+
+
 def delete(run_id: str) -> bool:
+    """True if it is gone. Raises OSError if the filesystem refused."""
     path = path_of(run_id)
     if path is None:
         return False
@@ -124,10 +155,20 @@ def zip_to_temp(run_id: str) -> str | None:
     path = path_of(run_id)
     if path is None:
         return None
+    with os.scandir(path) as entries:
+        files = sorted((e.name, e.path) for e in entries if e.is_file())
     fd, tmp = tempfile.mkstemp(suffix=".zip", prefix=f"{run_id}_")
     os.close(fd)
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for entry in sorted(os.scandir(path), key=lambda e: e.name):
-            if entry.is_file():
-                z.write(entry.path, arcname=os.path.join(run_id, entry.name))
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, src in files:
+                z.write(src, arcname=os.path.join(run_id, name))
+    except BaseException:
+        # A half-written zip is worse than none: it downloads and then fails to
+        # open. Take the partial file with us on the way out.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return tmp

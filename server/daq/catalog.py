@@ -46,6 +46,7 @@ UNIT_SETTINGS = [
              "percent, so the smallest increment depends on the sampling "
              "frequency:\n\n"
              "5 GS/s - 8.5 ns, 25 settings\n"
+             "2.5 GS/s - 8.5 ns, 49 settings\n"
              "1 GS/s - 10.24 ns, every 1%\n"
              "750 MS/s - 13.65 ns, every 1%\n\n"
              "The arrows walk exactly those settings."},

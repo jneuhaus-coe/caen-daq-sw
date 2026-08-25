@@ -103,10 +103,24 @@ stop_running_server() {
             warn "A run is recording: ${run:-unknown}"
             die  "Stop the recording, then re-run this installer."
         fi
-        say "Stopping the running server (pid ${pid:-?} on port $port)"
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
+        # A server answered, so one IS running. Without a pid we cannot stop it,
+        # and without a local process at that pid it is not on this machine at
+        # all - a port-forward reaches somebody else's server. Refuse either
+        # way: waiting out the timeout and then reporting it stopped was a lie
+        # in both cases.
+        if [ -z "$pid" ]; then
+            warn "A daq server is answering on port $port but recorded no pid,"
+            warn "so this installer cannot stop it."
+            die  "Stop it yourself (daq stop), then re-run this installer."
         fi
+        if ! alive "$pid"; then
+            warn "A daq server is answering on port $port, but pid $pid is not"
+            warn "running here - it is probably on another machine, reached through"
+            warn "a port forward."
+            die  "Stop that server where it runs, then re-run this installer."
+        fi
+        say "Stopping the running server (pid $pid on port $port)"
+        kill "$pid" 2>/dev/null || true
     else
         # No usable record — fall back to finding the process by its path.
         pids="$(daq_pids | tr '\n' ' ')"
@@ -180,10 +194,25 @@ fi
 
 # --- 4. Install --------------------------------------------------------------
 say "Installing $PKG on Python $PYTHON_VERSION"
-uv tool install --python "$PYTHON_VERSION" --force "$SPEC"
+# What is on disk decides, not uv's exit code - uv can report oddly while having
+# installed perfectly well. Letting `set -e` abort on the code aborted with no
+# message whatsoever, which is the worst of both.
+uv_code=0
+uv tool install --python "$PYTHON_VERSION" --force "$SPEC" || uv_code=$?
 uv tool update-shell >/dev/null 2>&1 || true
 
-[ -x "$DAQ_BIN" ] || die "install finished but no 'daq' executable was produced in $TOOL_BIN."
+if [ ! -x "$DAQ_BIN" ]; then
+    if [ "$uv_code" -eq 0 ]; then
+        die "install finished but no 'daq' executable was produced in $TOOL_BIN."
+    fi
+    die "uv could not install $PKG (exit $uv_code). Nothing was left in $TOOL_BIN."
+fi
+if ! "$DAQ_BIN" --version >/dev/null 2>&1; then
+    die "$DAQ_BIN was installed but will not run. Try: uv tool uninstall $PKG, then re-run this."
+fi
+if [ "$uv_code" -ne 0 ]; then
+    warn "uv exited $uv_code, but $DAQ_BIN is installed and runs - continuing."
+fi
 
 ON_PATH="$(command -v daq 2>/dev/null || true)"
 if [ -n "$ON_PATH" ] && [ "$ON_PATH" != "$DAQ_BIN" ]; then

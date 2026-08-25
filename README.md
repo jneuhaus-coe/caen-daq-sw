@@ -200,7 +200,7 @@ Afterwards, **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new U
 Run **daq** on the DAQ machine, or open **http://\<daq-host\>:8800/** from
 anywhere else.
 
-The **?** button at the top right walks you through this in three steps.
+The **?** button at the top right walks you through this in four steps.
 
 > **Closing the window does not stop anything.** The window is only a view — the
 > server keeps running, the board stays open, and a recording keeps recording.
@@ -217,7 +217,8 @@ Red badge? See [When something is wrong](#when-something-is-wrong).
 
 ### 2. Watch before you record
 
-Press **Start**. Nothing is written to disk — this is just the live view.
+Press **Start Acquisition**. Nothing is written to disk — this is just the live
+view.
 
 - **Channels** shows one averaged waveform per channel. A dashed **TRIG** line
   marks where the trigger sits in the record.
@@ -238,8 +239,8 @@ Acquisition keeps running the whole time.
 ### 4. Stop
 
 Press **Stop recording**. The live view keeps going, so you can check the next
-configuration without stopping and restarting everything. **Stop** halts
-acquisition entirely.
+configuration without stopping and restarting everything. **Stop Acquisition**
+halts readout entirely.
 
 ### 5. Collect the data
 
@@ -293,8 +294,8 @@ Repeated failures with a red badge mean the driver or the connection is gone —
 check the USB cable, then see [Install](#install).
 
 **Nothing is being written.**
-Check the indicator is red and counting. **Start** only watches; **Record**
-writes.
+Check the indicator is red and counting. **Start Acquisition** only watches;
+**Record** writes.
 
 **The badge is red for the first few seconds after starting.**
 That is normal. The server brings the UI up without waiting for the digitizer,

@@ -17,7 +17,6 @@ import logging
 import os
 import sys
 import threading
-import time
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -84,6 +83,14 @@ def configure(level: str = "info", log_file: Optional[str] = None,
     # so only attach one when there is somewhere for it to go.
     stream = sys.stdout if sys.stdout is not None else sys.stderr
     if stream is not None:
+        # A Windows console in cp1252 cannot encode an em dash, and the handler
+        # raises on every record when it tries. Our own text is ASCII on
+        # purpose, but a run name, a path or an exception message is not ours to
+        # choose - so make the console lossy rather than fatal.
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            pass
         console = logging.StreamHandler(stream)
         console.setLevel(numeric)
         console.setFormatter(logging.Formatter(
@@ -114,8 +121,8 @@ def configure(level: str = "info", log_file: Optional[str] = None,
         logger.handlers.clear()
         logger.propagate = True
 
-    for name, level in _NOISY.items():
-        logging.getLogger(name).setLevel(level)
+    for name, noisy_level in _NOISY.items():
+        logging.getLogger(name).setLevel(noisy_level)
 
     _configured = True
     _active_path = path

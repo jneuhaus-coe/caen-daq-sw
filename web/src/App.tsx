@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, openTelemetry } from "./api";
 import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
@@ -26,19 +26,27 @@ export function App() {
   const [runName, setRunName] = useState("");
   const [stampRun, setStampRun] = useState(true);
   const [tour, setTour] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
   const saveTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
   const confirmed = useRef<BoardConfig | null>(null);
   const { toasts, push, dismiss } = useToasts();
 
-  useEffect(() => {
-    (async () => {
+  const loadOnce = useCallback(async () => {
+    setLoadError(null);
+    try {
       const [cat, cfg, st] = await Promise.all([api.catalog(), api.getConfig(), api.status()]);
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
-    })().catch(console.error);
+    } catch (e) {
+      // Leaving this to console.error left the page reading "Loading..." for
+      // ever, with nothing on screen to say the server had not answered.
+      setLoadError(e instanceof Error ? e.message : String(e));
+    }
   }, []);
+
+  useEffect(() => { loadOnce(); }, [loadOnce]);
 
   const catalogRef = useRef<Catalog | null>(null);
   catalogRef.current = catalog;
@@ -101,22 +109,56 @@ export function App() {
     pushConfig({ ...config, channels });
   };
 
-  const start = async () => setStatus(await api.start());
-  const stop = async () => setStatus(await api.stop());
+  const failed = (what: string) => (e: unknown) =>
+    push("err", what, [e instanceof Error ? e.message : String(e)]);
+
+  const start = async () => {
+    try {
+      const st = await api.start();
+      setStatus(st);
+      // The server refuses rather than raising, so a 200 does not mean it
+      // started. The reason is already in the errors panel; the toast points
+      // at it instead of leaving the button looking inert.
+      if (!st.started) {
+        const why = st.errors.slice(-2);
+        push("err", "Acquisition did not start",
+             why.length ? why : ["See the Errors panel."]);
+      }
+    } catch (e) {
+      failed("Could not start acquisition")(e);
+    }
+  };
+  const stop = async () => {
+    try {
+      setStatus(await api.stop());
+    } catch (e) {
+      failed("Could not stop acquisition")(e);
+    }
+  };
   const startRec = async () => {
-    const r = await api.recStart(runName, stampRun);
-    setStatus(r.status);
-    if (!r.ok) push("err", "Could not start recording", [r.error ?? ""]);
-    else {
-      push("ok", "Recording", [`${r.run}`]);
-      setRunsKey((k) => k + 1);
+    try {
+      const r = await api.recStart(runName, stampRun);
+      setStatus(r.status);
+      if (!r.ok) push("err", "Could not start recording", [r.error ?? "no reason given"]);
+      else {
+        push("ok", "Recording", [`${r.run}`]);
+        setRunsKey((k) => k + 1);
+      }
+    } catch (e) {
+      failed("Could not start recording")(e);
     }
   };
   const stopRec = async () => {
-    const r = await api.recStop();
-    setStatus(r.status);
-    if (r.ok) push("ok", "Recording stopped", [`${r.run}`]);
-    setRunsKey((k) => k + 1);
+    try {
+      const r = await api.recStop();
+      setStatus(r.status);
+      push(r.ok ? "ok" : "warn",
+           r.ok ? "Recording stopped" : "Nothing was recording",
+           [r.ok ? `${r.run}` : (r.error ?? "")]);
+      setRunsKey((k) => k + 1);
+    } catch (e) {
+      failed("Could not stop the recording")(e);
+    }
   };
   const reconnect = async () => {
     setReconnecting(true);
@@ -130,7 +172,22 @@ export function App() {
     }
   };
 
-  if (!catalog || !config) return <div className="loading">Loading…</div>;
+  if (!catalog || !config) {
+    return (
+      <div className="loading">
+        {loadError ? (
+          <>
+            <p>Could not reach the DAQ server.</p>
+            <p className="mono err">{loadError}</p>
+            <p className="muted">
+              Check it is running (<code>daq status</code>), then try again.
+            </p>
+            <button className="primary" onClick={loadOnce}>Retry</button>
+          </>
+        ) : "Loading\u2026"}
+      </div>
+    );
+  }
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
   const recording = tele?.recording ?? status?.recording ?? false;
@@ -227,18 +284,39 @@ export function App() {
           </Collapsible>
           <ConfigPanel
             onReset={async () => {
-              const cfg = await api.resetDefault();
-              setConfig(cfg); confirmed.current = cfg;
-              push("ok", "Defaults applied and read back from unit");
+              try {
+                const r = await api.resetDefault();
+                setConfig(r.config); confirmed.current = r.config;
+                if (r.connected === false) {
+                  push("warn", "No unit connected", ["Nothing was sent."]);
+                } else if (r.errors?.length) {
+                  push("err", "Unit rejected part of the reset", r.errors);
+                } else {
+                  push("ok", "Defaults applied and read back from unit");
+                }
+              } catch (e) {
+                failed("Could not reset the settings")(e);
+              }
             }}
-            onLoaded={(cfg, notes, restart, running) => {
+            onLoaded={({ config: cfg, notes, errors, restart, connected: up, running }) => {
+              // Adopt what the unit reported even when it refused something:
+              // that IS its state now, and showing the old values instead would
+              // be the one thing this app must never do.
               setConfig(cfg); confirmed.current = cfg;
-              push(notes.length ? "warn" : "ok",
-                   "Config loaded and read back from unit", notes);
+              if (!up) {
+                push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
+              } else if (errors.length) {
+                push("err", "Unit rejected a setting from the file",
+                     [...errors, ...notes]);
+              } else {
+                push(notes.length ? "warn" : "ok",
+                     "Config loaded and read back from unit", notes);
+              }
               if (restart.length && running) {
                 const what = restart.join(", ");
                 if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
-                  api.stop().then(() => api.start()).then(setStatus).catch(console.error);
+                  api.stop().then(() => api.start()).then(setStatus)
+                    .catch(failed("Could not re-arm the unit"));
                 }
               }
             }} />
