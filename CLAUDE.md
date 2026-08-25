@@ -36,10 +36,19 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   `gpo_output = "busy"` writes, an independent confirmation. Do NOT copy its
   channel DC-offset block: it is commented out and shifts the channel-select
   field by 17 where 0x1n98 wants bits[19:16] (UM5698 sec 1.9) —
-  `SetChannelDCOffset` does this correctly. Its spreadsheet's mV labels for
-  CHNOFFSE values match no consistent model (47000 is "-350 mV" there, -434
-  nominal, -476 by this unit's measured span): the DAC words are the truth,
-  the mV annotations are folklore.
+  `SetChannelDCOffset` does this correctly. Its spreadsheet's mV labels are
+  measured, not nominal - see the baseline calibration below.
+- **Measured DC-offset baseline positions on serial 53364** (Configuration B
+  loaded, 30 software-triggered events, median of DRS4-corrected samples,
+  2026-08-25): DAC mid-scale 32768 puts the baseline at **+145 mV**, not 0 -
+  the intercept the nominal model lacks. DAC 47000 lands at -335 mV (the
+  sheet's "-350" is honest), slope ~33.7 uV/DAC LSB (2.21 V full span,
+  matching the 2.19 V sweep above). Consequence: **DAC 18536 ("+350 mV")
+  RAILS the baseline at ADC max** (+145 + 480 = +625 mV, past the +500 mV
+  window top) - every negative-pulse channel in Configuration B sits clipped
+  at 4095 with its true baseline invisible. A baseline at an actual +350 mV
+  on this unit is DAC ~26700. Rule of thumb: baseline_mV ~ +145 -
+  (DAC - 32768) * 0.0337.
 - This board: serial **53364**, ROC 04.29 build 8716, AMC 01.06 build 6530 —
   standard 742 **waveform** firmware (not DPP). Read back off the board itself.
 - `BoardInfo.Channels` reads **2** on the x742 — it is the *group* count, not
