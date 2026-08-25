@@ -139,10 +139,16 @@ UNIT_SETTINGS = [
              "high rates; lower means the display updates sooner at low "
              "rates. Not the same thing as the unit's 1024-event buffer."},
     {"key": "output_format", "label": "Dump format", "type": "enum",
-     "choices": [{"value": "ascii", "label": "ASCII"}, {"value": "binary", "label": "Binary"}],
+     "choices": [{"value": "ascii", "label": "ASCII"},
+                 {"value": "binary", "label": "Binary"},
+                 {"value": "root", "label": "ROOT"}],
      "help": "How samples are written to disk.\n\n"
              "ASCII - one decimal per line; readable, ~6x larger, slower\n"
-             "Binary - raw samples; what you want for a sustained run"},
+             "Binary - WaveDump .dat, compact raw; feeds the drs2root "
+             "converter\n"
+             "ROOT - one waveforms.root per run, TTree 'pulse' in the "
+             "RADiCAL testbeam layout (event, channel[18][1024], times) - "
+             "straight into the analysis, no conversion step"},
     {"key": "output_header", "label": "Dump header", "type": "bool",
      "help": "Prepend WaveDump's per-event header (event size, channel, "
              "counter, trigger time tag).\n\n"

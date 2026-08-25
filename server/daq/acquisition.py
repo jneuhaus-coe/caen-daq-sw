@@ -305,7 +305,7 @@ class AcquisitionEngine:
                                  f"rename it or switch the timestamp on"}
             with self._lock:
                 cfg = self._cfg
-            writer = make_writer(path, run_id)  # the directory name is the name
+            writer = make_writer(path, run_id, cfg.output_format)  # dir name = run name
             try:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)

@@ -179,6 +179,44 @@ GPO_BUSY 1
     assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
 
 
+def test_root_writer_matches_the_radical_layout():
+    """waveforms.root must read back with the structure the group's testbeam
+    analysis expects (tb_fnal_radical drs2root): TTree 'pulse' with event/I,
+    channel[18][1024]/F and times[2][1024]/F - and the sample values intact."""
+    import uproot
+    from daq.writer import make_writer
+    from daq.backend.base import Event
+    from daq.config import default_config
+
+    cfg = default_config()
+    cfg.output_format = "root"
+    with tempfile.TemporaryDirectory() as d:
+        w = make_writer(d, "root-test", cfg.output_format)
+        w.open(cfg)
+        for i in range(3):
+            samples = {ch: np.full(C.RECORD_LENGTH, 100.0 * i + ch,
+                                   dtype=np.float32)
+                       for ch in cfg.enabled_channels()}
+            w.write(Event(index=i, timestamp_s=0.0, trigger_time_tag=7 * i,
+                          samples=samples))
+        w.close()
+
+        with uproot.open(os.path.join(d, "waveforms.root")) as f:
+            t = f["pulse"]
+            assert t.num_entries == 3
+            a = t.arrays(library="np")
+            assert a["event"].tolist() == [0, 1, 2]
+            assert a["channel"].shape == (3, 18, C.RECORD_LENGTH)
+            assert a["times"].shape == (3, 2, C.RECORD_LENGTH)
+            assert a["channel"][2][5][0] == 205.0        # event 2, ch 5
+            assert a["channel"][0][17].max() == 0.0      # TR trace: zero for now
+            # 5 GS/s: 0.2 ns per sample, so sample 10 sits at 2 ns.
+            assert abs(a["times"][0][0][10] - 2.0) < 1e-6
+
+        meta = json.load(open(os.path.join(d, "run_metadata.json")))
+        assert meta["events"] == 3 and meta["output_format"] == "root"
+
+
 def test_fake_backend_behaves_like_a_board():
     """The Playwright suite runs the server with DAQ_BACKEND=fake; this guards
     the contract it relies on: the fake opens, settings stick exactly, and
@@ -433,6 +471,7 @@ if __name__ == "__main__":
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
+               test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
                test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,

@@ -52,8 +52,10 @@ class BoardConfig:
     gpo_output: str = "trigger"
     max_events_blt: int = 1023   # 1024 is silently clamped to this; see CLAUDE.md
     test_pattern: bool = False
-    # output
-    output_format: str = "ascii"
+    # output. ROOT by default: the analysis
+    # (gitlab.cern.ch/ledovsk/tb_fnal_radical) reads it directly, so the
+    # conversion step disappears. ASCII/binary remain for WaveDump parity.
+    output_format: str = "root"
     output_header: bool = False
     # tiers
     groups: list[GroupConfig] = field(
