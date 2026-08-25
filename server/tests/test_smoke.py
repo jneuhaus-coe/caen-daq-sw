@@ -69,8 +69,13 @@ def test_http_api():
     c = TestClient(create_app(_engine_without_a_unit()))
     cat = c.get("/api/catalog").json()
     assert cat["bank"]  # bank tier present
-    unit_keys = {d["key"] for d in cat["unit"]}
-    assert {"software_trigger", "io_level"} <= unit_keys
+    unit = {d["key"]: d for d in cat["unit"]}
+    assert {"software_trigger", "io_level"} <= unit.keys()
+    # The UI's required/optional split and its pin-to-default checkboxes hang
+    # off these fields; a catalog without them renders every setting required.
+    assert unit["drs4_frequency"].get("required") is True
+    assert unit["max_events_blt"]["default"] == 1023
+    assert unit["io_level"]["default"] == "nim"
     st = c.get("/api/status").json()
     assert st["backend"] == "caen" and st["opened"] is False
 

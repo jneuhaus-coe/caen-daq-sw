@@ -6,10 +6,17 @@ The function name rides along separately for anyone reading the code.
 
 `type: "volts"` means the wire value is a 16-bit DAC word but the UI must show
 volts; nothing human-facing should present a raw DAC integer.
+
+`required: True` marks the settings every run must have deliberately chosen -
+the UI lists those first, and gates the rest behind a per-setting checkbox
+that pins an untouched setting to its default. The defaults themselves are
+injected in catalog() from default_config(), never written here, so the
+catalog can not drift from the config it describes.
 """
 from __future__ import annotations
 
 from . import constants as C
+from .config import default_config
 
 FREQ_CHOICES = [{"value": k, "label": v[0]} for k, v in C.DRS4_FREQUENCIES.items()]
 TRIG_MODES = [{"value": "disabled", "label": "Disabled"},
@@ -17,7 +24,7 @@ TRIG_MODES = [{"value": "disabled", "label": "Disabled"},
               {"value": "acq_and_trgout", "label": "Acq + TRG-OUT"}]
 
 UNIT_SETTINGS = [
-    {"key": "drs4_frequency", "label": "Sampling frequency", "type": "enum",
+    {"key": "drs4_frequency", "required": True, "label": "Sampling frequency", "type": "enum",
      "choices": FREQ_CHOICES, "caen": "CAEN_DGTZ_SetDRS4SamplingFrequency",
      "help": "How fast the DRS4 samples.\n\n"
              "The record is always 1024 cells, so this sets the time "
@@ -29,7 +36,7 @@ UNIT_SETTINGS = [
              "750 MS/s - 1.33 ns per cell, 1.37 us window\n\n"
              "Changing it reloads the correction tables and changes which "
              "post-trigger settings are reachable."},
-    {"key": "post_trigger", "label": "Post-trigger duration", "type": "steps",
+    {"key": "post_trigger", "required": True, "label": "Post-trigger duration", "type": "steps",
      "depends_on": "drs4_frequency",
      "values_by_freq": {
          str(f): [{"pct": p, "ns": round(p / 100.0 * C.record_ns(f), 2)}
@@ -60,7 +67,7 @@ UNIT_SETTINGS = [
              "Disabled - raw cells, for diagnosing the chip itself\n"
              "Manual tables - supply your own\n\n"
              "Leave this on Auto unless you know why you want it off."},
-    {"key": "trigger_edge", "label": "Trigger edge", "type": "enum",
+    {"key": "trigger_edge", "required": True, "label": "Trigger edge", "type": "enum",
      "choices": [{"value": "rising", "label": "Rising"}, {"value": "falling", "label": "Falling"}],
      "caen": "CAEN_DGTZ_SetTriggerPolarity",
      "help": "Which way the signal must cross the threshold to fire.\n\n"
@@ -68,14 +75,14 @@ UNIT_SETTINGS = [
              "Falling - for negative-going pulses (PMTs, NIM)\n\n"
              "Despite the per-channel API, this unit applies one edge to "
              "every channel."},
-    {"key": "external_trigger", "label": "External trigger (TRG-IN)", "type": "enum",
+    {"key": "external_trigger", "required": True, "label": "External trigger (TRG-IN)", "type": "enum",
      "choices": TRIG_MODES, "caen": "CAEN_DGTZ_SetExtTriggerInputMode",
      "help": "Accept triggers on the front-panel TRG-IN connector.\n\n"
              "Disabled - ignore TRG-IN\n"
              "Acquisition only - trigger on it\n"
              "Acq + TRG-OUT - trigger, and pass it out for chaining\n\n"
              "Carries about 115 ns of delay, against ~42 ns on the TR inputs."},
-    {"key": "fast_trigger", "label": "Fast trigger (TR0/TR1)", "type": "enum",
+    {"key": "fast_trigger", "required": True, "label": "Fast trigger (TR0/TR1)", "type": "enum",
      "choices": TRIG_MODES[:2], "caen": "CAEN_DGTZ_SetFastTriggerMode",
      "help": "Trigger from the dedicated TR inputs - the low-latency path, and "
              "the usual choice for timing work.\n\n"
@@ -161,8 +168,9 @@ CHANNEL_SETTINGS = [
 
 
 def catalog() -> dict:
+    defaults = default_config().to_dict()
     return {
-        "unit": UNIT_SETTINGS,
+        "unit": [{**s, "default": defaults.get(s["key"])} for s in UNIT_SETTINGS],
         "bank": BANK_SETTINGS,
         "channel": CHANNEL_SETTINGS,
         "geometry": {

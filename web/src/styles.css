@@ -237,6 +237,21 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .setting-row .unit { color: var(--muted); }
 .setting-row .help { grid-column: 1 / -1; font-size: 11px; color: #6e7681; }
 
+/* Optional settings: [checkbox] [label] [control]. An unchecked row is pinned
+   to its default, so it reads muted but stays legible - the operator should
+   still see WHAT the default is, just not mistake it for a choice they made. */
+.setting-row.optional { grid-template-columns: auto 1fr auto; }
+.setting-row.optional input[type="checkbox"]:first-child { margin: 0; }
+.setting-row.optional.off label { color: var(--muted); }
+.setting-row.optional.off select,
+.setting-row.optional.off .field input { opacity: 0.55; }
+.settings-divider {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.settings-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
 /* collapsible */
 .collapse-head { display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
 .chevron { display: inline-block; transition: transform .12s; color: var(--muted); }

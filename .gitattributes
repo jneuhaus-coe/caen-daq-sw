@@ -1,0 +1,3 @@
+# Built UI bundle: committed byte-for-byte, never eol-normalized, so a
+# rebuild on any platform leaves a clean tree when the source is unchanged.
+server/daq/static/** -text

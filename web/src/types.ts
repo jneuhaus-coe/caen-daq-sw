@@ -13,6 +13,12 @@ export interface SettingDef {
   depends_on?: string;
   values_by_freq?: Record<string, { pct: number; ns: number }[]>;
   record_ns_by_freq?: Record<string, number>;
+  /** Must be deliberately chosen for every run; listed before the optional
+   *  settings, which sit behind a per-setting checkbox. */
+  required?: boolean;
+  /** What an optional setting is pinned to while its checkbox is off.
+   *  Injected server-side from default_config(), so it cannot drift. */
+  default?: any;
 }
 
 export interface Catalog {
