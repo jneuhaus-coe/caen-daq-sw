@@ -48,13 +48,30 @@ def to_json(cfg: BoardConfig, include_names: bool = True) -> str:
     return json.dumps({"format": FORMAT, "version": VERSION, "config": d}, indent=2)
 
 
+# The keys of the group's previous DAQ ("Configuration B" files): fixed
+# eight-character keys, one setting per line. Recognizing any of them is what
+# routes a file to the legacy parser instead of the WaveDump one.
+_LEGACY_KEYS = {"DRS4FREQ", "CHNOFFSE", "TR0OFFSE", "TRG__TR0",
+                "TRGPOLAR", "POSTTRIG", "LEMO_LEV", "GPO_BUSY", "MODULE"}
+
+
 # ---------- reading ----------
 def from_text(text: str) -> tuple[BoardConfig, list[str]]:
-    """Parse either format. Returns (config, notes)."""
+    """Parse any accepted format. Returns (config, notes)."""
     stripped = text.lstrip()
     if stripped.startswith("{"):
         return _from_json(text)
+    if _looks_legacy(text):
+        return _from_legacy(text)
     return _from_wavedump(text)
+
+
+def _looks_legacy(text: str) -> bool:
+    for raw in text.splitlines():
+        parts = raw.split("#")[0].strip().split()
+        if parts and parts[0].upper() in _LEGACY_KEYS:
+            return True
+    return False
 
 
 def _from_json(text: str) -> tuple[BoardConfig, list[str]]:
@@ -65,6 +82,69 @@ def _from_json(text: str) -> tuple[BoardConfig, list[str]]:
             notes.append(f"file declares format {d.get('format')!r}; read anyway")
         d = d["config"]
     return BoardConfig.from_dict(d), notes
+
+
+def _from_legacy(text: str) -> tuple[BoardConfig, list[str]]:
+    """The group's previous DAQ format, e.g. "CHNOFFSE 47000 0 1".
+
+    DC offsets are raw DAC words (not WaveDump's percentages), addressed as
+    channel-within-group plus group. TRGPOLAR follows the register convention
+    (0 = rising, 1 = falling, UM5698 sec 1.15 bit[6]); LEMO_LEV likewise
+    (0 = NIM, 1 = TTL). Only TR0 is spoken for - the format predates any use
+    of bank 1's TR1 - so TR1 settings are left alone and that is said aloud
+    when both banks are in use. Anything after the values a key defines is
+    ignored: the descriptions and polarities in the operators' spreadsheet
+    were annotation columns around these lines, never part of the file.
+    """
+    cfg = default_config()
+    notes: list[str] = []
+    groups_seen: set[int] = set()
+
+    for raw in text.splitlines():
+        line = raw.split("#")[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        key, vals = parts[0].upper(), parts[1:]
+        try:
+            if key == "DRS4FREQ":
+                cfg.drs4_frequency = int(vals[0])
+            elif key == "CHNOFFSE":
+                dac = max(0, min(C.DC_OFFSET_MAX, int(vals[0])))
+                ch, gr = int(vals[1]), int(vals[2])
+                cfg.channels[gr * C.GROUP_SIZE + ch].dc_offset = dac
+                groups_seen.add(gr)
+            elif key == "TR0OFFSE":
+                cfg.groups[0].fast_trigger_dc_offset = int(vals[0])
+            elif key == "TRG__TR0":
+                cfg.groups[0].fast_trigger_threshold = int(vals[0])
+            elif key == "TRGPOLAR":
+                cfg.trigger_edge = "falling" if int(vals[0]) else "rising"
+            elif key == "POSTTRIG":
+                cfg.post_trigger = max(0, min(100, int(vals[0])))
+            elif key == "LEMO_LEV":
+                cfg.io_level = "ttl" if int(vals[0]) else "nim"
+            elif key == "GPO_BUSY":
+                cfg.gpo_output = "busy" if int(vals[0]) else "trigger"
+            elif key == "MODULE":
+                notes.append(f"module number {vals[0]} noted; this app "
+                             f"identifies the unit by its serial number")
+            else:
+                notes.append(f"ignored unknown key {key}")
+        except (ValueError, IndexError):
+            notes.append(f"could not read {line!r}")
+
+    # The format has no explicit enable: a bank is in use iff the file sets
+    # offsets on its channels - including turning OFF a default-enabled bank
+    # the file never mentions. A file with no CHNOFFSE at all says nothing
+    # about banks, so the defaults stand.
+    if groups_seen:
+        for gr in range(C.NUM_GROUPS):
+            cfg.groups[gr].enabled = gr in groups_seen
+    if len(groups_seen) > 1:
+        notes.append("TR0 settings applied to bank 0; the file carries "
+                     "nothing for TR1, so bank 1 keeps its defaults")
+    return cfg, notes
 
 
 def _from_wavedump(text: str) -> tuple[BoardConfig, list[str]]:

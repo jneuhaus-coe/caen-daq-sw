@@ -136,6 +136,49 @@ def test_software_trigger_is_refused_with_no_unit():
     assert r["status"]["sw_triggers_pending"] == 0
 
 
+def test_legacy_config_format_imports():
+    """The group's previous DAQ format ("Configuration B") must load: raw DAC
+    offsets addressed by channel-in-group + group, register-convention flags,
+    and GPO_BUSY mapping onto the gpo_output setting."""
+    from daq import configfile
+    text = """
+Module 125
+DRS4FREQ 0
+CHNOFFSE 47000 0 0
+CHNOFFSE 18536 4 0
+CHNOFFSE 32768 5 0
+CHNOFFSE 47000 0 1
+CHNOFFSE 18536 7 1
+TR0OFFSE 32768
+TRG__TR0 20934
+TRGPOLAR 1
+POSTTRIG 0
+LEMO_LEV 0
+GPO_BUSY 1
+"""
+    cfg, notes = configfile.from_text(text)
+    assert cfg.drs4_frequency == 0
+    assert cfg.channels[0].dc_offset == 47000
+    assert cfg.channels[4].dc_offset == 18536
+    assert cfg.channels[5].dc_offset == 32768
+    assert cfg.channels[8].dc_offset == 47000      # group 1 starts at ch 8
+    assert cfg.channels[15].dc_offset == 18536
+    assert cfg.groups[0].enabled and cfg.groups[1].enabled
+    assert cfg.groups[0].fast_trigger_dc_offset == 32768
+    assert cfg.groups[0].fast_trigger_threshold == 20934
+    assert cfg.trigger_edge == "falling"
+    assert cfg.post_trigger == 0
+    assert cfg.io_level == "nim"
+    assert cfg.gpo_output == "busy"
+    assert any("module number 125" in n for n in notes)
+    assert any("TR1" in n for n in notes)          # both banks, TR0-only file
+
+    # A legacy file mentioning only bank 1 must turn the default bank 0 OFF -
+    # the file's channel list is the whole statement of what is in use.
+    only_b1, _ = configfile.from_text("CHNOFFSE 40000 0 1")
+    assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
+
+
 def test_runtime_url_is_always_loopback_for_a_local_window():
     """A server bound to every interface is still opened at 127.0.0.1 locally."""
     assert runtime.url_for("0.0.0.0", 8000) == "http://127.0.0.1:8000/"
@@ -336,6 +379,7 @@ if __name__ == "__main__":
                test_rate_meter_total_and_last_bucket,
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,
+               test_legacy_config_format_imports,
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,
                test_stale_and_foreign_servers_are_not_attached_to,

@@ -63,8 +63,9 @@ export function ConfigPanel({ onLoaded, onReset }: Props) {
       />
       <p className="muted">
         The panels above configure the unit directly; files exist to carry a
-        setup between machines. Load accepts this app's JSON or a CAEN{" "}
-        <code>WaveDumpConfig.txt</code>; everything loaded is written to the
+        setup between machines. Load accepts this app's JSON, a CAEN{" "}
+        <code>WaveDumpConfig.txt</code>, or the group's legacy format{" "}
+        (<code>CHNOFFSE&nbsp;…</code>); everything loaded is written to the
         unit and read back.
       </p>
       {msg ? (
