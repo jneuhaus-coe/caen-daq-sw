@@ -47,6 +47,9 @@ class BoardConfig:
     fast_trigger_digitizing: bool = True
     # Electrical standard of the front-panel LEMOs (GPO/TRG-OUT and TRG-IN).
     io_level: str = "nim"
+    # What the GPO connector emits: the trigger, the board's BUSY (dead-time
+    # veto for downstream electronics), or RUN (for daisy-chained start/stop).
+    gpo_output: str = "trigger"
     max_events_blt: int = 1023   # 1024 is silently clamped to this; see CLAUDE.md
     test_pattern: bool = False
     # output

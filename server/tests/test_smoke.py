@@ -70,7 +70,7 @@ def test_http_api():
     cat = c.get("/api/catalog").json()
     assert cat["bank"]  # bank tier present
     unit = {d["key"]: d for d in cat["unit"]}
-    assert {"software_trigger", "io_level"} <= unit.keys()
+    assert {"software_trigger", "io_level", "gpo_output"} <= unit.keys()
     # The UI's required/optional split and its pin-to-default checkboxes hang
     # off these fields; a catalog without them renders every setting required.
     assert unit["drs4_frequency"].get("required") is True

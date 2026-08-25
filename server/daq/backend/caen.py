@@ -53,6 +53,20 @@ REG_ACQUISITION_STATUS = 0x8104   # read-only; used as a liveness probe
 REG_GROUP_CONFIG = 0x8000
 BIT_TR_DIGITIZE = 1 << 11
 
+# GPO (TRG-OUT) routing lives in the Front Panel I/O Control register; the
+# CAENDigitizer API has no function for it, so this is the one setting done
+# with raw register access. UM5698 sec 1.25 (0x811C): bits[17:16] select the
+# source (00 trigger, 01 motherboard probes), bits[19:18] pick the probe
+# (00 RUN, 11 BUSY), bit[20] picks board-BUSY over PLL-lock-loss on ROC >=
+# 4.12 (this board runs 4.29), and bits[15:14] are a test-level override,
+# kept off. The field bits [20:14] are owned here wholesale; bit[0] is the
+# LEMO level, which SetIOLevel manages, so the two never collide.
+REG_FRONT_PANEL_IO = 0x811C
+GPO_FIELD_MASK = 0x1FC000                  # bits [20:14]
+_GPO_FIELD = {"trigger": 0x000000,         # [17:16]=00: propagate the trigger
+              "busy":    0x0D0000,         # [17:16]=01, [19:18]=11: board BUSY
+              "run":     0x010000}         # [17:16]=01, [19:18]=00: RUN
+
 # --- codecs between our config vocabulary and CAEN's enums ---
 _TRIGMODE = {"disabled": TriggerMode_DISABLED,
              "acquisition_only": TriggerMode_ACQ_ONLY,
@@ -111,6 +125,7 @@ def _diff(want, got, skip=()) -> list[str]:
     for attr, *_ in BOARD_HW:
         cmp(attr, getattr(want, attr), getattr(got, attr))
     cmp("trigger_edge", want.trigger_edge, got.trigger_edge)
+    cmp("gpo_output", want.gpo_output, got.gpo_output)
     for gr in range(C.NUM_GROUPS):
         for attr in [a for a, *_ in GROUP_HW] + ["enabled"]:
             cmp(f"group {gr} {attr}",
@@ -290,6 +305,16 @@ class CaenBackend(DigitizerBackend):
             for gr in range(C.NUM_GROUPS):
                 out.groups[gr].enabled = bool(mask & (1 << gr))
 
+    def _rd_gpo(self, out, errs):
+        rc, v = self._get("ReadRegister", ct.c_uint32(REG_FRONT_PANEL_IO))
+        if rc != CAEN_DGTZ_Success:
+            errs.append(f"ReadRegister(0x{REG_FRONT_PANEL_IO:04x}): error {rc}")
+            return
+        # A field state we never write (clock probes, the test override) decodes
+        # as "trigger", matching the codec convention for unknown enum values;
+        # the next write of this setting normalizes the register.
+        out.gpo_output = _inv(_GPO_FIELD).get(v & GPO_FIELD_MASK, "trigger")
+
     def _rd_edge(self, out, errs):
         ok, pol = self._rd(errs, "GetTriggerPolarity", "GetTriggerPolarity",
                            ct.c_uint32(0), ctype=ct.c_int, key="trigger_edge")
@@ -320,6 +345,7 @@ class CaenBackend(DigitizerBackend):
             self._rd_board(out, spec, errs)
         self._rd_mask(out, errs)
         self._rd_edge(out, errs)
+        self._rd_gpo(out, errs)
         for gr in range(C.NUM_GROUPS):
             for spec in GROUP_HW:
                 self._rd_group(out, gr, spec, errs)
@@ -376,6 +402,23 @@ class CaenBackend(DigitizerBackend):
             # to different values leaves both reading the last one. One write.
             if put("SetTriggerPolarity", ct.c_uint32(0), _EDGE_ENC(cfg.trigger_edge)):
                 reads.append(lambda: self._rd_edge(out, errs))
+
+        if prev is None or prev.gpo_output != cfg.gpo_output:
+            # Read-modify-write: only the GPO field is ours; the rest of the
+            # register (LEMO level, TRG-IN options) belongs to other settings.
+            rc, v = self._get("ReadRegister", ct.c_uint32(REG_FRONT_PANEL_IO))
+            if rc == CAEN_DGTZ_Success:
+                word = (v & ~GPO_FIELD_MASK) | _GPO_FIELD.get(cfg.gpo_output, 0)
+                if put("WriteRegister", ct.c_uint32(REG_FRONT_PANEL_IO),
+                       ct.c_uint32(word)):
+                    reads.append(lambda: self._rd_gpo(out, errs))
+                elif prev is not None:
+                    out.gpo_output = prev.gpo_output
+            else:
+                errs.append(f"gpo_output: ReadRegister(0x{REG_FRONT_PANEL_IO:04x})"
+                            f" error {rc}")
+                if prev is not None:
+                    out.gpo_output = prev.gpo_output
 
         for gr in range(C.NUM_GROUPS):
             g = cfg.groups[gr]

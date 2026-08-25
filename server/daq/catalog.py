@@ -117,6 +117,19 @@ UNIT_SETTINGS = [
              "TTL - positive logic\n\n"
              "Match what the cabling expects, especially before trusting the "
              "GPO pulse downstream."},
+    {"key": "gpo_output", "label": "GPO output", "type": "enum",
+     "choices": [{"value": "trigger", "label": "Trigger out"},
+                 {"value": "busy", "label": "Busy"},
+                 {"value": "run", "label": "Run"}],
+     "caen": "register 0x811C bits[20:14], UM5698 sec 1.25 (docs/)",
+     "help": "What the GPO connector emits.\n\n"
+             "Trigger out - the trigger, for chaining boards or timing\n"
+             "Busy - high while the board cannot take another event: the "
+             "dead-time veto for downstream electronics\n"
+             "Run - high while acquisition runs, for daisy-chained "
+             "start/stop\n\n"
+             "The electrical standard follows the front-panel level setting "
+             "above."},
     {"key": "max_events_blt", "label": "Events per readout", "type": "int",
      "min": 1, "max": 1023, "caen": "CAEN_DGTZ_SetMaxNumEventsBLT",
      "help": "Upper bound on how many events one readout may return - a cap, "
