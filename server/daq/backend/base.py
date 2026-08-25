@@ -30,13 +30,20 @@ class Event:
     """One trigger's worth of corrected waveforms.
 
     samples: {absolute_channel_index: float32 array of length record_length}.
-    For the 742 these are DRS4-corrected (baseline/time/peak) millivolt-ish
-    ADC counts as floats, matching CAEN's Event742 after ApplyDataCorrection.
+    For the 742 these are DRS4-corrected ADC counts as floats. In "auto"
+    correction mode the library also resampled them onto a uniform time grid;
+    in "timing" mode they are amplitude-corrected only and `times_ns` carries
+    each group's true, non-uniform sample times instead.
+
+    trigger_cells: {group: DRS4 start cell} - maketree's `tc`, recorded in
+    every mode so the two analysis paths can be cross-checked.
     """
     index: int
     timestamp_s: float
     trigger_time_tag: int
     samples: dict[int, np.ndarray] = field(default_factory=dict)
+    trigger_cells: dict[int, int] = field(default_factory=dict)
+    times_ns: Optional[dict[int, np.ndarray]] = None
 
 
 class DigitizerBackend(abc.ABC):

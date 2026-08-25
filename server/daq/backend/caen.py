@@ -18,6 +18,7 @@ import sys
 
 import numpy as np
 
+from . import corrections
 from .base import DigitizerBackend, Event, BoardInfo
 from .. import constants as C
 
@@ -160,6 +161,18 @@ class _EventInfo(ct.Structure):
     ]
 
 
+class _DRS4CorrectionC(ct.Structure):
+    """CAEN_DGTZ_DRS4Correction_t: the calibration stored on the board, read
+    back with GetCorrectionTables for the "timing" correction mode. cell is
+    indexed by physical DRS4 cell, nsample by readout position, time holds
+    the per-cell time stamps the true axis is built from."""
+    _fields_ = [
+        ("cell", (ct.c_int16 * 1024) * MAX_X742_CHANNEL_SIZE),
+        ("nsample", (ct.c_int8 * 1024) * MAX_X742_CHANNEL_SIZE),
+        ("time", ct.c_float * 1024),
+    ]
+
+
 class _BoardInfoC(ct.Structure):
     _fields_ = [
         ("ModelName", ct.c_char * 12), ("Model", ct.c_uint32),
@@ -211,6 +224,7 @@ class CaenBackend(DigitizerBackend):
         self._write_only: set[str] = set()    # settable, but not readable back
         self._unsupported: set[str] = set()   # the DT5742B rejects these outright
         self._state = None                    # last known board state, for deltas
+        self._timing_tables = None            # set by configure() in timing mode
 
     def _chk(self, ret, what):
         if ret != CAEN_DGTZ_Success:
@@ -458,8 +472,24 @@ class CaenBackend(DigitizerBackend):
         self._state = None      # Reset invalidated everything we knew
         self._chk(L.CAEN_DGTZ_SetAcquisitionMode(h, AcqMode_SW_CONTROLLED), "SetAcquisitionMode")
         actual, errs = self.write_settings(cfg)
-        # DRS4 corrections: let the library apply them inside DecodeEvent
-        if cfg.correction_level != "disabled":
+        # DRS4 corrections. Three regimes:
+        #   auto/manual - the library corrects inside DecodeEvent, including
+        #     its time step, which RESAMPLES onto a uniform grid;
+        #   timing      - we read the same tables off the board and apply only
+        #     the amplitude part ourselves in read_events, keeping the samples
+        #     untouched in time and carrying the true axis alongside;
+        #   disabled    - raw cells.
+        self._timing_tables = None
+        if cfg.correction_level == "timing":
+            tables = (_DRS4CorrectionC * MAX_X742_GROUP_SIZE)()
+            self._chk(L.CAEN_DGTZ_GetCorrectionTables(
+                h, cfg.drs4_frequency, ct.byref(tables)), "GetCorrectionTables")
+            self._timing_tables = [
+                {"cell": np.ctypeslib.as_array(t.cell).astype(np.float32),
+                 "nsample": np.ctypeslib.as_array(t.nsample).astype(np.float32),
+                 "time": np.ctypeslib.as_array(t.time).copy()}
+                for t in tables]
+        elif cfg.correction_level != "disabled":
             self._chk(L.CAEN_DGTZ_LoadDRS4CorrectionData(h, cfg.drs4_frequency),
                       "LoadDRS4CorrectionData")
             self._chk(L.CAEN_DGTZ_EnableDRS4Correction(h), "EnableDRS4Correction")
@@ -500,19 +530,42 @@ class CaenBackend(DigitizerBackend):
             self._chk(L.CAEN_DGTZ_DecodeEvent(h, evtdata, ct.byref(self._evtptr)), "DecodeEvent")
             ev742 = ct.cast(self._evtptr, ct.POINTER(_X742_EVENT)).contents
             samples: dict[int, np.ndarray] = {}
+            trigger_cells: dict[int, int] = {}
+            times_ns: dict[int, np.ndarray] = {}
             for gr in range(C.NUM_GROUPS):
                 if not ev742.GrPresent[gr]:
                     continue
                 group = ev742.DataGroup[gr]
+                tc = int(group.StartIndexCell)
+                trigger_cells[gr] = tc
+                chans: dict[int, np.ndarray] = {}
                 for ci in range(C.GROUP_SIZE):
                     size = group.ChSize[ci]
                     if size == 0:
                         continue
                     ptr = group.DataChannel[ci]
-                    arr = np.ctypeslib.as_array(ptr, shape=(size,)).astype(np.float32).copy()
+                    chans[ci] = np.ctypeslib.as_array(
+                        ptr, shape=(size,)).astype(np.float32).copy()
+                if self._timing_tables is not None and chans:
+                    # Amplitude corrections only, on the whole group at once -
+                    # peak removal votes across the group's 8 channels - and
+                    # the true time axis instead of the library's resampling.
+                    t = self._timing_tables[gr]
+                    rows = sorted(chans)
+                    stack = np.stack([chans[ci] for ci in rows])
+                    corrections.amplitude_correct(
+                        stack, t["cell"][rows], t["nsample"][rows], tc)
+                    for k, ci in enumerate(rows):
+                        chans[ci] = stack[k]
+                    times_ns[gr] = corrections.true_times(
+                        t["time"], tc, C.sample_period_ns(self._cfg.drs4_frequency),
+                        stack.shape[1])
+                for ci, arr in chans.items():
                     samples[gr * C.GROUP_SIZE + ci] = arr
             out.append(Event(index=info.EventCounter, timestamp_s=0.0,
-                             trigger_time_tag=info.TriggerTimeTag, samples=samples))
+                             trigger_time_tag=info.TriggerTimeTag, samples=samples,
+                             trigger_cells=trigger_cells,
+                             times_ns=times_ns or None))
         return out
 
     def close(self) -> None:

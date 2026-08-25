@@ -88,8 +88,11 @@ class FakeBackend(DigitizerBackend):
             w -= _PULSE_COUNTS * np.exp(-0.5 * (t / 12.0) ** 2) * (t > -40)
             samples[ch] = np.clip(w, 0, C.ADC_MAX).astype(np.float32)
         self._index += 1
+        # A rotating trigger cell, so tc-dependent code sees realistic variety.
+        tc = (self._index * 37) % 1024
         return Event(index=self._index, timestamp_s=time.time(),
-                     trigger_time_tag=self._index, samples=samples)
+                     trigger_time_tag=self._index, samples=samples,
+                     trigger_cells={0: tc, 1: tc})
 
     def read_events(self) -> list[Event]:
         if not self._running:

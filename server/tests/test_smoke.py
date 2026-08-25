@@ -200,6 +200,46 @@ def test_run_numbers_are_inferred_and_never_reused():
             runs.DATA_ROOT = old_root
 
 
+def test_amplitude_corrections_and_true_times():
+    """The numpy port of X742CorrectionRoutines' amplitude path, checked by
+    hand: cell offsets rotate with the trigger cell, nsample offsets do not,
+    the ring-buffer wrap in the time axis gains one full revolution, and the
+    spike fix fires only when all 8 channels vote."""
+    from daq.backend import corrections
+
+    # Cell rotation + nsample: n=8 record, start cell 1022 wraps after 2.
+    cell = np.zeros((1, 1024), dtype=np.float32)
+    cell[0][1022], cell[0][0] = 10.0, 7.0     # hit via rotation at i=0 and i=2
+    nsample = np.zeros((1, 1024), dtype=np.float32)
+    nsample[0][3] = 5.0                        # hit at readout position 3
+    waves = np.full((1, 8), 100.0, dtype=np.float32)
+    corrections.amplitude_correct(waves, cell, nsample, start_cell=1022)
+    # The reference pins sample 0 to sample 1 unconditionally, so the cell
+    # offset applied at i=0 is immediately overwritten - as in the original.
+    assert waves[0][0] == 100.0 and waves[0][1] == 100.0
+    assert waves[0][2] == 93.0 and waves[0][3] == 95.0
+    assert waves[0][4] == 100.0
+
+    # True times: stamps 0,2,4,... ns; start cell 1023 wraps immediately.
+    table = (np.arange(1024, dtype=np.float32) * 2.0)
+    t = corrections.true_times(table, start_cell=1023, tsamp_ns=2.0, n=4)
+    # 1023 -> 0 is a wrap: diff -2046 + 2*1024 = 2; then uniform 2 ns steps.
+    assert t.tolist() == [0.0, 2.0, 4.0, 6.0]
+
+    # Spike removal: an upward spike in all 8 channels is repaired to the
+    # neighbour average; the same spike in only 3 channels is left alone.
+    base = np.full((8, 16), 1000.0, dtype=np.float32)
+    base[:, 7] -= 50.0                        # dip: w[i-1]-w[i] > 30 all round
+    fixed = base.copy()
+    corrections.peak_correct(fixed)
+    assert (fixed[:, 7] == 1000.0).all()
+    partial = np.full((8, 16), 1000.0, dtype=np.float32)
+    partial[:3, 7] -= 50.0
+    kept = partial.copy()
+    corrections.peak_correct(kept)
+    assert (kept[:3, 7] == 950.0).all()
+
+
 def test_root_writer_matches_the_radical_layout():
     """waveforms.root must read back with the structure the group's testbeam
     analysis expects (tb_fnal_radical drs2root): TTree 'pulse' with event/I,
@@ -214,12 +254,14 @@ def test_root_writer_matches_the_radical_layout():
     with tempfile.TemporaryDirectory() as d:
         w = make_writer(d, "root-test", cfg.output_format)
         w.open(cfg)
+        true_t = np.arange(C.RECORD_LENGTH, dtype=np.float32) * 0.21
         for i in range(3):
             samples = {ch: np.full(C.RECORD_LENGTH, 100.0 * i + ch,
                                    dtype=np.float32)
                        for ch in cfg.enabled_channels()}
             w.write(Event(index=i, timestamp_s=0.0, trigger_time_tag=7 * i,
-                          samples=samples))
+                          samples=samples, trigger_cells={0: 100 + i},
+                          times_ns={0: true_t} if i == 2 else None))
         w.close()
 
         with uproot.open(os.path.join(d, "waveforms.root")) as f:
@@ -233,6 +275,11 @@ def test_root_writer_matches_the_radical_layout():
             assert a["channel"][0][17].max() == 0.0      # TR trace: zero for now
             # 5 GS/s: 0.2 ns per sample, so sample 10 sits at 2 ns.
             assert abs(a["times"][0][0][10] - 2.0) < 1e-6
+            assert a["tc"][1][0] == 101                  # trigger cell recorded
+            # Event 2 carried a true (non-uniform-capable) axis for group 0;
+            # group 1 keeps the uniform default.
+            assert abs(a["times"][2][0][10] - 2.1) < 1e-5
+            assert abs(a["times"][2][1][10] - 2.0) < 1e-6
 
         meta = json.load(open(os.path.join(d, "run_metadata.json")))
         assert meta["events"] == 3 and meta["output_format"] == "root"
@@ -493,6 +540,7 @@ if __name__ == "__main__":
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
                test_run_numbers_are_inferred_and_never_reused,
+               test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
                test_sessions_and_display_roundtrip,

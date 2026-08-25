@@ -155,13 +155,16 @@ class RootWriter(Writer):
       event/I               event number
       channel[18][1024]/F   16 signal channels + the two TR traces
       times[2][1024]/F      per-group sample times, ns
+      tc[2]/s               per-group DRS4 start cell (trigger cell)
 
-    Two honest deviations, both toward what the data actually is: TR traces
-    (indices 16, 17) are zero until TR decoding lands - the decoder skips
-    them, see CLAUDE.md - and times are uniform sample steps, which is what
-    the library's DRS4 time correction leaves behind (maketree computes
-    per-cell widths because it starts from UNcorrected raw data; we start
-    from corrected samples). trigger_time_tag rides along as an extra branch.
+    In "timing" correction mode the times branch carries each event's TRUE
+    non-uniform axis, exactly as maketree produces - full timing precision,
+    no converter. In "auto" mode times are uniform steps, which is what the
+    library's resampling time correction leaves behind. tc is recorded in
+    every mode so the two paths can be cross-checked. One honest deviation:
+    TR traces (indices 16, 17) are zero until TR decoding lands - the
+    decoder skips them, see CLAUDE.md. trigger_time_tag rides along as an
+    extra branch.
 
     Events are buffered and written in batches so baskets stay a sane size;
     a stream of one-event extends would bloat the file and the read path.
@@ -197,7 +200,8 @@ class RootWriter(Writer):
             "pulse",
             {"event": np.int32, "trigger_time_tag": np.uint32,
              "channel": (np.float32, (self.N_CHANNELS_OUT, n)),
-             "times": (np.float32, (2, n))},
+             "times": (np.float32, (2, n)),
+             "tc": (np.uint16, (2,))},
             title="Digitized waveforms")
         dt = C.sample_period_ns(cfg.drs4_frequency)
         self._times = np.tile(np.arange(n, dtype=np.float32) * dt, (2, 1))
@@ -209,9 +213,21 @@ class RootWriter(Writer):
         for ch, wave in ev.samples.items():
             if 0 <= ch < self.N_CHANNELS_OUT:
                 chans[ch, :len(wave)] = wave
+        # True per-event times when the correction mode produced them
+        # ("timing"); the uniform axis otherwise.
+        times = self._times
+        if ev.times_ns:
+            times = self._times.copy()
+            for gr, t in ev.times_ns.items():
+                if 0 <= gr < 2:
+                    times[gr, :len(t)] = t
+        tc = np.zeros(2, dtype=np.uint16)
+        for gr, cell in (ev.trigger_cells or {}).items():
+            if 0 <= gr < 2:
+                tc[gr] = cell
         self._buf.append({"event": ev.index,
                           "trigger_time_tag": ev.trigger_time_tag & 0xFFFFFFFF,
-                          "channel": chans})
+                          "channel": chans, "times": times, "tc": tc})
         self._events += 1
         if len(self._buf) >= self.BATCH:
             self._flush()
@@ -226,7 +242,8 @@ class RootWriter(Writer):
             "trigger_time_tag": np.array([e["trigger_time_tag"] for e in b],
                                          dtype=np.uint32),
             "channel": np.stack([e["channel"] for e in b]),
-            "times": np.tile(self._times, (len(b), 1, 1)),
+            "times": np.stack([e["times"] for e in b]),
+            "tc": np.stack([e["tc"] for e in b]),
         })
 
     def close(self) -> None:

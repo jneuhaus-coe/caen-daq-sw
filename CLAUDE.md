@@ -56,6 +56,17 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
 - **DRS4 corrections are mandatory** for trustworthy waveforms. We use the
   library's built-in path: `LoadDRS4CorrectionData` + `EnableDRS4Correction`, so
   `DecodeEvent` returns cell/time/peak-corrected floats.
+- **The library's time correction RESAMPLES onto a uniform grid** (linear
+  interpolation, see `X742CorrectionRoutines.c` shipped with WaveDump) - a
+  small low-pass on every pulse edge, which matters at ps-level timing. The
+  "timing" correction mode (`backend/corrections.py`) applies only the
+  amplitude corrections (cell, nsample, peak - a numpy port of the same
+  routine, same tables via `GetCorrectionTables`) and records each event's
+  TRUE non-uniform time axis plus the trigger cell instead. Verified on
+  serial 53364: cell widths spread 196.6-202.0 ps around the nominal 200
+  (sigma ~1 ps/cell - the aperture non-uniformity itself), the axis closes
+  to exactly 204.6 ns, and baselines agree with the library path to the
+  count. Auto for general running; timing when timing resolution matters.
 
 ### Setting tiers (verified against WaveDump's x742 branch — get these right)
 
