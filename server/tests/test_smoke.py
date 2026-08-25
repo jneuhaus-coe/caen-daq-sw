@@ -179,6 +179,39 @@ GPO_BUSY 1
     assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
 
 
+def test_sessions_and_display_roundtrip():
+    """Display prefs autosave and reload; sessions save, list, apply and
+    delete. Applying with no unit must still restore the display state while
+    reporting the hardware write was refused - and never invent success."""
+    with tempfile.TemporaryDirectory() as d:
+        key = "LOCALAPPDATA" if os.name == "nt" else "XDG_STATE_HOME"
+        old = os.environ.get(key)
+        os.environ[key] = d
+        try:
+            c = TestClient(create_app(_engine_without_a_unit()))
+            assert c.get("/api/sessions").json()["sessions"] == []
+
+            c.post("/api/display", json={"y_ranges": {"3": [-0.5, 0.25]}})
+            assert c.get("/api/display").json()["y_ranges"]["3"] == [-0.5, 0.25]
+
+            r = c.post("/api/sessions/cosmics nov").json()
+            assert r["ok"] and r["name"] == "cosmics nov"
+            names = [s["name"] for s in c.get("/api/sessions").json()["sessions"]]
+            assert names == ["cosmics nov"]
+
+            a = c.post("/api/sessions/cosmics nov/apply").json()
+            assert a["connected"] is False and a["ok"] is False   # no unit
+            assert a["display"]["y_ranges"]["3"] == [-0.5, 0.25]  # still lands
+
+            assert c.delete("/api/sessions/cosmics nov").json()["ok"]
+            assert c.post("/api/sessions/cosmics nov/apply").status_code == 404
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+
 def test_runtime_url_is_always_loopback_for_a_local_window():
     """A server bound to every interface is still opened at 127.0.0.1 locally."""
     assert runtime.url_for("0.0.0.0", 8000) == "http://127.0.0.1:8000/"
@@ -380,6 +413,7 @@ if __name__ == "__main__":
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
+               test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,
                test_stale_and_foreign_servers_are_not_attached_to,

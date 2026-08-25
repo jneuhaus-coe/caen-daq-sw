@@ -22,6 +22,7 @@ from .config import BoardConfig, default_config
 from .catalog import catalog
 from . import configfile
 from . import runs
+from . import sessions
 from . import constants as C
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -89,6 +90,62 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.post("/api/config/default")
     def reset_default():
         return engine.set_config(default_config()).to_dict()
+
+    # ---- display preferences + named sessions ----
+
+    @app.get("/api/display")
+    def get_display():
+        return sessions.get_display()
+
+    @app.post("/api/display")
+    def set_display(payload: dict):
+        """Autosaved UI state (waveform Y ranges). Never touches the board."""
+        sessions.set_display(payload or {})
+        return {"ok": True}
+
+    @app.get("/api/sessions")
+    def list_sessions():
+        return {"sessions": sessions.listing()}
+
+    @app.post("/api/sessions/{name}")
+    def save_session(name: str):
+        saved = sessions.save(name, engine.get_config().to_dict(),
+                              sessions.get_display())
+        if saved is None:
+            raise HTTPException(400, "session name is empty once sanitized")
+        logsetup.did(log, f"Saving session {saved['name']!r}", "Ok")
+        return {"ok": True, **saved}
+
+    @app.post("/api/sessions/{name}/apply")
+    def apply_session(name: str):
+        """Explicitly write a session to the unit. Refused while recording:
+        rewriting offsets under a run silently corrupts the data it is
+        collecting, and no one applying a saved state means to do that."""
+        if engine.status()["recording"]:
+            raise HTTPException(409, "a run is recording - stop it first")
+        s = sessions.load(name)
+        if s is None:
+            raise HTTPException(404, "no such session")
+        with logsetup.step(log, f"Applying session {name!r}") as applying:
+            before = len(engine.status()["errors"])
+            cfg = engine.set_config(BoardConfig.from_dict(s["config"]))
+            errs = engine.status()["errors"][before:]
+            if isinstance(s.get("display"), dict):
+                sessions.set_display(s["display"])
+            st = engine.status()
+            applying.done("Applied with errors" if errs else
+                          ("Applied and read back" if st["opened"]
+                           else "Stored for the display; no unit connected"))
+        return {"ok": not errs, "config": cfg.to_dict(),
+                "display": s.get("display") or {}, "errors": errs,
+                "connected": st["opened"]}
+
+    @app.delete("/api/sessions/{name}")
+    def delete_session(name: str):
+        if not sessions.delete(name):
+            raise HTTPException(404, "no such session")
+        logsetup.did(log, f"Deleting session {name!r}", "Ok")
+        return {"ok": True}
 
     @app.post("/api/rec/start")
     def rec_start(payload: dict | None = None):

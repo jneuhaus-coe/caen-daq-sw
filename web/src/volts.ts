@@ -33,6 +33,16 @@ export function voltsAtCount(counts: number, dac: number, g: Geom) {
   return (counts - zeroCounts(dac, g)) * (g.input_range_vpp / (g.adc_max + 1));
 }
 
+/** The absolute voltages the 1 Vpp hardware window spans at this DC offset:
+ *  [bottom, top]. What the shaded band in the waveform view draws. */
+export function windowRangeV(dac: number, g: Geom): [number, number] {
+  return [voltsAtCount(0, dac, g), voltsAtCount(g.adc_max, dac, g)];
+}
+
+/** Default display range: the nominal reach of the DC offset, so the hardware
+ *  window band is always somewhere on screen - including when it is railed. */
+export const DEFAULT_Y: [number, number] = [-1, 1];
+
 /** Signed volts, e.g. "+0.500 V". */
 export function fmtV(v: number) {
   const mag = Math.abs(v) < 5e-4 ? "0.000" : Math.abs(v).toFixed(3);

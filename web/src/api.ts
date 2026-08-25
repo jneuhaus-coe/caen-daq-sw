@@ -26,7 +26,32 @@ export const api = {
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
+
+  getDisplay: () => fetch("/api/display").then(j<DisplayPrefs>),
+  setDisplay: (d: DisplayPrefs) =>
+    fetch("/api/display", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(d),
+    }).then(j<{ ok: boolean }>),
+  listSessions: () =>
+    fetch("/api/sessions").then(j<{ sessions: SessionInfo[] }>),
+  saveSession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "POST" })
+      .then(j<{ ok: boolean; name: string; saved_at: number }>),
+  applySession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}/apply`, { method: "POST" })
+      .then(j<{ ok: boolean; config: BoardConfig; display: DisplayPrefs;
+                errors: string[]; connected: boolean }>),
+  deleteSession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" })
+      .then(j<{ ok: boolean }>),
 };
+
+export interface SessionInfo { name: string; saved_at: number | null; }
+
+/** UI state that persists across restarts, keyed however the UI likes.
+ *  y_ranges: per-channel waveform display range in volts, [min, max]. */
+export interface DisplayPrefs { y_ranges?: Record<string, [number, number]>; }
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */
 export function openTelemetry(onData: (t: Telemetry) => void): () => void {

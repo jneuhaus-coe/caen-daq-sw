@@ -1,34 +1,45 @@
-import { useEffect, useRef } from "react";
-import { fmtV, voltsAtCount, zeroCounts } from "../volts";
+import { useEffect, useRef, useState } from "react";
+import { DEFAULT_Y, fmtV, voltsAtCount, windowRangeV } from "../volts";
 import type { Geom } from "../volts";
+import { BlurInput } from "./BlurInput";
 
 interface Props {
   wave?: number[];
-  /** uint16 DAC word; positions 0 V within the ADC window. */
+  /** uint16 DAC word; positions the 1 Vpp hardware window in voltage space. */
   dcOffset: number;
   geom: Geom;
   windowNs?: number;      // full record length in ns
   postTriggerPct?: number;// how much of the record follows the trigger
   height?: number;
   color: string;
+  /** Display range in volts, [min, max]. Defaults to DEFAULT_Y. */
+  yRange?: [number, number];
+  /** min/max label edited. `range` null = reset to default; `all` = every channel. */
+  onYRange?: (range: [number, number] | null, all: boolean) => void;
 }
 
-/** One channel's averaged waveform on the FULL 0..adcMax window - never
- * autoscaled, so a railed or badly-offset channel is obvious at a glance.
+/** One channel's averaged waveform in ABSOLUTE volts on a fixed default range,
+ * with the 1 Vpp hardware window drawn as a band inside it. Fixed axes mean a
+ * railed or badly-offset channel shows as a band pushed off toward an edge
+ * with its baseline outside - visible, instead of a mute flat line. Sliding
+ * the DC offset visibly slides the band.
  *
+ * The min/max labels are buttons: click to type a new bound (optionally for
+ * all channels), so zooming onto a pulse is two clicks, not a config file.
  * Axis labels are HTML rather than canvas text: crisper, and they stay put
- * without re-measuring on every repaint. The y labels sit right-aligned in a left
- * margin, with the record length sharing the bottom one's line. TRIG rides just
- * above the plot and the trigger time just below it, so the marker is symmetric
- * about the chart and neither label competes with an axis value. There is no
- * "0" tick on the time axis - the left edge is obviously zero. */
+ * without re-measuring on every repaint. */
 export function MiniWave({
   wave, dcOffset, geom, windowNs, postTriggerPct, height = 140, color,
+  yRange, onYRange,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
-  const adcMax = geom.adc_max;
-  const zc = zeroCounts(dcOffset, geom);
-  const zeroFrac = Math.min(1, Math.max(0, zc / adcMax));
+  const [editing, setEditing] = useState<"min" | "max" | null>(null);
+  const [editAll, setEditAll] = useState(false);
+  const [yMin, yMax] = yRange ?? DEFAULT_Y;
+  const [winLo, winHi] = windowRangeV(dcOffset, geom);
+
+  const frac = (v: number) => (yMax - v) / (yMax - yMin);   // 0 at top
+  const zeroFrac = frac(0);
 
   // Post-trigger is the time AFTER the trigger, so the trigger sits that far
   // back from the right-hand edge.
@@ -48,24 +59,38 @@ export function MiniWave({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const y = (counts: number) => h - (counts / adcMax) * h;
+    const y = (v: number) => frac(v) * h;
+    const clampY = (v: number) => Math.min(h, Math.max(0, v));
 
-    // 0 V reference, wherever the DC offset puts it
-    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    // The hardware window: everything the ADC can actually see. Band fill,
+    // with its edges drawn only when they are inside the view.
+    const top = y(winHi), bot = y(winLo);
+    ctx.fillStyle = "rgba(110,130,160,0.10)";
+    ctx.fillRect(0, clampY(top), w, Math.max(0, clampY(bot) - clampY(top)));
+    ctx.strokeStyle = "rgba(110,130,160,0.35)";
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, y(zc)); ctx.lineTo(w, y(zc)); ctx.stroke();
+    for (const edge of [top, bot]) {
+      if (edge >= 0 && edge <= h) {
+        ctx.beginPath();
+        ctx.moveTo(0, edge); ctx.lineTo(w, edge); ctx.stroke();
+      }
+    }
+
+    // 0 V reference, when it is on screen.
+    if (zeroFrac >= 0 && zeroFrac <= 1) {
+      ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      ctx.beginPath();
+      ctx.moveTo(0, y(0)); ctx.lineTo(w, y(0)); ctx.stroke();
+    }
 
     // Trigger marker: accent, dashed and dimmed so it reads as chrome, not
-    // data. Runs the full height so it reaches TRIG above and the time below.
-    // Clamped inside the canvas: at post-trigger 0 the marker sits on the very
-    // last sample, and an unclamped line there falls outside the bitmap.
+    // data. Clamped inside the canvas: at post-trigger 0 the marker sits on
+    // the very last sample.
     if (trigFrac != null) {
       const x = Math.min(w - 0.5, Math.max(0.5, Math.round(trigFrac * w) + 0.5));
       ctx.save();
       ctx.strokeStyle = "rgba(31,111,235,0.55)";
       ctx.setLineDash([4, 3]);
-      ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
       ctx.restore();
     }
@@ -77,21 +102,57 @@ export function MiniWave({
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
       const px = (i / (n - 1)) * w;
-      let yy = y(wave[i]);
-      if (yy < 0) yy = 0; else if (yy > h) yy = h;
+      const yy = clampY(y(voltsAtCount(wave[i], dcOffset, geom)));
       i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
     }
     ctx.stroke();
-  }, [wave, zc, adcMax, height, color, trigFrac]);
+  }, [wave, dcOffset, yMin, yMax, winLo, winHi, height, color, trigFrac,
+      geom, zeroFrac]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
+
+  const commitEdit = (which: "min" | "max", raw: string) => {
+    setEditing(null);
+    const v = Number(raw);
+    if (!Number.isFinite(v) || !onYRange) return;
+    const next: [number, number] = which === "min" ? [v, yMax] : [yMin, v];
+    if (next[0] >= next[1]) return;        // an empty or inverted range is a typo
+    onYRange(next, editAll);
+  };
+
+  const yLabel = (which: "min" | "max", value: number) =>
+    editing === which ? (
+      <span className={"ax y " + which + " yedit"}>
+        <BlurInput
+          type="number" step={0.01} autoFocus selectOnFocus
+          value={value.toFixed(2)}
+          onCommit={(v) => commitEdit(which, v)}
+          onCancel={() => setEditing(null)}
+        />
+        <label title="Apply this range to every channel">
+          <input type="checkbox" checked={editAll}
+            onChange={(e) => setEditAll(e.target.checked)} />all
+        </label>
+        <button title="Reset to the full range"
+          onMouseDown={(e) => { e.preventDefault(); setEditing(null); onYRange?.(null, editAll); }}>
+          full
+        </button>
+      </span>
+    ) : (
+      <button className={"ax y " + which + " ybtn"} title="Click to set the display range"
+        onClick={() => onYRange && setEditing(which)}>
+        {fmtV(value)}
+      </button>
+    );
 
   return (
     <div className="wave">
       <div className="wave-plot" style={{ height }}>
-        <span className="ax y max">{fmtV(voltsAtCount(adcMax, dcOffset, geom))}</span>
-        <span className="ax y zero" style={{ top: `${(1 - zeroFrac) * 100}%` }}>0 V</span>
-        <span className="ax y min">{fmtV(voltsAtCount(0, dcOffset, geom))}</span>
+        {yLabel("max", yMax)}
+        {zeroFrac >= 0.06 && zeroFrac <= 0.94 ? (
+          <span className="ax y zero" style={{ top: `${zeroFrac * 100}%` }}>0 V</span>
+        ) : null}
+        {yLabel("min", yMin)}
         <span className="ax x-total">{windowNs ? fmtTime(windowNs) : ""}</span>
         <div className="wave-canvas">
           <canvas ref={ref} style={{ width: "100%", height, display: "block" }} />

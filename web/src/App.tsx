@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, openTelemetry } from "./api";
+import type { DisplayPrefs } from "./api";
+import { SessionsPanel } from "./components/SessionsPanel";
 import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
@@ -27,7 +29,11 @@ export function App() {
   const [stampRun, setStampRun] = useState(true);
   const [tour, setTour] = useState(false);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
+  // Per-channel waveform display ranges (volts). Persisted server-side so a
+  // daq restart or a different browser comes back to the same view.
+  const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
   const saveTimer = useRef<number | undefined>(undefined);
+  const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
   const confirmed = useRef<BoardConfig | null>(null);
   const { toasts, push, dismiss } = useToasts();
@@ -38,7 +44,38 @@ export function App() {
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
     })().catch(console.error);
+    // Display prefs restore on their own - they never touch the hardware.
+    api.getDisplay().then((d) => setYRanges(fromPrefs(d))).catch(() => {});
   }, []);
+
+  const fromPrefs = (d: DisplayPrefs): Record<number, [number, number]> => {
+    const out: Record<number, [number, number]> = {};
+    for (const [k, v] of Object.entries(d.y_ranges ?? {})) {
+      if (Array.isArray(v) && v.length === 2 && v[0] < v[1]) out[Number(k)] = [v[0], v[1]];
+    }
+    return out;
+  };
+
+  const applyYRanges = (next: Record<number, [number, number]>) => {
+    setYRanges(next);
+    window.clearTimeout(displayTimer.current);
+    displayTimer.current = window.setTimeout(() => {
+      const y_ranges: Record<string, [number, number]> = {};
+      for (const [k, v] of Object.entries(next)) y_ranges[k] = v;
+      api.setDisplay({ y_ranges }).catch(() => {});
+    }, 400);
+  };
+
+  const changeYRange = (ch: number, range: [number, number] | null, all: boolean) => {
+    const next = { ...yRanges };
+    const targets = all && catalog
+      ? Array.from({ length: catalog.geometry.num_channels }, (_, i) => i) : [ch];
+    for (const t of targets) {
+      if (range === null) delete next[t];
+      else next[t] = range;
+    }
+    applyYRanges(next);
+  };
 
   const catalogRef = useRef<Catalog | null>(null);
   catalogRef.current = catalog;
@@ -210,7 +247,8 @@ export function App() {
           </div>
           <ChannelGrid catalog={catalog} config={config} tele={tele}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
-            onName={(ch, name) => updateChannel(ch, { name })} />
+            onName={(ch, name) => updateChannel(ch, { name })}
+            yRanges={yRanges} onYRange={changeYRange} />
         </main>
 
         <aside>
@@ -225,6 +263,22 @@ export function App() {
           <Collapsible title="Bank Settings" defaultOpen>
             <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />
           </Collapsible>
+          <SessionsPanel
+            recording={recording}
+            onSaved={(name) => push("ok", `Session "${name}" saved`)}
+            onError={(title, lines) => push("err", title, lines)}
+            onApplied={(cfg, display, errors, connected, name) => {
+              setConfig(cfg); confirmed.current = cfg;
+              setYRanges(fromPrefs(display));
+              if (!connected) {
+                push("warn", `Session "${name}": display restored`,
+                     ["No unit connected - hardware settings were not written."]);
+              } else if (errors.length) {
+                push("err", `Session "${name}" applied with errors`, errors);
+              } else {
+                push("ok", `Session "${name}" applied and read back from unit`);
+              }
+            }} />
           <ConfigPanel
             onReset={async () => {
               const cfg = await api.resetDefault();
