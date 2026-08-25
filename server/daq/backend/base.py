@@ -93,7 +93,11 @@ class DigitizerBackend(abc.ABC):
 
 
 def make_backend(kind: str = "caen", **kwargs) -> DigitizerBackend:
-    if (kind or "caen").lower() in ("caen", "real", "hw", "hardware"):
+    kind = (kind or "caen").lower()
+    if kind in ("caen", "real", "hw", "hardware"):
         from .caen import CaenBackend
         return CaenBackend(**kwargs)
-    raise ValueError(f"unknown backend {kind!r} (use 'caen')")
+    if kind in ("fake", "sim"):
+        from .fake import FakeBackend
+        return FakeBackend(**kwargs)
+    raise ValueError(f"unknown backend {kind!r} (use 'caen' or 'fake')")

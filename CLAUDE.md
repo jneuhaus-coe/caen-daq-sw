@@ -189,6 +189,7 @@ python -m daq                            # http://127.0.0.1:8800/
 cd server && python tests/test_smoke.py  # hardware-free smoke tests
 cd web && npm install && npm run build   # rebuild UI into server/daq/static
 cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8800
+cd web && npm run test:ui                 # Playwright UI suite (DAQ_BACKEND=fake)
 ```
 
 ## Logging and startup
@@ -448,6 +449,17 @@ downloaded or deleted.
 - Keep the **test suite minimal** — just enough smoke coverage to trust the
   hardware-free paths (rolling-average vs numpy, config tiers, HTTP API).
   Don't grow coverage for its own sake. The acquisition loop needs the board.
+- **The Playwright UI suite** (`web/tests/ui`, `npm run test:ui`) drives a
+  real server started with **`DAQ_BACKEND=fake`** — `FakeBackend` behind the
+  `DigitizerBackend` seam: settings stick exactly, events are synthetic. It
+  is never the default and the server logs a warning when active, so a shift
+  cannot mistake synthetic data for the real thing. The suite runs on port
+  8801 with its state redirected under `web/test-results` (both LOCALAPPDATA
+  and XDG_STATE_HOME), so it can never clobber a live daq's runtime record,
+  sessions, or runs. Hardware-facing assertions poll `/api/config`, not the
+  DOM — a DOM-only test would pass while the write silently failed. One
+  worker, file order: the tests share the one fake board's state. CI runs it
+  on ubuntu with `DAQ_TEST_SERVER_CMD` overriding the local uv launch.
 - Nothing is persisted between runs of the process: the unit holds the settings
   and is read at open. Save/Load write and read an explicit file instead.
 - The `Writer` interface is byte-compatible-WaveDump for v1; ROOT/HDF5 are meant

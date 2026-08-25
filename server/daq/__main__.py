@@ -12,6 +12,7 @@ import uvicorn
 
 from . import __version__, launcher, logsetup, runtime
 from .acquisition import AcquisitionEngine
+from .backend.base import make_backend
 from .server import create_app
 
 
@@ -149,7 +150,13 @@ def _serve(args, with_tray: bool) -> int:
     _check_bindable(args.host, args.port)
     logsetup.did(log, f"Checking port {args.port} is free", "Ok")
 
-    engine = AcquisitionEngine()
+    # DAQ_BACKEND=fake runs against the synthetic board - for the UI test
+    # suite and demos, never the default, and loud when it is in effect so a
+    # beamline shift can not mistake synthetic data for the real thing.
+    backend_kind = os.environ.get("DAQ_BACKEND", "caen")
+    if backend_kind != "caen":
+        log.warning("DAQ_BACKEND=%s: this is NOT real hardware", backend_kind)
+    engine = AcquisitionEngine(lambda: make_backend(backend_kind))
     if not args.no_open:
         _open_board_in_background(engine, BOARD_OPEN_WAIT_S)
     else:

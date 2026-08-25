@@ -15,6 +15,10 @@ uv.lock
 node_modules/
 web/dist/
 
+# Playwright UI tests: reports, traces, and the fake server's isolated state
+web/test-results/
+web/playwright-report/
+
 # NOTE: the built UI bundle (server/daq/static/) IS committed on purpose, so the
 # app runs with just `pip install -e . && python -m daq` — no Node on the target.
 # Rebuild it with `cd web && npm run build`. If you'd rather treat it as a build

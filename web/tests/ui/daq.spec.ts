@@ -1,0 +1,144 @@
+import { test, expect, Page } from "@playwright/test";
+
+/** The UI against the fake board: what a person does with a mouse, verified
+ * against what the server then holds. Every hardware-facing assertion checks
+ * /api/config - the board (here, the fake) is the source of truth, and a test
+ * that only reads the DOM would pass while the write silently failed. */
+
+const cfg = async (page: Page) =>
+  (await page.request.get("/api/config")).json();
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  // The board opens on a background thread; controls unlock when it is up.
+  await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
+});
+
+test("loads with the fake unit connected and all 16 channels", async ({ page }) => {
+  await expect(page.getByText("DT5742B-SIM")).toBeVisible();
+  // Default config: bank 0 enabled and open (8 tiles); bank 1 disabled and
+  // collapsed. Expanding it shows the other 8.
+  await expect(page.locator(".tile")).toHaveCount(8);
+  await page.locator(".bank-head", { hasText: "Bank 1" }).click();
+  await expect(page.locator(".tile")).toHaveCount(16);
+  await expect(page.locator(".pill.state")).toHaveText("idle");
+});
+
+test("unit settings: required first, optional gated behind checkboxes", async ({ page }) => {
+  const grid = page.locator(".settings-grid").first();
+  const rows = grid.locator("> *");
+  // Five required rows, then the divider, then the optional rows.
+  await expect(rows.nth(0)).toContainText("Sampling frequency");
+  await expect(rows.nth(4)).toContainText("Fast trigger");
+  await expect(rows.nth(5)).toHaveClass(/settings-divider/);
+  await expect(grid.locator(".setting-row.optional").first()).toBeVisible();
+});
+
+test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
+  // Customize "Dump header" (default off), then uncheck the row: the value
+  // must return to the default ON THE SERVER, not merely in the form.
+  const row = page.locator(".setting-row.optional", { hasText: "Dump header" });
+  const box = row.locator('input[type="checkbox"]').first();
+  await box.check();                                  // engage
+  await row.locator('input[type="checkbox"]').nth(1).check();  // the value itself
+  await expect.poll(async () => (await cfg(page)).output_header).toBe(true);
+  await box.uncheck();                                // pin back to default
+  await expect.poll(async () => (await cfg(page)).output_header).toBe(false);
+});
+
+test("a typed out-of-range value is clamped before it reaches the unit", async ({ page }) => {
+  const row = page.locator(".setting-row.optional", { hasText: "Events per readout" });
+  await row.locator('input[type="checkbox"]').first().check();
+  const input = row.locator('input[type="number"]');
+  await input.fill("5000");
+  await input.press("Enter");
+  await expect.poll(async () => (await cfg(page)).max_events_blt).toBe(1023);
+  await expect(input).toHaveValue("1023");
+});
+
+test("the DC-offset slider commits one write on release", async ({ page }) => {
+  const before = (await cfg(page)).channels[0].dc_offset;
+  const slider = page.locator(".dc-slider").first();
+  await slider.focus();
+  await slider.press("ArrowLeft");        // one 0.01 V step down; keyup commits
+  const want = Math.round(32768 * (1 - (-0.01)));   // voltsToDac(-0.01)
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
+  expect(before).not.toBe(want);
+  // The typed field agrees with what the unit reports.
+  await expect(page.locator(".tile-dc input[type=number]").first()).toHaveValue("-0.010");
+});
+
+test("typing a DC offset lands on the unit exactly", async ({ page }) => {
+  const field = page.locator(".tile-dc input[type=number]").first();
+  await field.fill("0.1");
+  await field.press("Enter");
+  const want = Math.round(32768 * (1 - 0.1));       // voltsToDac(+0.1)
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
+});
+
+test("clicking a Y label edits the display range, and it persists", async ({ page }) => {
+  const tile = page.locator(".tile").first();
+  await tile.locator("button.ax.y.max").click();
+  const editor = tile.locator(".yedit input[type=number]");
+  await editor.fill("0.25");
+  await editor.press("Enter");
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.250 V");
+  await expect
+    .poll(async () => (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"])
+    .toEqual([-1, 0.25]);
+  // Survives a full reload: the display prefs live on the server.
+  await page.reload();
+  await expect(page.locator(".tile").first().locator("button.ax.y.max"))
+    .toHaveText("+0.250 V");
+});
+
+test("the 'full' button resets a channel's range to the default", async ({ page }) => {
+  const tile = page.locator(".tile").first();
+  await tile.locator("button.ax.y.max").click();
+  await tile.locator(".yedit button", { hasText: "full" }).click();
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+1.000 V");
+});
+
+test("sessions: save, perturb, apply restores the unit, delete", async ({ page }) => {
+  const mark = (await cfg(page)).channels[0].dc_offset;
+
+  await page.locator(".session-save input").fill("pw-test");
+  await page.locator(".session-save button").click();
+  const row = page.locator(".session-row", { hasText: "pw-test" });
+  await expect(row).toBeVisible();
+
+  // Perturb through the UI, then apply the session: the unit must go back.
+  const field = page.locator(".tile-dc input[type=number]").first();
+  await field.fill("-0.3");
+  await field.press("Enter");
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).not.toBe(mark);
+
+  await row.locator("button", { hasText: "Apply" }).click();
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(mark);
+  await expect(page.getByText(/applied and read back/)).toBeVisible();
+
+  page.on("dialog", (d) => d.accept());
+  await row.locator("button.danger").click();
+  await expect(row).toHaveCount(0);
+});
+
+test("a legacy Configuration B file loads through the Load button", async ({ page }) => {
+  const legacy = [
+    "Module 125", "DRS4FREQ 0",
+    "CHNOFFSE 47000 0 0", "CHNOFFSE 18536 4 1",
+    "TR0OFFSE 32768", "TRG__TR0 20934",
+    "TRGPOLAR 1", "POSTTRIG 0", "LEMO_LEV 0", "GPO_BUSY 1",
+  ].join("\n");
+  // Straight onto the hidden input - clicking Load would open the native
+  // chooser, which is the browser's UI, not ours to test.
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "configB.txt", mimeType: "text/plain",
+    buffer: Buffer.from(legacy),
+  });
+  await expect(page.getByText(/Config loaded and read back/)).toBeVisible();
+  const c = await cfg(page);
+  expect(c.gpo_output).toBe("busy");
+  expect(c.trigger_edge).toBe("falling");
+  expect(c.channels[0].dc_offset).toBe(47000);
+  expect(c.channels[12].dc_offset).toBe(18536);
+});

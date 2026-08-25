@@ -179,6 +179,26 @@ GPO_BUSY 1
     assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
 
 
+def test_fake_backend_behaves_like_a_board():
+    """The Playwright suite runs the server with DAQ_BACKEND=fake; this guards
+    the contract it relies on: the fake opens, settings stick exactly, and
+    software triggers become events the readout loop counts."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True and eng.status()["opened"]
+        cfg = eng.get_config()
+        cfg.channels[0].dc_offset = 41000
+        assert eng.set_config(cfg).channels[0].dc_offset == 41000
+        assert eng.fire_software_triggers(3, rate_hz=1000)["ok"]
+        deadline = time.time() + 3
+        while time.time() < deadline and eng.status()["events_seen"] < 3:
+            time.sleep(0.05)
+        assert eng.status()["events_seen"] >= 3
+    finally:
+        eng.close()
+
+
 def test_sessions_and_display_roundtrip():
     """Display prefs autosave and reload; sessions save, list, apply and
     delete. Applying with no unit must still restore the display state while
@@ -413,6 +433,7 @@ if __name__ == "__main__":
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
+               test_fake_backend_behaves_like_a_board,
                test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,
