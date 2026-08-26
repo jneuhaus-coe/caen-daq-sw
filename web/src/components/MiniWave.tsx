@@ -21,6 +21,10 @@ interface Props {
   /** Latest single-event trace + its event id (overlay mode's feed). */
   lastWave?: number[];
   lastId?: number;
+  /** Predicted baseline position in ADC counts for the current DC offset -
+   *  the oscilloscope's ground marker. Drawn (dashed, in the channel colour)
+   *  only while there is no data to show; real waveforms replace it. */
+  baselineGuide?: number;
 }
 
 /** One channel's waveform in WINDOW-referenced volts: the ADC's fixed 1 Vpp
@@ -36,7 +40,7 @@ interface Props {
  * without re-measuring on every repaint. */
 export function MiniWave({
   wave, geom, windowNs, postTriggerPct, height = 140, color,
-  yRange, onYRange, mode = "avg", lastWave, lastId,
+  yRange, onYRange, mode = "avg", lastWave, lastId, baselineGuide,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const density = useRef(new WaveDensity());
@@ -114,6 +118,25 @@ export function MiniWave({
       ctx.restore();
     }
 
+    // No data yet: the ground marker - where the current offset will put the
+    // baseline (nominal model; the real trace is the truth once it arrives).
+    const showingData = mode === "avg"
+      ? !!wave && wave.length > 0
+      : density.current.count > 0;
+    if (!showingData && baselineGuide != null) {
+      const gy = y(windowVolts(baselineGuide, geom));
+      if (gy >= 0 && gy <= h) {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.75;
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     if (mode !== "avg" || !wave || wave.length === 0) return;
     const n = wave.length;
     ctx.strokeStyle = color;
@@ -125,7 +148,8 @@ export function MiniWave({
       i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
     }
     ctx.stroke();
-  }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId]);
+  }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId,
+      baselineGuide]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 

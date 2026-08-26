@@ -72,6 +72,39 @@ test("a typed out-of-range value is clamped before it reaches the unit", async (
   await expect(input).toHaveValue("1023");
 });
 
+test("the baseline guide is drawn when idle and follows the offset", async ({ page }) => {
+  // Idle (no data): the ground marker shows where the offset will put the
+  // baseline, in the channel colour, at the window centre for a centred DAC.
+  const rowOf = async () => page.evaluate(() => {
+    const cv = document.querySelector(".tile canvas") as HTMLCanvasElement;
+    const ctx = cv.getContext("2d")!;
+    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    // Row with the most green-dominant pixels = the guide line.
+    let best = -1, bestN = 0;
+    for (let yy = 0; yy < cv.height; yy++) {
+      let n = 0;
+      for (let x = 0; x < cv.width; x++) {
+        const p = (yy * cv.width + x) * 4;
+        if (d[p + 3] > 60 && d[p + 1] > 140 && d[p] < 130) n++;
+      }
+      if (n > bestN) { bestN = n; best = yy; }
+    }
+    return { row: best, lit: bestN, height: cv.height };
+  });
+  const centred = await rowOf();
+  expect(centred.lit).toBeGreaterThan(50);
+  expect(Math.abs(centred.row - centred.height / 2)).toBeLessThan(centred.height * 0.1);
+
+  // Typing a new offset moves the guide (auto re-arm is not needed for the
+  // marker - it predicts).
+  const field = page.locator(".tile-dc input[type=number]").first();
+  await field.fill("0.2");
+  await field.press("Enter");
+  await expect.poll(async () => (await rowOf()).row).toBeLessThan(centred.row - 10);
+  await field.fill("0");
+  await field.press("Enter");
+});
+
 test("the DC-offset slider commits one write on release", async ({ page }) => {
   const before = (await cfg(page)).channels[0].dc_offset;
   const slider = page.locator(".dc-slider").first();

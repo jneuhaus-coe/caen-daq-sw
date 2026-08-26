@@ -351,6 +351,9 @@ export function App() {
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}
                   color="#e3b341" height={110}
+                  // TR's own DAC slope (~0.19 counts/LSB, RADiCAL bench cal),
+                  // distinct from the channels': the ground marker for TR0.
+                  baselineGuide={2048 - (config.groups[trCh! - 16].fast_trigger_dc_offset - 32768) * 0.19}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
                   mode={waveMode} lastWave={tr.last} lastId={tr.last_index} />

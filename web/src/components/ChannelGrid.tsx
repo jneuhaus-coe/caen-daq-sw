@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { BoardConfig, Catalog, Telemetry } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
-import { dacToVolts, voltsToDac } from "../volts";
+import { dacToVolts, voltsToDac, zeroCounts } from "../volts";
 
 interface Props {
   catalog: Catalog;
@@ -113,7 +113,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         onYRange={(range, all) => onYRange(ch, range, all)}
                         mode={waveMode}
                         lastWave={on ? e?.last : undefined}
-                        lastId={on ? e?.last_index : undefined} />
+                        lastId={on ? e?.last_index : undefined}
+                        baselineGuide={on ? zeroCounts(shownDac, g) : undefined} />
 
                       <div className="tile-dc" title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
                         <label>DC offset</label>
