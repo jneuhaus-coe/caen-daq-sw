@@ -50,8 +50,12 @@ export const api = {
 export interface SessionInfo { name: string; saved_at: number | null; }
 
 /** UI state that persists across restarts, keyed however the UI likes.
- *  y_ranges: per-channel waveform display range in volts, [min, max]. */
-export interface DisplayPrefs { y_ranges?: Record<string, [number, number]>; }
+ *  y_ranges: per-channel waveform display range in volts, [min, max].
+ *  wave_mode: "avg" (rolling average) or "overlay" (persistence density). */
+export interface DisplayPrefs {
+  y_ranges?: Record<string, [number, number]>;
+  wave_mode?: "avg" | "overlay";
+}
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */
 export function openTelemetry(onData: (t: Telemetry) => void): () => void {

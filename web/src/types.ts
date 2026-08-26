@@ -67,6 +67,10 @@ export interface ChannelTelemetry {
   min?: number;
   max?: number;
   baseline?: number;
+  /** Latest single event, decimated - one per tick, for the overlay mode. */
+  last?: number[];
+  /** Its event counter, so the client adds each event exactly once. */
+  last_index?: number;
 }
 
 export interface Telemetry {

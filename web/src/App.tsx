@@ -17,6 +17,7 @@ import { describeChanges } from "./changes";
 import { RateStrip } from "./components/RateStrip";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
+import { PERSIST_TRACES } from "./waveDensity";
 
 export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -34,6 +35,9 @@ export function App() {
   // Per-channel waveform display ranges (volts). Persisted server-side so a
   // daq restart or a different browser comes back to the same view.
   const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
+  // "avg": the 1 s rolling mean. "overlay": the last N single events piled
+  // into a density picture. Persisted with the rest of the display state.
+  const [waveMode, setWaveMode] = useState<"avg" | "overlay">("avg");
   const saveTimer = useRef<number | undefined>(undefined);
   const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
@@ -47,7 +51,10 @@ export function App() {
       confirmed.current = cfg;
     })().catch(console.error);
     // Display prefs restore on their own - they never touch the hardware.
-    api.getDisplay().then((d) => setYRanges(fromPrefs(d))).catch(() => {});
+    api.getDisplay().then((d) => {
+      setYRanges(fromPrefs(d));
+      setWaveMode(d.wave_mode === "overlay" ? "overlay" : "avg");
+    }).catch(() => {});
   }, []);
 
   const fromPrefs = (d: DisplayPrefs): Record<number, [number, number]> => {
@@ -58,14 +65,24 @@ export function App() {
     return out;
   };
 
-  const applyYRanges = (next: Record<number, [number, number]>) => {
-    setYRanges(next);
+  const saveDisplay = (ranges: Record<number, [number, number]>,
+                       mode: "avg" | "overlay") => {
     window.clearTimeout(displayTimer.current);
     displayTimer.current = window.setTimeout(() => {
       const y_ranges: Record<string, [number, number]> = {};
-      for (const [k, v] of Object.entries(next)) y_ranges[k] = v;
-      api.setDisplay({ y_ranges }).catch(() => {});
+      for (const [k, v] of Object.entries(ranges)) y_ranges[k] = v;
+      api.setDisplay({ y_ranges, wave_mode: mode }).catch(() => {});
     }, 400);
+  };
+
+  const applyYRanges = (next: Record<number, [number, number]>) => {
+    setYRanges(next);
+    saveDisplay(next, waveMode);
+  };
+
+  const changeWaveMode = (mode: "avg" | "overlay") => {
+    setWaveMode(mode);
+    saveDisplay(yRanges, mode);
   };
 
   const changeYRange = (ch: number, range: [number, number] | null, all: boolean) => {
@@ -251,7 +268,19 @@ export function App() {
           title={connected ? undefined : "No unit connected"}>
         <main>
           <div className="grid-head">
-            <h2>Channels <span className="sub">all 16 · avg {tele?.avg_window_s ?? 1}s window · click a title to rename</span></h2>
+            <h2>Channels <span className="sub">
+              {waveMode === "avg"
+                ? `all 16 · avg ${tele?.avg_window_s ?? 1}s window · click a title to rename`
+                : `all 16 · last ${PERSIST_TRACES} events, density-shaded · click a title to rename`}
+            </span></h2>
+            <div className="wave-mode" role="group" aria-label="Waveform display mode">
+              <button className={waveMode === "avg" ? "on" : ""}
+                title={`Rolling mean of the last ${tele?.avg_window_s ?? 1}s of events`}
+                onClick={() => changeWaveMode("avg")}>Avg</button>
+              <button className={waveMode === "overlay" ? "on" : ""}
+                title={`The last ${PERSIST_TRACES} single events stacked, brightness = how often a path is taken`}
+                onClick={() => changeWaveMode("overlay")}>Overlay</button>
+            </div>
             <div className="legend">
               <span className="lg live">live</span>
               <span className="lg dead">dead</span>
@@ -262,7 +291,7 @@ export function App() {
           <ChannelGrid catalog={catalog} config={config} tele={tele}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
-            yRanges={yRanges} onYRange={changeYRange} />
+            yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode} />
         </main>
 
         <aside>
@@ -284,6 +313,7 @@ export function App() {
             onApplied={(cfg, display, errors, connected, name) => {
               setConfig(cfg); confirmed.current = cfg;
               setYRanges(fromPrefs(display));
+              setWaveMode(display.wave_mode === "overlay" ? "overlay" : "avg");
               if (!connected) {
                 push("warn", `Session "${name}": display restored`,
                      ["No unit connected - hardware settings were not written."]);

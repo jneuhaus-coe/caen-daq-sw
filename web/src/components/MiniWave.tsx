@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_Y, fmtV, voltsAtCount, windowRangeV } from "../volts";
 import type { Geom } from "../volts";
+import { WaveDensity } from "../waveDensity";
 import { BlurInput } from "./BlurInput";
 
 interface Props {
@@ -16,6 +17,12 @@ interface Props {
   yRange?: [number, number];
   /** min/max label edited. `range` null = reset to default; `all` = every channel. */
   onYRange?: (range: [number, number] | null, all: boolean) => void;
+  /** "avg" draws the rolling mean; "overlay" stacks the last N single events
+   *  into a density picture. */
+  mode?: "avg" | "overlay";
+  /** Latest single-event trace + its event id (overlay mode's feed). */
+  lastWave?: number[];
+  lastId?: number;
 }
 
 /** One channel's averaged waveform in ABSOLUTE volts on a fixed default range,
@@ -30,13 +37,23 @@ interface Props {
  * without re-measuring on every repaint. */
 export function MiniWave({
   wave, dcOffset, geom, windowNs, postTriggerPct, height = 140, color,
-  yRange, onYRange,
+  yRange, onYRange, mode = "avg", lastWave, lastId,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const density = useRef(new WaveDensity());
+  const offscreen = useRef<HTMLCanvasElement | null>(null);
   const [editing, setEditing] = useState<"min" | "max" | null>(null);
   const [editAll, setEditAll] = useState(false);
   const [yMin, yMax] = yRange ?? DEFAULT_Y;
   const [winLo, winHi] = windowRangeV(dcOffset, geom);
+
+  // Feed the pile outside the paint effect: a repaint (axis edit, offset
+  // drag) must never re-add the same event, and the id makes adds exact.
+  useEffect(() => {
+    if (mode === "overlay" && lastWave && lastId != null) {
+      density.current.add(lastId, lastWave);
+    }
+  }, [mode, lastWave, lastId]);
 
   const frac = (v: number) => (yMax - v) / (yMax - yMin);   // 0 at top
   const zeroFrac = frac(0);
@@ -76,6 +93,22 @@ export function MiniWave({
       }
     }
 
+    // Overlay mode: the density pile, under the reference lines so the
+    // chrome stays legible on top of even the hottest paths.
+    if (mode === "overlay" && density.current.count) {
+      const gw = 256;
+      const img = density.current.render(
+        gw, h, (counts) => frac(voltsAtCount(counts, dcOffset, geom)) * h);
+      let off = offscreen.current;
+      if (!off || off.width !== gw || off.height !== h) {
+        off = document.createElement("canvas");
+        off.width = gw; off.height = h;
+        offscreen.current = off;
+      }
+      off.getContext("2d")!.putImageData(img, 0, 0);
+      ctx.drawImage(off, 0, 0, gw, h, 0, 0, w, h);
+    }
+
     // 0 V reference, when it is on screen.
     if (zeroFrac >= 0 && zeroFrac <= 1) {
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
@@ -95,7 +128,7 @@ export function MiniWave({
       ctx.restore();
     }
 
-    if (!wave || wave.length === 0) return;
+    if (mode !== "avg" || !wave || wave.length === 0) return;
     const n = wave.length;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.25;
@@ -107,7 +140,7 @@ export function MiniWave({
     }
     ctx.stroke();
   }, [wave, dcOffset, yMin, yMax, winLo, winHi, height, color, trigFrac,
-      geom, zeroFrac]);
+      geom, zeroFrac, mode, lastId]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 

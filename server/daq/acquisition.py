@@ -32,6 +32,13 @@ class AcquisitionEngine:
         self._cfg = default_config()   # only a seed; the board wins once open
         self._avg = RollingAverage()
         self._rate = TriggerRateMeter()
+        # Latest single event per channel, as (event_index, wave). Telemetry
+        # ships it decimated so the UI's overlay mode can accumulate a
+        # density picture client-side - one trace per tick, so the stream
+        # stays the same size class as the averages and can never throttle
+        # data-taking. (index, wave) as one tuple: assignment is atomic, so
+        # the telemetry thread never sees a wave paired with the wrong id.
+        self._last: dict[int, tuple[int, np.ndarray]] = {}
         # Recording is independent of acquiring: you watch first, then record.
         self._writer = None
         self._run_id: str | None = None
@@ -370,6 +377,7 @@ class AcquisitionEngine:
                 self._events_seen += 1
                 for ch, wave in ev.samples.items():
                     self._avg.add(ch, wave, t)
+                    self._last[ch] = (ev.index, wave)
                 if self._writer:
                     self._writer.write(ev)
                     self._recorded += 1
@@ -399,7 +407,7 @@ class AcquisitionEngine:
                 channels[str(ch)] = {"count": 0}
                 continue
             vpp = float(mean.max() - mean.min())
-            channels[str(ch)] = {
+            entry = {
                 "wave": decimate(mean, C.OVERVIEW_POINTS),
                 "count": count,
                 "vpp": vpp,
@@ -407,6 +415,13 @@ class AcquisitionEngine:
                 "max": float(mean.max()),
                 "baseline": float(np.median(mean)),
             }
+            last = self._last.get(ch)
+            if last is not None:
+                # One single-event trace per tick for the overlay display; the
+                # id lets the client add each event once, not once per render.
+                entry["last"] = decimate(last[1], C.OVERVIEW_POINTS)
+                entry["last_index"] = last[0]
+            channels[str(ch)] = entry
         return {
             "running": self._running.is_set(),
             "sample_period_ns": dt,

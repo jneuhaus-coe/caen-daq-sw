@@ -122,6 +122,35 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(row).toHaveCount(0);
 });
 
+test("overlay mode paints a density pile and the choice persists", async ({ page }) => {
+  // Acquire so single-event traces flow (the fake board emits ~5/s).
+  await page.getByRole("button", { name: /Start Acquisition/ }).click();
+  await page.locator(".wave-mode button", { hasText: "Overlay" }).click();
+  await expect(page.locator(".wave-mode button.on")).toHaveText("Overlay");
+
+  // The density canvas actually paints: non-transparent pixels appear in the
+  // first tile once a few events have arrived.
+  await expect.poll(async () => page.evaluate(() => {
+    const cv = document.querySelector(".tile canvas") as HTMLCanvasElement;
+    const ctx = cv.getContext("2d")!;
+    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    let lit = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) lit++;
+    return lit;
+  }), { timeout: 10_000 }).toBeGreaterThan(500);
+
+  // The choice is display state: it survives a reload via the server.
+  await expect
+    .poll(async () => (await (await page.request.get("/api/display")).json()).wave_mode)
+    .toBe("overlay");
+  await page.reload();
+  await expect(page.locator(".wave-mode button.on")).toHaveText("Overlay");
+
+  // Back to Avg for the tests that follow.
+  await page.locator(".wave-mode button", { hasText: "Avg" }).click();
+  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+});
+
 test("recording a run writes run_N.root and the number advances", async ({ page }) => {
   // Fresh test state starts at run 1; the placeholder shows the inference.
   await expect(page.locator("#runno")).toHaveAttribute("placeholder", "1");

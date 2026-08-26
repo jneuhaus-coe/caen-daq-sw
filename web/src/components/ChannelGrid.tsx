@@ -13,13 +13,14 @@ interface Props {
   /** Per-channel display range in volts; a missing entry means the default. */
   yRanges: Record<number, [number, number]>;
   onYRange: (ch: number, range: [number, number] | null, all: boolean) => void;
+  waveMode: "avg" | "overlay";
 }
 
 const DEAD_VPP = 30;      // below this = likely dead / no signal
 const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
-                              yRanges, onYRange }: Props) {
+                              yRanges, onYRange, waveMode }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
@@ -105,7 +106,10 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         geom={g} windowNs={windowNs} postTriggerPct={config.post_trigger}
                         color={color}
                         yRange={yRanges[ch]}
-                        onYRange={(range, all) => onYRange(ch, range, all)} />
+                        onYRange={(range, all) => onYRange(ch, range, all)}
+                        mode={waveMode}
+                        lastWave={on ? e?.last : undefined}
+                        lastId={on ? e?.last_index : undefined} />
 
                       <div className="tile-dc" title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
                         <label>DC offset</label>

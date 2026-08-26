@@ -281,6 +281,20 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 .settings-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 
+/* waveform display mode: a small segmented toggle in the grid header */
+.wave-mode { display: inline-flex; margin-left: 10px; }
+.wave-mode button {
+  font-size: 11px; padding: 2px 10px; cursor: pointer;
+  background: #161b22; color: var(--muted);
+  border: 1px solid var(--border);
+}
+.wave-mode button:first-child { border-radius: 5px 0 0 5px; }
+.wave-mode button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+.wave-mode button.on {
+  background: #1f2a3a; color: var(--text); border-color: #3b5a86;
+  position: relative; z-index: 1;
+}
+
 /* collapsible */
 .collapse-head { display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
 .chevron { display: inline-block; transition: transform .12s; color: var(--muted); }

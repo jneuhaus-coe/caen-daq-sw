@@ -301,6 +301,11 @@ def test_fake_backend_behaves_like_a_board():
         while time.time() < deadline and eng.status()["events_seen"] < 3:
             time.sleep(0.05)
         assert eng.status()["events_seen"] >= 3
+        # The overlay display feeds on one single-event trace per tick.
+        tele = eng.telemetry()
+        ch0 = tele["channels"]["0"]
+        assert len(ch0["last"]) == C.OVERVIEW_POINTS
+        assert isinstance(ch0["last_index"], int)
     finally:
         eng.close()
 
