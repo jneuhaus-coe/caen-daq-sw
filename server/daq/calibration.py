@@ -45,6 +45,11 @@ RAIL_LO, RAIL_HI = 2, ADC_TOP - 2    # excursions here mean "clipped, or worse"
 # lowers the baseline). Replaced by the measured secant after one step.
 SLOPE_CH = -0.125
 SLOPE_TR = -0.19
+# TR threshold DAC: window counts per LSB (RADiCAL bench cal, 0.0329 mV/LSB).
+# The comparator lives in the window frame, so moving the TR offset moves the
+# baseline relative to a fixed threshold; keeping the operator's margin means
+# the threshold must follow the offset by the predicted baseline shift.
+TR_THR_COUNTS_PER_LSB = 0.0329 * 4.096
 
 TR_KEY = "TR0"
 
@@ -239,8 +244,17 @@ class Calibrator:
         cfg = eng.get_config()
         for s in servos:
             if s.key == TR_KEY:
+                # The trigger margin is the operator's; moving the offset
+                # must not change it. Shift the threshold by the same
+                # predicted delta the baseline moves - this is exactly the
+                # mistake that silenced the trigger the first time
+                # auto-baseline ran.
+                old = cfg.groups[0].fast_trigger_dc_offset
+                d_thr = round(SLOPE_TR * (s.dac - old) / TR_THR_COUNTS_PER_LSB)
                 for g in cfg.groups:      # one TR0, both banks' registers
                     g.fast_trigger_dc_offset = s.dac
+                    g.fast_trigger_threshold = int(min(0xFFFF, max(
+                        0, g.fast_trigger_threshold + d_thr)))
             else:
                 cfg.channels[int(s.key)].dc_offset = s.dac
         got = eng.set_config(cfg)

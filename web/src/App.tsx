@@ -20,7 +20,9 @@ import { MiniWave } from "./components/MiniWave";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
-import { windowVolts } from "./volts";
+import { BlurInput } from "./components/BlurInput";
+import { TR_OFF_SLOPE_COUNTS, TR_THR_COUNTS_PER_LSB, trRelThresholdV,
+         trThresholdDacFor, windowVolts } from "./volts";
 
 export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -174,6 +176,24 @@ export function App() {
   // register poke) is surfaced below the panel, never silently masked.
   const updateTrBoth = (key: string, value: any) => {
     if (!config) return;
+    if (key === "fast_trigger_dc_offset") {
+      // The comparator lives in the window frame, so moving the offset moves
+      // the baseline RELATIVE to a fixed threshold. Operators think
+      // baseline-relative ("trigger at -100 mV"), so the threshold DAC
+      // follows the offset by the predicted baseline shift - the margin is
+      // preserved, and calibration can never strand the trigger.
+      const old = config.groups[0].fast_trigger_dc_offset;
+      const dThr = Math.round(
+        TR_OFF_SLOPE_COUNTS * (value - old) / TR_THR_COUNTS_PER_LSB);
+      const groups = config.groups.map((gc) => ({
+        ...gc,
+        fast_trigger_dc_offset: value,
+        fast_trigger_threshold: Math.min(0xFFFF, Math.max(0,
+          gc.fast_trigger_threshold + dThr)),
+      }));
+      pushConfig({ ...config, groups });
+      return;
+    }
     pushConfig({ ...config, groups: config.groups.map((gc) => ({ ...gc, [key]: value })) });
   };
   const updateChannel = (ch: number, patch: Partial<BoardConfig["channels"][number]>) => {
@@ -415,14 +435,32 @@ export function App() {
           </Collapsible>
           <Collapsible title="TR0 Trigger" defaultOpen>
             {(() => {
-              const trDefs = catalog.bank.filter((d) =>
-                d.key === "fast_trigger_threshold" || d.key === "fast_trigger_dc_offset");
+              const offDefs = catalog.bank.filter((d) =>
+                d.key === "fast_trigger_dc_offset");
               const [g0, g1] = config.groups;
-              const diverged = trDefs.some((d) =>
-                (g0 as any)[d.key] !== (g1 as any)[d.key]);
+              const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
+                .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
+              const relV = trRelThresholdV(
+                g0.fast_trigger_threshold, g0.fast_trigger_dc_offset,
+                catalog.geometry);
               return (
                 <>
-                  <SettingsList defs={trDefs} geom={catalog.geometry}
+                  <div className="setting-row"
+                    title={"Trigger level RELATIVE to the baseline - the way pulses are thought about (an MCP pulse of -100 mV wants a threshold around -50 to -80 mV). Kept relative automatically: moving the TR DC offset re-computes the absolute threshold so the margin never changes underneath you.\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
+                    <label>TR threshold <span className="muted">vs baseline</span></label>
+                    <span className="field">
+                      <BlurInput type="number" step={0.005} min={-0.5} max={0.5}
+                        selectOnFocus value={relV.toFixed(3)}
+                        onCommit={(v) => {
+                          const rel = Math.min(0.5, Math.max(-0.5, Number(v) || 0));
+                          updateTrBoth("fast_trigger_threshold",
+                            trThresholdDacFor(rel, g0.fast_trigger_dc_offset,
+                                              catalog.geometry));
+                        }} />
+                      <span className="unit">V</span>
+                    </span>
+                  </div>
+                  <SettingsList defs={offDefs} geom={catalog.geometry}
                     get={(k) => (g0 as any)[k]} onChange={updateTrBoth} />
                   {diverged ? (
                     <div className="tr-diverged">
@@ -439,8 +477,9 @@ export function App() {
                     </div>
                   ) : null}
                   <p className="muted">
-                    One input, split to both banks - each keeps its own
-                    registers, so this panel writes both together.
+                    One input, split to both banks; this panel writes both
+                    together. The threshold is relative to the baseline and
+                    follows the offset automatically.
                   </p>
                 </>
               );

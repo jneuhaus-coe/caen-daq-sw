@@ -50,6 +50,25 @@ test("TR threshold is shown in TR-calibrated volts", async ({ page }) => {
   await expect(page.getByText(/tr threshold: -0\.049 V/).first()).toBeVisible();
 });
 
+test("moving the TR offset preserves the trigger margin", async ({ page }) => {
+  const margin = (c: any) => {
+    const off = c.groups[0].fast_trigger_dc_offset;
+    const thr = c.groups[0].fast_trigger_threshold;
+    const base = 2048 + (off - 32768) * -0.19;
+    return 2048 + (thr - 25448) * (0.0329 * 4.096) - base;
+  };
+  const before = margin(await cfg(page));
+
+  const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
+  const input = offRow.locator('input[type="number"]');
+  await input.fill("0.1");
+  await input.press("Enter");
+  await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
+    .not.toBe(32768);
+  // The threshold followed the offset: the baseline-relative margin held.
+  expect(Math.abs(margin(await cfg(page)) - before)).toBeLessThan(1.0);
+});
+
 test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
   // Customize "Dump header" (default off), then uncheck the row: the value
   // must return to the default ON THE SERVER, not merely in the form.

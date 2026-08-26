@@ -31,6 +31,12 @@ interface Props {
   /** Labelled horizontal reference lines in window volts - the TR0 card's
    *  "baseline" and "trigger". Drawn on top of the data, always. */
   markers?: { v: number; label: string; color: string }[];
+  /** The channel's current DC-offset DAC (slider preview included) and its
+   *  baseline slope in counts/LSB. With both, displayed history shifts
+   *  PREDICTIVELY when the offset changes: the pile and the average show
+   *  where everything will sit once the change is armed. */
+  offsetDac?: number;
+  offsetSlope?: number;
 }
 
 /** One channel's waveform in WINDOW-referenced volts: the ADC's fixed 1 Vpp
@@ -47,11 +53,20 @@ interface Props {
 export function MiniWave({
   wave, geom, windowNs, postTriggerPct, height = 140, color,
   yRange, onYRange, mode = "avg", lastWave, lastId, baselineGuide,
-  clearEpoch, markers,
+  clearEpoch, markers, offsetDac, offsetSlope,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const density = useRef(new WaveDensity());
   const offscreen = useRef<HTMLCanvasElement | null>(null);
+  // The offset in force when the current average was captured, so the trace
+  // can be shifted predictively alongside the pile.
+  const waveStamp = useRef<{ w?: number[]; dac?: number }>({});
+  if (wave !== waveStamp.current.w) {
+    waveStamp.current = { w: wave, dac: offsetDac };
+  }
+  const shiftOf = (refDac?: number) =>
+    offsetDac != null && offsetSlope != null && refDac != null
+      ? offsetSlope * (offsetDac - refDac) : 0;
   const [editing, setEditing] = useState<"min" | "max" | null>(null);
   const [editAll, setEditAll] = useState(false);
   const [yMin, yMax] = yRange ?? DEFAULT_Y;
@@ -70,7 +85,7 @@ export function MiniWave({
   // same event; the id makes adds exact.
   useEffect(() => {
     if (lastWave && lastId != null) {
-      density.current.add(lastId, lastWave);
+      density.current.add(lastId, lastWave, offsetDac);
     }
   }, [lastWave, lastId]);
 
@@ -100,7 +115,7 @@ export function MiniWave({
     if (mode === "overlay" && density.current.count) {
       const gw = 256;
       const img = density.current.render(
-        gw, h, (counts) => frac(windowVolts(counts, geom)) * h);
+        gw, h, (counts) => frac(windowVolts(counts, geom)) * h, shiftOf);
       let off = offscreen.current;
       if (!off || off.width !== gw || off.height !== h) {
         off = document.createElement("canvas");
@@ -153,12 +168,13 @@ export function MiniWave({
 
     if (mode === "avg" && wave && wave.length > 0) {
       const n = wave.length;
+      const s = shiftOf(waveStamp.current.dac);
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.25;
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         const px = (i / (n - 1)) * w;
-        const yy = clampY(y(windowVolts(wave[i], geom)));
+        const yy = clampY(y(windowVolts(wave[i] + s, geom)));
         i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
       }
       ctx.stroke();
@@ -184,7 +200,7 @@ export function MiniWave({
       ctx.restore();
     }
   }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId,
-      baselineGuide, clearEpoch, markers]);
+      baselineGuide, clearEpoch, markers, offsetDac, offsetSlope]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 

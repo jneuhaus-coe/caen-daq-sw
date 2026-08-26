@@ -20,8 +20,34 @@ export function voltsToDac(v: number, g: Geom) {
 
 /** ADC counts per DAC LSB: negative, and the offset range is twice the window,
  *  so a full DAC sweep drags the baseline across the window twice over. */
-function countsPerLsb(g: Geom) {
+export function countsPerLsb(g: Geom) {
   return -(g.dc_offset_range_v / (g.dc_offset_max + 1)) * ((g.adc_max + 1) / g.input_range_vpp);
+}
+
+/** TR path constants (RADiCAL bench calibration; provisional until the
+ *  comparator-domain experiment refines them). Both in window ADC counts. */
+export const TR_OFF_SLOPE_COUNTS = -0.19;              // per offset-DAC LSB
+export const TR_THR_ZERO_DAC = 25448;
+export const TR_THR_COUNTS_PER_LSB = 0.0329 * 4.096;   // mV/LSB -> counts/LSB
+
+export function trBaselineCounts(offDac: number): number {
+  return 2048 + (offDac - 32768) * TR_OFF_SLOPE_COUNTS;
+}
+
+export function trThresholdCounts(thrDac: number): number {
+  return 2048 + (thrDac - TR_THR_ZERO_DAC) * TR_THR_COUNTS_PER_LSB;
+}
+
+/** The threshold DAC that puts the trigger `relV` volts from the baseline the
+ *  current offset predicts - how the operator thinks ("trigger at -100 mV"). */
+export function trThresholdDacFor(relV: number, offDac: number, g: Geom): number {
+  const target = trBaselineCounts(offDac) + relV * (g.adc_max + 1);
+  const dac = Math.round(TR_THR_ZERO_DAC + (target - 2048) / TR_THR_COUNTS_PER_LSB);
+  return Math.min(0xFFFF, Math.max(0, dac));
+}
+
+export function trRelThresholdV(thrDac: number, offDac: number, g: Geom): number {
+  return (trThresholdCounts(thrDac) - trBaselineCounts(offDac)) / (g.adc_max + 1);
 }
 
 /** Where 0 V lands in ADC counts for a given DC offset. */
