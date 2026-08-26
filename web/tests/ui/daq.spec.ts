@@ -22,6 +22,9 @@ test("loads with the fake unit connected and all 16 channels", async ({ page }) 
   await page.locator(".bank-head", { hasText: "Bank 1" }).click();
   await expect(page.locator(".tile")).toHaveCount(16);
   await expect(page.locator(".pill.state")).toHaveText("idle");
+  // The event counter is always drawn (n=0 when idle), so tiles never
+  // resize when events start arriving.
+  await expect(page.locator(".tile-foot .n").first()).toHaveText(/^n=\d+$/);
 });
 
 test("unit settings: required first, optional gated behind checkboxes", async ({ page }) => {
