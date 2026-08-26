@@ -539,7 +539,11 @@ class CaenBackend(DigitizerBackend):
                 tc = int(group.StartIndexCell)
                 trigger_cells[gr] = tc
                 chans: dict[int, np.ndarray] = {}
-                for ci in range(C.GROUP_SIZE):
+                # 9 slots per group: 8 signal channels plus the digitized TR
+                # trace at index 8 (present only when TR digitizing is on -
+                # its ChSize is 0 otherwise). On the DT5742B both groups
+                # digitize the same TR0 input.
+                for ci in range(MAX_X742_CHANNEL_SIZE):
                     size = group.ChSize[ci]
                     if size == 0:
                         continue
@@ -561,7 +565,10 @@ class CaenBackend(DigitizerBackend):
                         t["time"], tc, C.sample_period_ns(self._cfg.drs4_frequency),
                         stack.shape[1])
                 for ci, arr in chans.items():
-                    samples[gr * C.GROUP_SIZE + ci] = arr
+                    # TR traces land at 16+group - the RADiCAL channel[18]
+                    # layout's last two slots.
+                    ch = (16 + gr) if ci == C.GROUP_SIZE else gr * C.GROUP_SIZE + ci
+                    samples[ch] = arr
             out.append(Event(index=info.EventCounter, timestamp_s=0.0,
                              trigger_time_tag=info.TriggerTimeTag, samples=samples,
                              trigger_cells=trigger_cells,

@@ -44,6 +44,7 @@ class AcquisitionEngine:
         self._run_id: str | None = None
         self._run_started: float | None = None
         self._recorded = 0
+        self._rec_limit: int | None = None    # auto-close the run at N events
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -294,19 +295,23 @@ class AcquisitionEngine:
 
     # ---------- recording ----------
     def start_recording(self, name: str, timestamp: bool = True,
-                        run_number: int | None = None) -> dict:
+                        run_number: int | None = None,
+                        max_events: int | None = None) -> dict:
         """Begin writing to a new run directory, starting acquisition if the
         operator has not already. Watching and recording are separate actions.
 
         The run number is the analysis-facing identity (run_<N>.root): given
         explicitly it is taken as-is; otherwise it is one past the highest
-        number already in the data directory."""
+        number already in the data directory. With `max_events` the recording
+        closes itself after exactly that many events - the bounded capture for
+        "give me N triggers to look at" - while acquisition keeps running."""
         if self._writer is not None:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
             return {"ok": False, "error": "no unit connected"}
         if run_number is None:
             run_number = runs.next_run_number()
+        self._rec_limit = max(1, int(max_events)) if max_events else None
         with logsetup.step(log, f"Starting a recording named {name!r} "
                                 f"(run {run_number})") as rec:
             if not self._running.is_set():
@@ -381,6 +386,10 @@ class AcquisitionEngine:
                 if self._writer:
                     self._writer.write(ev)
                     self._recorded += 1
+                    if self._rec_limit and self._recorded >= self._rec_limit:
+                        # The bounded capture is complete: close the run and
+                        # keep acquiring, so the operator can keep watching.
+                        self.stop_recording()
             self._rate.add(len(events))
         if not self._opened and self._writer:   # bailed out on a lost board
             try:
@@ -400,8 +409,12 @@ class AcquisitionEngine:
             cfg = self._cfg
         chans = cfg.enabled_channels()
         dt = C.sample_period_ns(cfg.drs4_frequency)
+        # The digitized TR trace rides along as 16+group when enabled.
+        shown = list(chans)
+        if cfg.fast_trigger_digitizing:
+            shown += [16 + gr for gr, g in enumerate(cfg.groups) if g.enabled]
         channels = {}
-        for ch in chans:
+        for ch in shown:
             mean, count = self._avg.snapshot(ch)
             if mean is None:
                 channels[str(ch)] = {"count": 0}

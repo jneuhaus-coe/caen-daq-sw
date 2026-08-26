@@ -15,6 +15,7 @@ import { Tour } from "./components/Tour";
 import { QUICK_USE } from "./quickuse";
 import { describeChanges } from "./changes";
 import { RateStrip } from "./components/RateStrip";
+import { MiniWave } from "./components/MiniWave";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
@@ -39,6 +40,8 @@ export function App() {
   // into a density picture. Persisted with the rest of the display state.
   const [waveMode, setWaveMode] = useState<"avg" | "overlay">("avg");
   const [testN, setTestN] = useState("100");
+  // Blank = record until stopped; a number = auto-close the run at N events.
+  const [recMax, setRecMax] = useState("");
   const saveTimer = useRef<number | undefined>(undefined);
   const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
@@ -171,8 +174,10 @@ export function App() {
   };
   const startRec = async () => {
     const n = runNo.trim() === "" ? null : Number(runNo);
+    const m = recMax.trim() === "" ? null : Number(recMax);
     const r = await api.recStart(runName, stampRun,
-                                 Number.isFinite(n as number) ? n : null);
+                                 Number.isFinite(n as number) ? n : null,
+                                 Number.isFinite(m as number) ? m : null);
     setStatus(r.status);
     if (!r.ok) push("err", "Could not start recording", [r.error ?? ""]);
     else {
@@ -256,6 +261,14 @@ export function App() {
                   value={runNo} disabled={!connected}
                   onChange={(e) => setRunNo(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                <label className="rec-label" htmlFor="recmax"
+                  title="Stop the recording automatically after this many events. Blank = record until stopped. Acquisition keeps running either way.">
+                  for
+                </label>
+                <input id="recmax" className="rec-input rec-no" type="number" min={1}
+                  placeholder="&#8734; ev" value={recMax} disabled={!connected}
+                  onChange={(e) => setRecMax(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
                 <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
                   <input type="checkbox" checked={stampRun} disabled={!connected}
                     onChange={(e) => setStampRun(e.target.checked)} />
@@ -305,6 +318,26 @@ export function App() {
         </main>
 
         <aside>
+          {(() => {
+            // The digitized TR0 trace, when TR digitizing is on: the same
+            // signal both groups see, shown once (group 0's copy, else 1's).
+            const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
+            const tr = trCh != null ? tele!.channels[String(trCh)] : null;
+            if (!config.fast_trigger_digitizing || !tr) return null;
+            return (
+              <div className="card">
+                <h2>TR0 <span className="sub">fast trigger · approx scale</span></h2>
+                <MiniWave wave={tr.wave} dcOffset={config.groups[trCh! - 16].fast_trigger_dc_offset}
+                  geom={catalog.geometry}
+                  windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
+                  postTriggerPct={config.post_trigger}
+                  color="#e3b341" height={110}
+                  yRange={yRanges[trCh!]}
+                  onYRange={(range, all) => changeYRange(trCh!, range, all)}
+                  mode={waveMode} lastWave={tr.last} lastId={tr.last_index} />
+              </div>
+            );
+          })()}
           <div className="card">
             <h2>Trigger rate</h2>
             <RateStrip tele={tele} />

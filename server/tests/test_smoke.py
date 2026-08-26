@@ -306,8 +306,36 @@ def test_fake_backend_behaves_like_a_board():
         ch0 = tele["channels"]["0"]
         assert len(ch0["last"]) == C.OVERVIEW_POINTS
         assert isinstance(ch0["last_index"], int)
+        # TR digitizing is on by default, so the trace rides along as 16+group.
+        assert "16" in tele["channels"]
     finally:
         eng.close()
+
+
+def test_recording_stops_itself_at_max_events():
+    """A bounded capture: the run closes at exactly N events while acquisition
+    keeps running - "give me N triggers to look at" without a stopwatch."""
+    from daq import runs
+    from daq.backend.base import make_backend
+    old_root = runs.DATA_ROOT
+    with tempfile.TemporaryDirectory() as d:
+        runs.DATA_ROOT = d
+        eng = AcquisitionEngine(lambda: make_backend("fake"))
+        try:
+            assert eng.probe() is True
+            r = eng.start_recording("bounded", timestamp=False, max_events=3)
+            assert r["ok"]
+            eng.fire_software_triggers(10, rate_hz=1000)
+            deadline = time.time() + 5
+            while time.time() < deadline and eng.status()["recording"]:
+                time.sleep(0.05)
+            st = eng.status()
+            assert st["recording"] is False and st["running"] is True
+            meta = json.load(open(os.path.join(d, "bounded", "run_metadata.json")))
+            assert meta["events"] == 3
+        finally:
+            eng.close()
+            runs.DATA_ROOT = old_root
 
 
 def test_sessions_and_display_roundtrip():
@@ -548,6 +576,7 @@ if __name__ == "__main__":
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
+               test_recording_stops_itself_at_max_events,
                test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,
                test_runtime_record_roundtrips_and_clears,

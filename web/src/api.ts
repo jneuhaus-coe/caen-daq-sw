@@ -17,10 +17,12 @@ export const api = {
   resetDefault: () => fetch("/api/config/default", { method: "POST" }).then(j<BoardConfig>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () => fetch("/api/acq/start", { method: "POST" }).then(j<Status>),
-  recStart: (name: string, timestamp: boolean, runNumber?: number | null) =>
+  recStart: (name: string, timestamp: boolean, runNumber?: number | null,
+             maxEvents?: number | null) =>
     fetch("/api/rec/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, timestamp, run_number: runNumber ?? null }),
+      body: JSON.stringify({ name, timestamp, run_number: runNumber ?? null,
+                             max_events: maxEvents ?? null }),
     }).then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   recStop: () =>
     fetch("/api/rec/stop", { method: "POST" })

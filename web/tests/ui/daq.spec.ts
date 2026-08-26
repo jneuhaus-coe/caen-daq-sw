@@ -164,6 +164,12 @@ test("overlay mode paints a density pile and the choice persists", async ({ page
   await page.getByRole("button", { name: /Stop Acquisition/ }).click();
 });
 
+test("the TR0 card appears when the fast trigger is digitized", async ({ page }) => {
+  await page.getByRole("button", { name: /Start Acquisition/ }).click();
+  await expect(page.locator(".card h2", { hasText: "TR0" })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+});
+
 test("recording a run writes run_N.root and the number advances", async ({ page }) => {
   // Fresh test state starts at run 1; the placeholder shows the inference.
   await expect(page.locator("#runno")).toHaveAttribute("placeholder", "1");
@@ -198,6 +204,20 @@ test("recording a run writes run_N.root and the number advances", async ({ page 
   await expect
     .poll(async () => (await (await page.request.get("/api/status")).json()).next_run_number)
     .toBe(43);
+});
+
+test("a bounded recording closes itself at N events", async ({ page }) => {
+  await page.locator("#runname").fill("bounded");
+  await page.locator("#recmax").fill("3");
+  await page.locator("button.record").click();
+  await expect(page.locator(".rec-group.on")).toBeVisible();
+  // The run ends on its own; acquisition keeps going.
+  await expect(page.locator(".rec-group.on")).toHaveCount(0, { timeout: 15_000 });
+  const st = await (await page.request.get("/api/status")).json();
+  expect(st.running).toBe(true);
+  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+  const runs = await (await page.request.get("/api/runs")).json();
+  expect(runs.runs.find((r: any) => r.id.startsWith("bounded")).events).toBe(3);
 });
 
 test("a legacy Configuration B file loads through the Load button", async ({ page }) => {

@@ -87,6 +87,15 @@ class FakeBackend(DigitizerBackend):
             t = np.arange(C.RECORD_LENGTH) - t0
             w -= _PULSE_COUNTS * np.exp(-0.5 * (t / 12.0) ** 2) * (t > -40)
             samples[ch] = np.clip(w, 0, C.ADC_MAX).astype(np.float32)
+        if cfg and cfg.fast_trigger_digitizing:
+            # The digitized TR trace, 16+group, like the real decoder: a
+            # sharp negative edge where the trigger fired.
+            t = np.arange(C.RECORD_LENGTH) - int(C.RECORD_LENGTH * 0.66)
+            tr = 2600.0 + self._rng.normal(0.0, _NOISE_COUNTS, C.RECORD_LENGTH)
+            tr -= 1200.0 * np.exp(-0.5 * (t / 6.0) ** 2)
+            for gr, g in enumerate(cfg.groups):
+                if g.enabled:
+                    samples[16 + gr] = np.clip(tr, 0, C.ADC_MAX).astype(np.float32)
         self._index += 1
         # A rotating trigger cell, so tc-dependent code sees realistic variety.
         tc = (self._index * 37) % 1024

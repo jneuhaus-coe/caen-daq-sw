@@ -157,8 +157,15 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
             rn = None                # a mistyped number falls back to inferred
         if rn is not None and rn < 1:
             rn = None
+        me = p.get("max_events")
+        try:
+            me = int(me) if me not in (None, "") else None
+        except (TypeError, ValueError):
+            me = None
+        if me is not None and me < 1:
+            me = None
         r = engine.start_recording((p.get("name") or "").strip(),
-                                   bool(p.get("timestamp", True)), rn)
+                                   bool(p.get("timestamp", True)), rn, me)
         return {**r, "status": engine.status()}
 
     @app.post("/api/rec/stop")
