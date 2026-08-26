@@ -26,6 +26,11 @@ export const api = {
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
+  trigger: (count: number, rateHz: number) =>
+    fetch("/api/trigger", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count, rate_hz: rateHz }),
+    }).then(j<{ ok: boolean; error?: string; queued?: number; status: Status }>),
 
   getDisplay: () => fetch("/api/display").then(j<DisplayPrefs>),
   setDisplay: (d: DisplayPrefs) =>

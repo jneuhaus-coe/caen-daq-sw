@@ -122,6 +122,19 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(row).toHaveCount(0);
 });
 
+test("the Fire button queues test triggers and events arrive", async ({ page }) => {
+  const before = (await (await page.request.get("/api/status")).json()).events_seen;
+  await page.locator(".test-trigger input").fill("5");
+  await page.locator(".test-trigger button", { hasText: "Fire" }).click();
+  await expect(page.getByText(/Firing 5 test triggers/)).toBeVisible();
+  // Firing auto-starts acquisition; the queued triggers become events.
+  await expect
+    .poll(async () => (await (await page.request.get("/api/status")).json()).events_seen,
+          { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(before + 5);
+  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+});
+
 test("overlay mode paints a density pile and the choice persists", async ({ page }) => {
   // Acquire so single-event traces flow (the fake board emits ~5/s).
   await page.getByRole("button", { name: /Start Acquisition/ }).click();

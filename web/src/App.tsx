@@ -38,6 +38,7 @@ export function App() {
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
   // into a density picture. Persisted with the rest of the display state.
   const [waveMode, setWaveMode] = useState<"avg" | "overlay">("avg");
+  const [testN, setTestN] = useState("100");
   const saveTimer = useRef<number | undefined>(undefined);
   const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
@@ -159,6 +160,15 @@ export function App() {
 
   const start = async () => setStatus(await api.start());
   const stop = async () => setStatus(await api.stop());
+  const fireTest = async () => {
+    // The bench source: the 742 has no channel self-trigger, so with nothing
+    // on TRG-IN/TR0 this is how events happen. Starts acquisition on its own.
+    const n = Math.max(1, Math.round(Number(testN) || 100));
+    const r = await api.trigger(n, 10);
+    setStatus(r.status);
+    if (!r.ok) push("err", "Could not fire test triggers", [r.error ?? ""]);
+    else push("ok", `Firing ${r.queued} test triggers at 10 Hz`);
+  };
   const startRec = async () => {
     const n = runNo.trim() === "" ? null : Number(runNo);
     const r = await api.recStart(runName, stampRun,
@@ -298,6 +308,18 @@ export function App() {
           <div className="card">
             <h2>Trigger rate</h2>
             <RateStrip tele={tele} />
+            <div className="test-trigger"
+              title="Software triggers - the bench source when nothing external can trigger the board. Starts acquisition if it is not running.">
+              <button onClick={fireTest} disabled={!connected}>Fire</button>
+              <input type="number" min={1} value={testN}
+                disabled={!connected}
+                onChange={(e) => setTestN(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") fireTest(); }} />
+              <span className="muted">test triggers @ 10 Hz</span>
+              {status?.sw_triggers_pending ? (
+                <span className="pending mono">{status.sw_triggers_pending} left</span>
+              ) : null}
+            </div>
           </div>
           <Collapsible title="Unit Settings" defaultOpen>
             <SettingsList defs={catalog.unit} geom={catalog.geometry}
