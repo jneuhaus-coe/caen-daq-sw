@@ -71,12 +71,12 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
       <h2>Calibration</h2>
       <div className="calib-btns">
         <button disabled={!connected || busy || recording} onClick={() => run("baseline")}
-          title="Software triggers; every channel's baseline (TR0 too) is servoed to the window centre. Needs no signal.">
-          Auto-baseline
+          title="Software triggers; every channel's baseline (TR0 too) is servoed to the window centre. The setup-day tool: works on a dark bench, recovers railed channels, flags sick ones.">
+          Center baselines <span className="calib-note">no signal needed</span>
         </button>
         <button disabled={!connected || busy || recording} onClick={() => run("fit")}
           title="Needs real triggers. Measures each channel's actual pulse excursions - afterpulses of either sign included - and places the baseline so everything fits in the window with margin.">
-          Fit to signal
+          Fit to pulses <span className="calib-note">needs triggers</span>
         </button>
         <label className="calib-events"
           title="Triggered events per fit measurement. It waits however long they take; it only stops if nothing triggers for 30 s.">

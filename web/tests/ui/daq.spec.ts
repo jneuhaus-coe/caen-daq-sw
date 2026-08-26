@@ -180,7 +180,7 @@ test("auto-baseline centers a mis-set channel from the UI", async ({ page }) => 
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset)
     .toBeGreaterThan(40000);
 
-  await page.locator(".calib-btns button", { hasText: "Auto-baseline" }).click();
+  await page.locator(".calib-btns button", { hasText: "Center baselines" }).click();
   await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
   const c = await cfg(page);
   expect(Math.abs(c.channels[0].dc_offset - 32768)).toBeLessThanOrEqual(300);
