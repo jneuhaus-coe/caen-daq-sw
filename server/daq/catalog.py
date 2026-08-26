@@ -171,16 +171,28 @@ BANK_SETTINGS = [
              "is no per-channel enable.\n\n"
              "Disabling a bank you are not using cuts readout time and file "
              "size."},
+    # The TR input has its own DAC calibrations, distinct from the channels'.
+    # lsb_v/zero_dac drive the UI's volts conversion; the numbers are the
+    # measured ones from the group's original DAQ (Dec21_RADiCAL daq.cc):
+    # threshold mV ~ (DAC - 25448) * 0.0329, offset mV ~ -(DAC - 33540) * 0.0466.
     {"key": "fast_trigger_threshold", "label": "TR threshold", "type": "volts",
+     "lsb_v": 3.29e-5, "zero_dac": 25448,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerThreshold",
      "help": "Level the TR input must cross to fire the fast trigger.\n\n"
              "Set it well inside your pulse amplitude but clear of the "
-             "baseline noise."},
+             "baseline noise.\n\n"
+             "On the DT5742B both banks configure the same TR0 input - keep "
+             "them equal. Volts here use the TR path's measured calibration "
+             "(0.0329 mV per DAC step, zero at 25448)."},
     {"key": "fast_trigger_dc_offset", "label": "TR DC offset", "type": "volts",
+     "lsb_v": -4.66e-5, "zero_dac": 33540,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerDCOffset",
-     "help": "Shifts the TR input's baseline so the threshold has room to sit.\n\n"
-             "Leave it at midscale for NIM and other negative pulses; raise "
-             "it for positive signals."},
+     "help": "Shifts the TR input's own baseline so the threshold has room "
+             "to sit.\n\n"
+             "Leave it near midscale for NIM and other negative pulses; "
+             "raise it for positive signals. Volts use the TR path's "
+             "measured calibration (-0.0466 mV per DAC step, zero at "
+             "33540)."},
 ]
 
 CHANNEL_SETTINGS = [

@@ -34,6 +34,12 @@ test("unit settings: required first, optional gated behind checkboxes", async ({
   await expect(grid.locator(".setting-row.optional").first()).toBeVisible();
 });
 
+test("TR threshold is shown in TR-calibrated volts", async ({ page }) => {
+  // Fake board default threshold 20000: (20000 - 25448) * 0.0329 mV = -179 mV.
+  const row = page.locator(".setting-row", { hasText: "TR threshold" }).first();
+  await expect(row.locator('input[type="number"]')).toHaveValue("-0.179");
+});
+
 test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
   // Customize "Dump header" (default off), then uncheck the row: the value
   // must return to the default ON THE SERVER, not merely in the form.

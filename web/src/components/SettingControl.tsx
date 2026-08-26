@@ -55,6 +55,28 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
   }
 
   if (def.type === "volts") {
+    // A setting with its own calibration (the TR path) converts linearly by
+    // lsb_v/zero_dac; the channel-input model is the default. Either way the
+    // wire value is a 16-bit DAC word and the bounds are its endpoints.
+    if (def.lsb_v != null && def.zero_dac != null) {
+      const k = def.lsb_v, z = def.zero_dac;
+      const ends = [(0 - z) * k, (0xFFFF - z) * k];
+      const lo = Math.min(...ends), hi = Math.max(...ends);
+      return (
+        <span className="field">
+          <BlurInput
+            type="number" step={0.001} min={lo} max={hi} selectOnFocus
+            disabled={disabled}
+            value={((Number(value ?? z) - z) * k).toFixed(3)}
+            onCommit={(v) => {
+              const volts = clamp(Number(v), lo, hi);
+              onChange(Math.min(0xFFFF, Math.max(0, Math.round(z + volts / k))));
+            }}
+          />
+          <span className="unit">V</span>
+        </span>
+      );
+    }
     const limit = geom.dc_offset_range_v / 2;
     return (
       <span className="field">

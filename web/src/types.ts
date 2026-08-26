@@ -13,6 +13,11 @@ export interface SettingDef {
   depends_on?: string;
   values_by_freq?: Record<string, { pct: number; ns: number }[]>;
   record_ns_by_freq?: Record<string, number>;
+  /** For type "volts": a linear DAC<->volts calibration of the setting's own
+   *  path (volts per DAC LSB, signed, and the DAC word that reads 0 V).
+   *  Absent means the channel-input model. */
+  lsb_v?: number;
+  zero_dac?: number;
   /** Must be deliberately chosen for every run; listed before the optional
    *  settings, which sit behind a per-setting checkbox. */
   required?: boolean;
