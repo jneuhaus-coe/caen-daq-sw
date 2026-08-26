@@ -11,7 +11,11 @@
 * { box-sizing: border-box; }
 body, html, #root { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 13.5px/1.45 system-ui, -apple-system, sans-serif; }
-.loading { display: grid; place-items: center; height: 100vh; color: var(--muted); }
+.loading {
+  display: grid; place-items: center; align-content: center; gap: 8px;
+  height: 100vh; padding: 24px; text-align: center; color: var(--muted);
+}
+.loading .err { color: var(--orange); font-size: 12px; max-width: 60ch; }
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 .muted { color: var(--muted); font-size: 12px; }
 
@@ -242,22 +246,10 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .rate-y.zero { bottom: 3px; }
 
 /* channel inspector */
-.editor-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.editor-head .g { color: #6e7681; font-size: 11px; }
-.editor-stats { display: flex; gap: 12px; margin: 6px 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.editor-stats b { color: var(--text); }
-.editor-dc { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.editor-dc label { font-size: 12px; color: var(--muted); }
-.editor-dc input { width: 90px; }
-.fan-btns { display: flex; gap: 6px; margin-left: auto; }
-
 /* banks */
 .banks { display: flex; flex-direction: column; gap: 10px; }
 .bank { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .bank.on { border-color: #2c4a63; }
-.bank-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.switch { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-.bank-ch { color: #6e7681; font-size: 11px; font-family: ui-monospace, monospace; }
 
 /* settings list */
 .settings-grid { display: flex; flex-direction: column; gap: 9px; }
@@ -354,7 +346,14 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 
 /* collapsible */
-.collapse-head { display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
+.collapse-head { display: flex; align-items: center; gap: 7px; user-select: none; }
+/* A real <button> for keyboard reach, wearing the heading's clothes. */
+.collapse-toggle {
+  display: flex; align-items: center; gap: 7px; flex: 1;
+  padding: 0; background: none; border: none; border-radius: 4px;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.collapse-toggle:hover:not(:disabled) { background: none; border-color: transparent; color: var(--text); }
 .chevron { display: inline-block; transition: transform .12s; color: var(--muted); }
 .chevron.open { transform: rotate(90deg); }
 .head-right { margin-left: auto; }

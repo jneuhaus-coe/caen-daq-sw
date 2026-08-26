@@ -158,69 +158,93 @@ class AcquisitionEngine:
                    or g.fast_trigger_threshold != o.fast_trigger_threshold
                    for g, o in zip(cfg.groups, cur.groups))
 
-    def set_config(self, cfg: BoardConfig) -> BoardConfig:
-        """Push to the board and adopt what it reports back. Returns the actual
-        config; anything the board refused lands in the error list.
+    def set_config(self, cfg: BoardConfig) -> tuple[BoardConfig, list[str]]:
+        """Push to the board and adopt what it reports back.
+
+        Returns (actual config, errors from this call). The errors are returned
+        rather than left for the caller to recover from `status()`: that list is
+        a capped ring, so once it is full a diff of it reports no errors at all
+        and a refused write reads as a success.
 
         A DAC-backed change while acquiring re-arms automatically (stop,
         write, start) - the only way it takes analog effect - and is refused
         outright while recording, where a mid-run baseline shift would
-        corrupt the data with a straight face."""
+        corrupt the data with a straight face.
+        """
         if not self._opened or self._backend is None:
             # Nothing was sent anywhere. Returning the requested config here
             # would have the UI show - and confirm - a value the unit never
             # received, and it would be discarded anyway the moment we reopen
             # and read the unit's own settings.
+            err = "no unit connected: settings were not applied"
             log.warning("settings not applied: no unit connected")
-            self._record_error("no unit connected: settings were not applied")
+            self._record_error(err)
             with self._lock:
-                return self._cfg
+                return self._cfg, [err]
 
         rearm = False
         if self._running.is_set() and self._dac_backed_changed(cfg):
             if self._writer is not None:
-                self._record_error("DC offsets and TR levels cannot change "
-                                   "during a recording - stop it first")
+                err = ("DC offsets and TR levels cannot change "
+                       "during a recording - stop it first")
+                self._record_error(err)
                 with self._lock:
-                    return self._cfg
+                    return self._cfg, [err]
             rearm = True
             self.stop()
 
-        errors: list[str] = []
+
         with logsetup.step(log, "Writing settings to the unit") as writing:
             try:
-                cfg, errors = self._backend.write_settings(cfg)
+                actual, errors = self._backend.write_settings(cfg)
             except Exception as e:
-                errors = [f"write settings: {e}"]
+                # The write blew up part-way, so what the board now holds is
+                # unknown. Keeping the requested config would show - and
+                # confirm - settings that may never have landed.
+                with self._lock:
+                    actual = self._cfg
+                errors = [f"write settings: {e}; showing the last confirmed settings"]
             for e in errors:
                 log.warning("%s%s", "  ", e)
                 self._record_error(e)
             writing.done(f"{len(errors)} settings refused or read back wrong"
                          if errors else "All settings accepted and read back")
         with self._lock:
-            self._cfg = cfg
+            self._cfg = actual
         if rearm:
             self.start()               # the arm is what loads the DACs
-        return cfg
+        return actual, errors
 
-    def start(self):
+    def start(self) -> bool:
+        """Arm the board and begin reading out. True if acquisition is running.
+
+        Every failure here is refused, never raised: an exception through the
+        API produces a full ASGI traceback in the log and a 500 in the UI,
+        neither of which says anything the error list does not.
+        """
         if self._running.is_set():
-            return
+            return True
         with logsetup.step(log, "Starting acquisition") as starting:
             if not self._opened:
                 try:
                     self.open()
                 except Exception as e:
-                    # Refuse rather than raise: with no unit there is nothing to
-                    # acquire, and a traceback through the API tells the
-                    # operator nothing the badge does not already say.
                     starting.done("Not started: no unit connected")
                     self._record_error(f"start: {e}")
-                    return
+                    return False
             with self._lock:
                 cfg = self._cfg
             with logsetup.step(log, "Applying settings to the unit") as applying:
-                actual, cfg_errs = self._backend.configure(cfg)
+                try:
+                    actual, cfg_errs = self._backend.configure(cfg)
+                except Exception as e:
+                    # Reset() has already wiped the board by the time most of
+                    # configure() can fail, so say that rather than let the
+                    # caller assume the unit is untouched.
+                    applying.done(f"Could not apply them: {e}")
+                    self._record_error(f"configure: {e}")
+                    starting.done("Not started: the unit would not take its settings")
+                    return False
                 for e in cfg_errs:
                     log.warning("%sRefused: %s", "  ", e)
                     self._record_error(e)
@@ -230,12 +254,20 @@ class AcquisitionEngine:
                 self._cfg = actual
             self._events_seen = 0      # Count reflects this acquisition run
             self._rate.reset()
-            self._backend.start()
+            try:
+                self._backend.start()
+            except Exception as e:
+                logsetup.did(log, "Arming the board", f"Refused: {e}",
+                             level=logging.ERROR)
+                self._record_error(f"arm: {e}")
+                starting.done("Not started: the board would not arm")
+                return False
             logsetup.did(log, "Arming the board", "Ok")
             self._running.set()
             self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
             self._thread.start()
             starting.done("Acquisition running")
+            return True
 
     def collect_stats(self, events: int, fire_sw: bool,
                       stall_s: float = 30.0,
@@ -325,22 +357,36 @@ class AcquisitionEngine:
             self._sw_pending = 0        # owed triggers die with the acquisition
         with logsetup.step(log, "Stopping acquisition") as stopping:
             self._running.clear()
+            # Before the join, not after: this clears the writer, so the loop
+            # stops writing at once and its own end-of-run cleanup (which is
+            # written for a LOST board) finds nothing left to report.
+            self.stop_recording()
             if self._thread:
                 self._thread.join(timeout=2.0)
-            self.stop_recording()
-            try:
-                self._backend.stop()
-            except Exception as e:
-                log.error("%sThe board would not stop: %s", "  ", e)
-                self._record_error(f"stop: {e}")
-            stopping.done(f"Acquisition stopped after {self._events_seen} events")
+            halted = True
+            if self._backend is not None:
+                try:
+                    self._backend.stop()
+                except Exception as e:
+                    halted = False
+                    log.error("%sThe board would not stop: %s", "  ", e)
+                    self._record_error(f"stop: {e}")
+            stopping.done(
+                f"Readout stopped after {self._events_seen} events"
+                + ("" if halted else "; the board is still armed"))
 
     def close(self):
         self.stop()
         if self._backend and self._opened:
-            self._backend.close()
-            logsetup.did(log, "Closing the digitizer", "Ok")
-            self._opened = False
+            try:
+                self._backend.close()
+                logsetup.did(log, "Closing the digitizer", "Ok")
+            except Exception as e:
+                logsetup.did(log, "Closing the digitizer", f"Failed: {e}",
+                             level=logging.ERROR)
+                self._record_error(f"close: {e}")
+            finally:
+                self._opened = False
 
     # ---------- connection health ----------
     def probe(self) -> bool:
@@ -434,8 +480,12 @@ class AcquisitionEngine:
         self._rec_limit = max(1, int(max_events)) if max_events else None
         with logsetup.step(log, f"Starting a recording named {name!r} "
                                 f"(run {run_number})") as rec:
-            if not self._running.is_set():
-                self.start()
+            # Acquisition must actually be running, or this opens a run that can
+            # never receive an event and reports it as a success.
+            if not self._running.is_set() and not self.start():
+                rec.done("Not started: acquisition would not start")
+                return {"ok": False,
+                        "error": "acquisition would not start - see the errors below"}
             try:
                 run_id, path = runs.create(name, timestamp)
             except FileExistsError as e:
@@ -443,6 +493,10 @@ class AcquisitionEngine:
                 return {"ok": False,
                         "error": f"a run named {e.args[0]!r} already exists - "
                                  f"rename it or switch the timestamp on"}
+            except OSError as e:
+                rec.done(f"Not started: could not create the run directory: {e}")
+                self._record_error(f"record: {e}")
+                return {"ok": False, "error": f"could not create the run directory: {e}"}
             with self._lock:
                 cfg = self._cfg
             writer = make_writer(path, run_id, cfg.output_format, run_number)
@@ -450,6 +504,10 @@ class AcquisitionEngine:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)
             except Exception as e:
+                # The directory exists but holds nothing; leaving it behind puts
+                # an empty run in the listing that was never recorded.
+                runs.discard_empty(run_id)
+                rec.done(f"Not started: could not open the run files: {e}")
                 self._record_error(f"record: {e}")
                 return {"ok": False, "error": str(e)}
             rec.done(f"Recording to {run_id}")
@@ -477,6 +535,22 @@ class AcquisitionEngine:
 
     # ---------- readout loop ----------
     def _loop(self):
+        try:
+            self._read_loop()
+        except Exception as e:
+            # This thread has no owner to raise into. Left unhandled, it died in
+            # silence: events stopped arriving while the UI went on saying
+            # "acquiring", and nothing anywhere said why.
+            log.exception("The readout thread stopped unexpectedly")
+            self._record_error(f"readout stopped: {e}")
+            self._running.clear()
+        finally:
+            if self._writer is not None:
+                self._end_recording_from_loop(
+                    "board stopped responding" if not self._opened
+                    else "readout stopped")
+
+    def _read_loop(self):
         fails = 0
         while self._running.is_set():
             self._fire_due_software_trigger()
@@ -506,20 +580,38 @@ class AcquisitionEngine:
                 col = self._stats_col
                 if col is not None:
                     col.add(ev)
-                if self._writer:
-                    self._writer.write(ev)
-                    self._recorded += 1
-                    if self._rec_limit and self._recorded >= self._rec_limit:
-                        # The bounded capture is complete: close the run and
-                        # keep acquiring, so the operator can keep watching.
-                        self.stop_recording()
+                # A write failure is a DISK failure. Reporting it as a read
+                # error blamed the board for a full or unwritable filesystem,
+                # and ten of them halted a perfectly healthy acquisition.
+                writer = self._writer
+                if writer is not None:
+                    try:
+                        writer.write(ev)
+                        self._recorded += 1
+                    except Exception as e:
+                        self._end_recording_from_loop(f"could not write: {e}")
+                    else:
+                        if self._rec_limit and self._recorded >= self._rec_limit:
+                            # The bounded capture is complete: close the run and
+                            # keep acquiring, so the operator can keep watching.
+                            self.stop_recording()
             self._rate.add(len(events))
-        if not self._opened and self._writer:   # bailed out on a lost board
-            try:
-                self._writer.close()
-            except Exception:
-                pass
-            self._writer = None
+
+    def _end_recording_from_loop(self, why: str):
+        """Close a recording from the readout thread and say why it stopped."""
+        w, run_id = self._writer, self._run_id
+        self._writer = None            # first: nothing else tries to write
+        if w is None:
+            return
+        try:
+            w.close()
+        except Exception as e:
+            self._record_error(f"record close: {e}")
+        self._record_error(f"recording {run_id!r} cut short: {why}")
+        log.error("Recording %r stopped after %d events: %s",
+                  run_id, self._recorded, why)
+        self._run_id = None
+        self._run_started = None
 
     def _record_error(self, msg: str):
         with self._lock:

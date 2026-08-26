@@ -63,6 +63,21 @@ def focus_existing_window(title: str = WINDOW_TITLE) -> bool:
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = (proc_type, wintypes.LPARAM)
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.IsIconic.argtypes = (wintypes.HWND,)
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+        user32.ShowWindow.restype = wintypes.BOOL
+        user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+
         needle = title.lower()
         found = []
 
@@ -111,8 +126,12 @@ def open_ui(url: str, reuse: bool = True) -> str:
         except OSError:
             pass                              # fall through to the plain browser
     import webbrowser
-    webbrowser.open(url)
-    return "browser"
+    if webbrowser.open(url):
+        return "browser"
+    # Headless boxes and locked-down desktops have no browser to hand. Saying
+    # "browser" here claimed a window that is not there; the URL is the useful
+    # thing to report instead.
+    return f"no browser could be opened - visit {url}"
 
 
 def _server_argv(host: str, port: int, no_open: bool) -> list:

@@ -13,12 +13,19 @@ import os
 import threading
 from typing import Callable, Optional
 
+from . import logsetup
+
+log = logsetup.get("daq.tray")
+
 _GREY = (128, 134, 139)
 _GREEN = (61, 174, 99)
 _RED = (211, 63, 63)
 _TRACE = (255, 255, 255)
 
 _POLL_S = 1.0
+
+# Shell_NotifyIcon's szTip is 128 wchars including the terminator.
+_MAX_TITLE = 127
 
 
 def available() -> bool:
@@ -58,6 +65,13 @@ def _icon_image(color, size: int = 256):
     return img
 
 
+def _fit(text: str) -> str:
+    """Trim to what a tray tooltip can hold, keeping the end (the event count)."""
+    if len(text) <= _MAX_TITLE:
+        return text
+    return text[:_MAX_TITLE - 1] + "\u2026"
+
+
 def _summary(status: dict) -> tuple:
     """(colour, one-line description) for the current state."""
     board = status.get("board") or {}
@@ -69,12 +83,18 @@ def _summary(status: dict) -> tuple:
     who = f"{name} S/N {serial}" if serial else name
 
     if status.get("recording"):
+        # A run name can be 60 characters plus a timestamp, which on its own
+        # overruns the tooltip buffer - so shorten the name, not the state.
         run = status.get("run_id") or "run"
         events = status.get("recorded") or 0
-        return _RED, f'{who} — recording "{run}" · {events:,} events'
+        tail = f'" \u00b7 {events:,} events'
+        room = _MAX_TITLE - len(who) - len(" \u2014 recording \"") - len(tail)
+        if room > 8 and len(run) > room:
+            run = run[:room - 1] + "\u2026"
+        return _RED, _fit(f'{who} \u2014 recording "{run}{tail}')
     if status.get("running"):
-        return _GREEN, f"{who} — acquiring"
-    return _GREEN, f"{who} — idle"
+        return _GREEN, _fit(f"{who} \u2014 acquiring")
+    return _GREEN, _fit(f"{who} \u2014 idle")
 
 
 def _confirm_quit(run_id: str, events: int) -> bool:
@@ -150,9 +170,8 @@ def run(engine, url: str, shutdown: Callable[[], None],
 
     Must be called on the main thread; the server runs in a background thread.
     """
-    import pystray
-
     state = {"status": engine.status(), "text": "", "stop": False, "dialog": False}
+    stopping = threading.Event()
 
     def status() -> dict:
         return state["status"]
@@ -171,6 +190,7 @@ def run(engine, url: str, shutdown: Callable[[], None],
         s = status()
         if not s.get("recording"):
             state["stop"] = True
+            stopping.set()
             icon.stop()
             return
 
@@ -186,6 +206,7 @@ def run(engine, url: str, shutdown: Callable[[], None],
             if agreed:
                 engine.stop_recording()
                 state["stop"] = True
+                stopping.set()
                 icon.stop()
 
         threading.Thread(target=ask, daemon=True).start()
@@ -212,8 +233,8 @@ def run(engine, url: str, shutdown: Callable[[], None],
                     icon.update_menu()
                     last = (colour, text)
             except Exception:
-                pass          # a poll failure must never take the tray down
-            threading.Event().wait(_POLL_S)
+                log.debug("tray poll failed", exc_info=True)
+            stopping.wait(_POLL_S)
 
     threading.Thread(target=poll, daemon=True).start()
     icon.run()

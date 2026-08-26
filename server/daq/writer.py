@@ -17,9 +17,13 @@ import json
 import os
 import struct
 import time
+
 import numpy as np
 
 from .backend.base import Event
+from . import logsetup
+
+log = logsetup.get("daq.writer")
 
 
 class Writer(abc.ABC):
@@ -56,17 +60,19 @@ def write_run_metadata(directory: str, cfg, run_name: str,
 
 def stamp_run_end(directory: str, events: int) -> None:
     """Final event count into the sidecar, so a listing can show it without
-    opening every data file."""
+    opening every data file. Losing it only costs the listing an event count,
+    so it must never take a close down - but it is worth a line in the log,
+    because a run that will not stamp usually cannot be written to either."""
+    path = os.path.join(directory, "run_metadata.json")
     try:
-        path = os.path.join(directory, "run_metadata.json")
         with open(path) as f:
             meta = json.load(f)
         meta["events"] = events
         meta["ended"] = time.time()
         with open(path, "w") as f:
             json.dump(meta, f, indent=2)
-    except OSError:
-        pass
+    except (OSError, ValueError) as e:
+        log.warning("Could not stamp the event count into %s: %s", path, e)
 
 
 class NullWriter(Writer):
@@ -88,17 +94,24 @@ class WaveDumpWriter(Writer):
         self._events = 0
 
     def open(self, cfg) -> None:
-        self._cfg = cfg
         self._ascii = (cfg.output_format.lower() == "ascii")
         self._header = bool(cfg.output_header)
         os.makedirs(self._dir, exist_ok=True)
         ext = "txt" if self._ascii else "dat"
         mode = "w" if self._ascii else "wb"
         self._files = {}
-        for ch in cfg.enabled_channels():
-            path = os.path.join(self._dir, f"wave_{ch}.{ext}")
-            self._files[ch] = open(path, mode)
-        write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
+        try:
+            for ch in cfg.enabled_channels():
+                path = os.path.join(self._dir, f"wave_{ch}.{ext}")
+                self._files[ch] = open(path, mode)
+            write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
+            self._cfg = cfg         # last: close() takes this as "there is a run"
+        except OSError:
+            # Do not leave half a run open: the caller discards the directory,
+            # and on Windows it cannot remove files we still hold. With _cfg
+            # still unset, close() knows there is no metadata to stamp.
+            self.close()
+            raise
 
     def write(self, ev: Event) -> None:
         self._events += 1
@@ -112,14 +125,16 @@ class WaveDumpWriter(Writer):
                 f.write("\n".join(f"{v:.6f}" for v in wave))
                 f.write("\n")
             else:
+                payload = wave.astype("<f4").tobytes()
                 if self._header:
-                    # WaveDump binary header: 6 x uint32
-                    event_size = 24 + wave.nbytes
+                    # WaveDump binary header: 6 x uint32. The size must describe
+                    # the bytes that follow it, which are always 4 per sample -
+                    # not wave.nbytes, which is whatever dtype arrived.
                     f.write(struct.pack(
-                        "<6I", event_size, self._cfg_board_id(), 0, ch,
+                        "<6I", 24 + len(payload), self._cfg_board_id(), 0, ch,
                         ev.index & 0xFFFFFFFF, ev.trigger_time_tag & 0xFFFFFFFF,
                     ))
-                f.write(wave.astype("<f4").tobytes())
+                f.write(payload)
 
     def _write_ascii_header(self, f, ch, ev, n):
         f.write(f"Record Length: {n}\n")
@@ -134,11 +149,15 @@ class WaveDumpWriter(Writer):
         return 0
 
     def close(self) -> None:
-        for f in self._files.values():
+        for ch, f in self._files.items():
             try:
                 f.close()
-            except Exception:
-                pass
+            except OSError as e:
+                # A failed close means buffered samples never reached the disk.
+                # Keep closing the rest, but do not lose the fact that this
+                # channel's file is short.
+                log.error("wave file for channel %d did not close cleanly, so its "
+                          "last events may be missing: %s", ch, e)
         self._files = {}
         if self._cfg is not None:
             stamp_run_end(self._dir, self._events)

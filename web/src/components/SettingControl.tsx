@@ -70,7 +70,8 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
           min={lo} max={hi} selectOnFocus
           disabled={disabled}
           value={defDacToVolts(def, Number(value ?? mid), geom).toFixed(3)}
-          onCommit={(v) => onChange(defVoltsToDac(def, clamp(Number(v), lo, hi), geom))}
+          onCommit={(v) => onChange(defVoltsToDac(def,
+            clamp(num(v, defDacToVolts(def, Number(value ?? mid), geom)), lo, hi), geom))}
         />
         <span className="unit">V</span>
       </span>
@@ -83,9 +84,19 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
         type="number" min={def.min} max={def.max} selectOnFocus
         disabled={disabled}
         value={value ?? 0}
-        onCommit={(v) => onChange(clamp(Number(v), def.min, def.max))}
+        // The min/max attributes only drive the spinner - they do not stop
+        // anything being typed. Clamping here keeps a value the catalog already
+        // says is out of range from being sent for the board to reject.
+        onCommit={(v) => onChange(clamp(num(v, Number(value ?? 0)), def.min, def.max))}
       />
       {def.unit ? <span className="unit">{def.unit}</span> : null}
     </span>
   );
+}
+
+/** A finite number, or `fallback`. NaN used to reach JSON.stringify, arrive at
+ *  the server as null, and fail there with a type error instead of a message. */
+function num(raw: string, fallback: number) {
+  const v = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(v) ? v : fallback;
 }

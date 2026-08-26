@@ -118,17 +118,21 @@ if ($status) {
         Warn "A run is recording: $($status.run_id)"
         Die  'Stop the recording, then re-run this installer.'
     }
-    Say "Stopping the running server (pid $($rt.pid) on port $($rt.port))"
-    if ($rt.pid) {
-        # Confirm the pid is still one of ours before killing it: pids are
-        # recycled, and the record may have outlived the process that wrote it.
-        $target = @(Get-DaqProcesses -Roots $searchRoots) | Where-Object { $_.Id -eq $rt.pid }
-        if ($target) {
-            Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue
-        } else {
-            Warn "pid $($rt.pid) is no longer a daq process; not killing it."
-        }
+    # A server answered, so one IS running. Confirm the pid is still one of ours
+    # before killing it: pids are recycled, the record outlives the process that
+    # wrote it, and on a host with a port forward the server that answered may
+    # not be on this machine at all.
+    $target = if ($rt.pid) {
+        @(Get-DaqProcesses -Roots $searchRoots) | Where-Object { $_.Id -eq $rt.pid }
+    } else { $null }
+    if (-not $target) {
+        Warn "A daq server is answering on port $($rt.port), but pid $($rt.pid) is not"
+        Warn 'a daq process on this machine - it may be reached through a port forward,'
+        Warn 'or the record may have outlived it.'
+        Die  'Stop that server where it runs, then re-run this installer.'
     }
+    Say "Stopping the running server (pid $($rt.pid) on port $($rt.port))"
+    Stop-Process -Id $rt.pid -Force -ErrorAction SilentlyContinue
     $restartHint = $true
 } else {
     # No usable record - fall back to finding it by where it runs from.
@@ -357,7 +361,7 @@ if ($dll) {
 }
 
 # --- 6. What to do next ------------------------------------------------------
-$ver = try { & $daqBin --version 2>$null } catch { $Pkg }
+$ver = try { & $daqBin --version } catch { $Pkg }
 if (-not $ver) { $ver = $Pkg }
 Write-Host ''
 Write-Host "Installed: $ver"

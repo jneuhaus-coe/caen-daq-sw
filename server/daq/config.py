@@ -15,6 +15,33 @@ from dataclasses import dataclass, field, asdict
 
 from . import constants as C
 
+
+def _clamp_int(value, lo: int, hi: int, fallback: int) -> int:
+    """An integer inside [lo, hi], or `fallback` if it is not a number at all.
+
+    Config values reach here from a hand-edited file, a WaveDump file and the
+    browser, so none of them can be trusted to be in range - and an out-of-range
+    one does not stop at the hardware. A bad drs4_frequency used to reach
+    C.sample_period_ns() and raise KeyError inside the telemetry feed, which
+    closed the websocket and left the UI simply not updating.
+    """
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(lo, min(hi, v))
+
+
+def _one_of(value, allowed: tuple[str, ...], fallback: str) -> str:
+    v = str(value).lower() if value is not None else ""
+    return v if v in allowed else fallback
+
+
+CORRECTION_LEVELS = ("auto", "disabled", "manual")
+TRIGGER_EDGES = ("rising", "falling")
+TRIGGER_MODES = ("disabled", "acquisition_only", "extout_only", "acq_and_trgout")
+OUTPUT_FORMATS = ("ascii", "binary")
+
 @dataclass
 class ChannelConfig:
     # Unsigned 16-bit DAC word, matching CAEN_DGTZ_SetChannelDCOffset's uint32_t.
@@ -23,12 +50,24 @@ class ChannelConfig:
     # that prefix is presentation only and never reaches the recording.
     name: str = ""
 
+    def __post_init__(self):
+        self.dc_offset = _clamp_int(self.dc_offset, 0, C.DC_OFFSET_MAX,
+                                    C.DC_OFFSET_MID)
+        self.name = "" if self.name is None else str(self.name)[:64]
+
 
 @dataclass
 class GroupConfig:
     enabled: bool = False
     fast_trigger_threshold: int = 20000     # SetGroupFastTriggerThreshold (TR0/TR1)
     fast_trigger_dc_offset: int = 32768     # SetGroupFastTriggerDCOffset
+
+    def __post_init__(self):
+        self.enabled = bool(self.enabled)
+        self.fast_trigger_threshold = _clamp_int(
+            self.fast_trigger_threshold, 0, C.DC_OFFSET_MAX, 20000)
+        self.fast_trigger_dc_offset = _clamp_int(
+            self.fast_trigger_dc_offset, 0, C.DC_OFFSET_MAX, C.DC_OFFSET_MID)
 
 
 @dataclass
@@ -68,6 +107,25 @@ class BoardConfig:
         default_factory=lambda: [ChannelConfig() for _ in range(C.NUM_CHANNELS)])
 
     def __post_init__(self):
+        # Board-level values are range-checked here rather than at each use: the
+        # rest of the app indexes tables with them, so an out-of-range one is a
+        # crash somewhere far from where it was introduced.
+        freq = _clamp_int(self.drs4_frequency, 0, max(C.DRS4_FREQUENCIES),
+                          C.DEFAULT_DRS4_FREQUENCY)
+        self.drs4_frequency = freq if freq in C.DRS4_FREQUENCIES \
+            else C.DEFAULT_DRS4_FREQUENCY
+        self.record_length = C.RECORD_LENGTH        # fixed by the DRS4
+        self.post_trigger = _clamp_int(self.post_trigger, 0, 100, 0)
+        self.max_events_blt = _clamp_int(self.max_events_blt, 1, 1023, 1023)
+        self.correction_level = _one_of(self.correction_level, CORRECTION_LEVELS, "auto")
+        self.trigger_edge = _one_of(self.trigger_edge, TRIGGER_EDGES, "falling")
+        self.external_trigger = _one_of(self.external_trigger, TRIGGER_MODES,
+                                        "acquisition_only")
+        self.fast_trigger = _one_of(self.fast_trigger, TRIGGER_MODES, "acquisition_only")
+        self.fast_trigger_digitizing = bool(self.fast_trigger_digitizing)
+        self.output_format = _one_of(self.output_format, OUTPUT_FORMATS, "ascii")
+        self.output_header = bool(self.output_header)
+
         self.groups = [g if isinstance(g, GroupConfig) else GroupConfig(**g)
                        for g in self.groups][:C.NUM_GROUPS]
         while len(self.groups) < C.NUM_GROUPS:

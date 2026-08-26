@@ -97,6 +97,69 @@ def test_config_write_is_refused_with_no_unit():
     assert c.get("/api/config").json()["channels"][0]["dc_offset"] == was
 
 
+def test_a_refused_write_is_reported_even_with_a_full_error_log():
+    """The error list is a capped ring. The API used to report a write's errors
+    by diffing it before and after, so once it was full the diff came back empty
+    and a refused write was answered `ok: true` with no errors at all."""
+    eng = AcquisitionEngine()
+    for i in range(80):                       # overflow the 50-entry ring
+        eng._record_error(f"filler {i}")
+    c = TestClient(create_app(eng))
+    cfg = c.get("/api/config").json()
+    cfg["channels"][0]["dc_offset"] = 555
+    r = c.post("/api/config", json=cfg).json()
+    assert r["ok"] is False and r["errors"], "a refused write reported success"
+
+
+def test_config_values_are_range_checked():
+    """Out-of-range values reach here from hand-edited files and the browser. An
+    impossible drs4_frequency used to survive into telemetry and raise KeyError
+    inside the websocket, which just stopped the display with no explanation."""
+    cfg = BoardConfig.from_dict({"drs4_frequency": 9, "post_trigger": 900,
+                                 "max_events_blt": 99999,
+                                 "channels": [{"dc_offset": -5},
+                                              {"dc_offset": "not a number"}],
+                                 "correction_level": "nonsense"})
+    assert cfg.drs4_frequency in C.DRS4_FREQUENCIES
+    assert 0 <= cfg.post_trigger <= 100
+    assert 1 <= cfg.max_events_blt <= 1023
+    assert cfg.channels[0].dc_offset == 0                  # clamped into range
+    assert cfg.channels[1].dc_offset == C.DC_OFFSET_MID    # not a number at all
+    assert cfg.correction_level == "auto"
+    C.sample_period_ns(cfg.drs4_frequency)    # must not raise
+
+
+def test_runs_are_listed_newest_first_whatever_they_are_called():
+    """The listing sorted by directory name under a heading that says newest
+    first, so a run recorded without a timestamp landed wherever its letters
+    fell."""
+    from daq import runs
+    with tempfile.TemporaryDirectory() as d:
+        old_root, runs.DATA_ROOT = runs.DATA_ROOT, d
+        try:
+            for name, started in (("aaa-old", 1000), ("zzz-newest", 3000),
+                                  ("mmm-middle", 2000)):
+                os.makedirs(os.path.join(d, name))
+                with open(os.path.join(d, name, "run_metadata.json"), "w") as f:
+                    json.dump({"started": started, "channels": {}}, f)
+            assert [r["id"] for r in runs.listing()] == \
+                ["zzz-newest", "mmm-middle", "aaa-old"]
+        finally:
+            runs.DATA_ROOT = old_root
+
+
+def test_wavedump_file_can_turn_a_bank_off():
+    """WaveDump enables per channel. Only the "on" half was honoured, so a file
+    that disables every channel of a bank left that bank running."""
+    from daq import configfile
+    cfg, _ = configfile.from_text(
+        "[COMMON]\nENABLE_INPUT YES\n"
+        + "".join(f"[{ch}]\nENABLE_INPUT NO\n" for ch in range(8))
+        + "".join(f"[{ch}]\nENABLE_INPUT YES\n" for ch in range(8, 16)))
+    assert cfg.groups[0].enabled is False, "a bank the file disables must be off"
+    assert cfg.groups[1].enabled is True
+
+
 def test_rate_meter_total_and_last_bucket():
     """Count is a per-run total, and the headline rate is the last COMPLETE
     bucket — the still-filling one always reads low."""
@@ -296,7 +359,7 @@ def test_fake_backend_behaves_like_a_board():
         assert eng.probe() is True and eng.status()["opened"]
         cfg = eng.get_config()
         cfg.channels[0].dc_offset = 41000
-        assert eng.set_config(cfg).channels[0].dc_offset == 41000
+        assert eng.set_config(cfg)[0].channels[0].dc_offset == 41000
         assert eng.fire_software_triggers(3, rate_hz=1000)["ok"]
         deadline = time.time() + 3
         while time.time() < deadline and eng.status()["events_seen"] < 3:
@@ -391,7 +454,7 @@ def test_dac_changes_rearm_while_acquiring_and_refuse_while_recording():
             assert eng.status()["running"]
             cfg = eng.get_config()
             cfg.channels[0].dc_offset = 30000
-            got = eng.set_config(cfg)
+            got, _ = eng.set_config(cfg)
             assert got.channels[0].dc_offset == 30000
             assert eng.status()["running"]           # re-armed, still going
 
@@ -399,8 +462,9 @@ def test_dac_changes_rearm_while_acquiring_and_refuse_while_recording():
             before = len(eng.status()["errors"])
             cfg2 = eng.get_config()
             cfg2.channels[0].dc_offset = 29000
-            got2 = eng.set_config(cfg2)
+            got2, refused = eng.set_config(cfg2)
             assert got2.channels[0].dc_offset == 30000   # refused, unchanged
+            assert refused                               # and says so in the return
             assert len(eng.status()["errors"]) > before
             assert eng.status()["recording"]             # the run survived
             eng.stop_recording()
@@ -687,6 +751,10 @@ if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_decimate,
                test_http_api, test_config_write_is_refused_with_no_unit,
+               test_a_refused_write_is_reported_even_with_a_full_error_log,
+               test_config_values_are_range_checked,
+               test_runs_are_listed_newest_first_whatever_they_are_called,
+               test_wavedump_file_can_turn_a_bank_off,
                test_rate_meter_total_and_last_bucket,
                test_probe_and_reconnect_without_hardware,
                test_software_trigger_is_refused_with_no_unit,

@@ -77,10 +77,10 @@ def _open_board_in_background(engine, wait_s: float) -> threading.Thread:
         try:
             engine.open()
         except Exception:
-            # The step above already logged what failed and why; say only what
-            # it means from here.
-            board_log.info("No unit at startup; the UI will show it disconnected "
-                           "and keep retrying on its own")
+            # The step above logged what failed and why - do not restate it as
+            # "no unit", which is only the most common of several causes.
+            board_log.info("The digitizer is not open (reason above). The UI will "
+                           "show it disconnected and keep retrying on its own")
 
     thread = threading.Thread(target=work, name="board-open", daemon=True)
     thread.start()
@@ -176,8 +176,15 @@ def _serve(args, with_tray: bool) -> int:
                             timeout_graceful_shutdown=10)
     server = _ThreadedServer(config) if with_tray else uvicorn.Server(config)
 
-    runtime.write(args.host, args.port)
-    log.debug("runtime record written to %s", runtime.runtime_path())
+    try:
+        runtime.write(args.host, args.port)
+        log.debug("runtime record written to %s", runtime.runtime_path())
+    except OSError as e:
+        # Only `daq`, `daq stop` and `daq status` need this file. Losing it
+        # costs them the ability to find this server; it costs the server
+        # nothing, so refusing to serve over it would be the wrong trade.
+        log.warning("could not write %s: %s. The server runs, but 'daq stop' and "
+                    "'daq status' will not find it.", runtime.runtime_path(), e)
     _install_shutdown_handler(server)
     if with_tray:
         from . import tray as _tray
@@ -212,11 +219,14 @@ def _serve(args, with_tray: bool) -> int:
     finally:
         with logsetup.step(log, "Shutting down") as stopping:
             runtime.clear()
+            clean = True
             try:
                 engine.close()
             except Exception as e:
+                clean = False
                 log.warning("%sThe digitizer would not close cleanly: %s", "  ", e)
-            stopping.done("Stopped")
+            stopping.done("Stopped" if clean
+                          else "Stopped, but the digitizer did not close cleanly")
     return 0
 
 
@@ -229,9 +239,14 @@ def _launch(args) -> int:
             # directory, an older server that never wrote one. Ask the port
             # itself before concluding nothing is there, or we would start a
             # second server on top of a live one.
-            if runtime.probe(args.port) is not None:
+            status = runtime.probe(args.port)
+            if status is not None:
+                # Take the version from the server that answered. Filling in our
+                # own made the mismatch warning below compare a value with
+                # itself, so an out-of-date server was never reported on this
+                # path - which is exactly the path a crashed record leaves.
                 live = {"url": runtime.url_for(args.host, args.port),
-                        "version": __version__}
+                        "version": status.get("version"), "status": status}
         looking.done(f"Found one at {live['url']}" if live else "No server running")
 
     if live:
@@ -265,8 +280,24 @@ def _launch(args) -> int:
         log.info("It keeps running in the tray after this window closes")
         return 0
 
-    threading.Timer(1.5, launcher.open_ui, args=(url,)).start()
+    # Check the port here, before anything is scheduled: _serve checks it too,
+    # but by then a window would already be on its way to a URL nothing serves.
+    _check_bindable(args.host, args.port)
+    threading.Thread(target=_open_when_ready, args=(args.port, url),
+                     name="open-ui", daemon=True).start()
     return _serve(args, with_tray=False)
+
+
+def _open_when_ready(port: int, url: str) -> None:
+    """Open the window once the server answers - and not at all if it never does.
+
+    A fixed delay opened a browser on a URL that might never serve anything,
+    which is a confusing way to be told the server failed to start.
+    """
+    if launcher.wait_for_server(port, timeout=30.0) is None:
+        log.debug("no window opened: the server never answered on port %s", port)
+        return
+    logsetup.did(log, f"Opening the DAQ at {url}", launcher.open_ui(url))
 
 
 def _wait_for_detached(proc, port: int, timeout: float = 30.0) -> bool:
@@ -312,12 +343,30 @@ def _stop(_args) -> int:
              "Stop the recording first, or use the tray.")
         return 1
 
-    pid = live.get("pid")
     port = live["port"]
+    pid = live.get("pid")
     if not pid:
         _err("the running server did not record its pid; stop it yourself.")
         return 1
     pid = int(pid)
+
+    # Cross-check the two independent claims about who is on that port: the
+    # runtime file, and the server's own answer. The file outlives crashes and
+    # pids get recycled, so when they disagree the pid in the file may belong to
+    # something else entirely - and on a host with a port forward the server
+    # that answered is not even on this machine.
+    recorded, reported = live.get("recorded_pid"), live["status"].get("pid")
+    if reported is None:
+        _say(f"the server on port {port} does not report its pid (it predates "
+             f"this command); trusting the runtime record.")
+    elif recorded is not None and int(recorded) != int(reported):
+        _err(f"the runtime record names pid {recorded}, but the server answering "
+             f"on port {port} says it is pid {reported}.")
+        _err("that record is stale, or the port reaches a server on another "
+             "machine. Refusing to signal either pid.")
+        _err("stop that server where it runs, or delete " + runtime.runtime_path())
+        return 1
+
     try:
         os.kill(pid, 15)
     except OSError as e:

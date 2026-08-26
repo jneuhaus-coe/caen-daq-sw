@@ -34,8 +34,18 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
     setBusy(true);
     try {
       const res = await fetch(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
-      if (!res.ok) setErr((await res.json()).detail ?? "delete failed");
-      else { setConfirming(null); setTyped(""); await load(); }
+      if (res.ok) {
+        setConfirming(null); setTyped(""); await load();
+        return;
+      }
+      // Reading .detail off a body that is not JSON threw inside this try, and
+      // the throw skipped every setErr - so a failed delete showed nothing at
+      // all and read as a dead button.
+      let detail = "";
+      try { detail = (await res.json())?.detail ?? ""; } catch { /* not JSON */ }
+      setErr(detail || `delete failed (${res.status} ${res.statusText})`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not reach the server");
     } finally {
       setBusy(false);
     }

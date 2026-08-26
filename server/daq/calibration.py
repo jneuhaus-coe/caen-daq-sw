@@ -257,7 +257,7 @@ class Calibrator:
                         0, g.fast_trigger_threshold + d_thr)))
             else:
                 cfg.channels[int(s.key)].dc_offset = s.dac
-        got = eng.set_config(cfg)
+        got, _ = eng.set_config(cfg)   # write errors already land in status
         for s in servos:                  # the board's answer is the truth
             s.dac = (got.groups[0].fast_trigger_dc_offset if s.key == TR_KEY
                      else got.channels[int(s.key)].dc_offset)

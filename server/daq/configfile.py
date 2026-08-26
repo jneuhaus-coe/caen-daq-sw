@@ -21,7 +21,7 @@ FORMAT = "dt5742b-daq/config"
 VERSION = 1
 
 # Settings that only take effect when the board is re-armed.
-RESTART_KEYS = {"drs4_frequency", "correction_level", "record_length"}
+RESTART_KEYS = {"drs4_frequency", "correction_level"}
 
 _TRIG = {"DISABLED": "disabled", "ACQUISITION_ONLY": "acquisition_only",
          "ACQUISITION_AND_TRGOUT": "acq_and_trgout", "TRGOUT_ONLY": "extout_only"}
@@ -169,26 +169,25 @@ def _from_wavedump(text: str) -> tuple[BoardConfig, list[str]]:
             if section == "COMMON":
                 _common(cfg, key, val, rest, notes)
             elif section.startswith("TR"):
-                _tr(cfg, section, key, val, notes)
+                _tr(cfg, section, key, val)
             elif section.isdigit():
-                _channel(cfg, int(section), key, val, seen_enable, notes)
+                _channel(cfg, int(section), key, val, seen_enable)
         except (ValueError, IndexError):
             notes.append(f"could not read {key} {val!r}")
 
-    # WaveDump enables per channel; this board enables per bank of 8.
+    # WaveDump enables per channel; this board enables per bank of 8. A bank
+    # named in the file is decided ENTIRELY by that file - on if any of its
+    # channels is on, off if all of them are off. Only taking the "on" half made
+    # a file that disables a bank leave it running.
+    per_bank: dict[int, set] = {}
     for ch, on in seen_enable.items():
-        gr = C.channel_group(ch)
-        if on and not cfg.groups[gr].enabled:
-            cfg.groups[gr].enabled = True
-    if seen_enable:
-        per_bank = {}
-        for ch, on in seen_enable.items():
-            per_bank.setdefault(C.channel_group(ch), set()).add(on)
-        for gr, vals in per_bank.items():
-            if len(vals) > 1:
-                notes.append(
-                    f"bank {gr}: file enables only some of its channels; the DRS4 "
-                    f"digitizes all 8 together, so the whole bank is enabled")
+        per_bank.setdefault(C.channel_group(ch), set()).add(on)
+    for gr, vals in per_bank.items():
+        cfg.groups[gr].enabled = any(vals)
+        if len(vals) > 1:
+            notes.append(
+                f"bank {gr}: file enables only some of its channels; the DRS4 "
+                f"digitizes all 8 together, so the whole bank is enabled")
     return cfg, notes
 
 
@@ -200,7 +199,12 @@ def _common(cfg, key, val, rest, notes):
     elif key == "POST_TRIGGER":
         cfg.post_trigger = max(0, min(100, int(val)))
     elif key == "DRS4_FREQUENCY":
-        cfg.drs4_frequency = int(val)
+        f = int(val)
+        if f in C.DRS4_FREQUENCIES:
+            cfg.drs4_frequency = f
+        else:
+            notes.append(f"DRS4_FREQUENCY {val} ignored: not one of "
+                         + ", ".join(f"{k}={v[0]}" for k, v in C.DRS4_FREQUENCIES.items()))
     elif key == "EXTERNAL_TRIGGER":
         cfg.external_trigger = _TRIG.get(val.upper(), cfg.external_trigger)
     elif key == "FAST_TRIGGER":
@@ -237,7 +241,7 @@ def _common(cfg, key, val, rest, notes):
         notes.append(f"ignored unknown key {key}")
 
 
-def _tr(cfg, section, key, val, notes):
+def _tr(cfg, section, key, val):
     gr = 1 if section.endswith("1") else 0
     if gr >= C.NUM_GROUPS:
         return
@@ -247,7 +251,7 @@ def _tr(cfg, section, key, val, notes):
         cfg.groups[gr].fast_trigger_threshold = max(0, min(C.DC_OFFSET_MAX, int(val)))
 
 
-def _channel(cfg, ch, key, val, seen_enable, notes):
+def _channel(cfg, ch, key, val, seen_enable):
     if ch >= C.NUM_CHANNELS:
         return
     if key == "ENABLE_INPUT":

@@ -73,7 +73,16 @@ def read() -> Optional[dict]:
             record = json.load(f)
     except (OSError, ValueError):
         return None
-    return record if isinstance(record, dict) and record.get("port") else None
+    if not isinstance(record, dict):
+        return None
+    try:
+        port = int(record["port"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    record["port"] = port
+    return record
 
 
 def probe(port: int, host: str = "127.0.0.1", timeout: float = _PROBE_TIMEOUT) -> Optional[dict]:
@@ -82,6 +91,7 @@ def probe(port: int, host: str = "127.0.0.1", timeout: float = _PROBE_TIMEOUT) -
     Returns the status payload, or None if nothing answers or the answer is from
     some other program that merely happens to hold the port.
     """
+    import http.client
     import urllib.error
     import urllib.request
 
@@ -89,7 +99,10 @@ def probe(port: int, host: str = "127.0.0.1", timeout: float = _PROBE_TIMEOUT) -
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             payload = json.loads(r.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError,
+            http.client.HTTPException):
+        # HTTPException covers whatever is on the port not speaking HTTP at all,
+        # which is not an OSError and used to escape as an unhandled traceback.
         return None
     return payload if isinstance(payload, dict) and payload.get("app") == APP_ID else None
 
@@ -108,8 +121,12 @@ def find_server() -> Optional[dict]:
         return None
     return {
         "url": record.get("url") or url_for(record.get("host", "127.0.0.1"), record["port"]),
-        "port": int(record["port"]),
-        "pid": record.get("pid"),
+        "port": record["port"],
+        # The server publishes its own pid; the record's is only a fallback for
+        # an older build. Pids get recycled and the record outlives crashes, so
+        # the one that answered is the one worth acting on.
+        "pid": status.get("pid") or record.get("pid"),
+        "recorded_pid": record.get("pid"),
         "version": status.get("version") or record.get("version"),
         "status": status,
     }
