@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, openTelemetry } from "./api";
 import type { DisplayPrefs } from "./api";
 import { SessionsPanel } from "./components/SessionsPanel";
+import { CalibrationPanel } from "./components/CalibrationPanel";
 import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
@@ -406,6 +407,23 @@ export function App() {
           <Collapsible title="Bank Settings" defaultOpen>
             <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />
           </Collapsible>
+          <CalibrationPanel
+            connected={connected} recording={recording}
+            onError={(title, lines) => push("err", title, lines)}
+            onFinished={async (st) => {
+              // The server steered the DACs underneath the UI: re-adopt what
+              // the board holds now, exactly as after any other write.
+              const cfg = await api.getConfig();
+              setConfig(cfg); confirmed.current = cfg;
+              const bad = st.report.filter((r) => r.status !== "ok");
+              if (st.error) push("err", "Calibration failed", [st.error]);
+              else if (bad.length) {
+                push("warn", "Calibration finished with findings",
+                     bad.map((r) => `${r.channel}: ${r.status}`));
+              } else {
+                push("ok", `Calibration done - ${st.report.length} channels ok`);
+              }
+            }} />
           <SessionsPanel
             recording={recording}
             onSaved={(name) => push("ok", `Session "${name}" saved`)}

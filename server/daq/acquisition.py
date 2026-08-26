@@ -21,6 +21,40 @@ from . import logsetup
 log = logsetup.get("daq.acq")
 
 
+class _StatsCollector:
+    """Accumulates per-channel (baseline, min, max) over the next N events -
+    the calibrator's measuring instrument. Baseline is the median of each
+    event's median, so a pulse in the record does not drag it."""
+
+    def __init__(self, events: int):
+        self.want = events
+        self.seen = 0
+        self.done = threading.Event()
+        self._by_ch: dict[int, dict] = {}
+        self._lock = threading.Lock()
+
+    def add(self, ev) -> None:
+        with self._lock:
+            if self.seen >= self.want:
+                return
+            for ch, wave in ev.samples.items():
+                e = self._by_ch.setdefault(
+                    ch, {"medians": [], "min": float("inf"), "max": float("-inf")})
+                e["medians"].append(float(np.median(wave)))
+                e["min"] = min(e["min"], float(wave.min()))
+                e["max"] = max(e["max"], float(wave.max()))
+            self.seen += 1
+            if self.seen >= self.want:
+                self.done.set()
+
+    def summary(self) -> dict[int, dict]:
+        with self._lock:
+            return {ch: {"baseline": float(np.median(e["medians"])),
+                         "min": e["min"], "max": e["max"],
+                         "n": len(e["medians"])}
+                    for ch, e in self._by_ch.items() if e["medians"]}
+
+
 class AcquisitionEngine:
     def __init__(self, backend_factory=make_backend):
         # Injectable so tests can refuse hardware outright. The default factory
@@ -64,6 +98,11 @@ class AcquisitionEngine:
         self._sw_pending = 0
         self._sw_interval_s = 0.0
         self._sw_next_fire = 0.0
+        # Per-event stats tap for the calibrator: set for the duration of one
+        # measurement, fed by the readout loop, then cleared.
+        self._stats_col: _StatsCollector | None = None
+        from .calibration import Calibrator
+        self.calibrator = Calibrator(self)
 
     # ---------- lifecycle ----------
     def open(self, level: int = logging.INFO):
@@ -159,6 +198,32 @@ class AcquisitionEngine:
             self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
             self._thread.start()
             starting.done("Acquisition running")
+
+    def collect_stats(self, events: int, timeout_s: float,
+                      fire_sw: bool) -> dict[int, dict]:
+        """Per-channel {baseline, min, max} over the next `events` events.
+
+        With fire_sw the engine supplies its own software triggers (the
+        no-signal measurement); without it the events must come from real
+        triggers, and a timeout returns whatever arrived - the caller decides
+        whether that is enough."""
+        col = _StatsCollector(events)
+        with self._lock:
+            self._stats_col = col
+        try:
+            if fire_sw:
+                r = self.fire_software_triggers(events, rate_hz=100.0)
+                if not r.get("ok"):
+                    raise RuntimeError(r.get("error") or "could not fire triggers")
+            elif not self._running.is_set():
+                self.start()
+                if not self._running.is_set():
+                    raise RuntimeError("no unit connected")
+            col.done.wait(timeout_s)
+        finally:
+            with self._lock:
+                self._stats_col = None
+        return col.summary()
 
     def fire_software_triggers(self, count: int = 1, rate_hz: float = 10.0) -> dict:
         """Queue `count` software triggers for the readout loop to fire.
@@ -309,6 +374,10 @@ class AcquisitionEngine:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
             return {"ok": False, "error": "no unit connected"}
+        if self.calibrator.is_active():
+            # A run recorded while the servo is moving baselines is garbage
+            # with a straight face; refuse rather than let it happen.
+            return {"ok": False, "error": "calibration in progress - wait for it"}
         if run_number is None:
             run_number = runs.next_run_number()
         self._rec_limit = max(1, int(max_events)) if max_events else None
@@ -383,6 +452,9 @@ class AcquisitionEngine:
                 for ch, wave in ev.samples.items():
                     self._avg.add(ch, wave, t)
                     self._last[ch] = (ev.index, wave)
+                col = self._stats_col
+                if col is not None:
+                    col.add(ev)
                 if self._writer:
                     self._writer.write(ev)
                     self._recorded += 1

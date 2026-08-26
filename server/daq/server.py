@@ -206,6 +206,20 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         engine.start()
         return engine.status()
 
+    @app.post("/api/calibrate/{mode}")
+    def calibrate(mode: str):
+        """Start a closed-loop calibration: 'baseline' (software triggers,
+        centre everything) or 'fit' (real triggers, fit the pulse in the
+        window). Progress is polled at GET /api/calibrate."""
+        r = engine.calibrator.start(mode)
+        if not r["ok"]:
+            raise HTTPException(409, r["error"])
+        return {**r, "status": engine.status()}
+
+    @app.get("/api/calibrate")
+    def calibrate_status():
+        return engine.calibrator.status()
+
     @app.post("/api/trigger")
     def trigger(payload: dict | None = None):
         """Queue software triggers - the bench check when nothing external

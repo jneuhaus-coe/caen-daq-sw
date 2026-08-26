@@ -34,6 +34,12 @@ export const api = {
       body: JSON.stringify({ count, rate_hz: rateHz }),
     }).then(j<{ ok: boolean; error?: string; queued?: number; status: Status }>),
 
+  calibrate: (mode: "baseline" | "fit") =>
+    fetch(`/api/calibrate/${mode}`, { method: "POST" })
+      .then(j<{ ok: boolean; status: Status }>),
+  calibrateStatus: () =>
+    fetch("/api/calibrate").then(j<CalibrationStatus>),
+
   getDisplay: () => fetch("/api/display").then(j<DisplayPrefs>),
   setDisplay: (d: DisplayPrefs) =>
     fetch("/api/display", {
@@ -55,6 +61,24 @@ export const api = {
 };
 
 export interface SessionInfo { name: string; saved_at: number | null; }
+
+export interface CalibrationRow {
+  channel: string;
+  dac: number;
+  baseline_mv: number | null;
+  below_mv: number;
+  above_mv: number;
+  status: "ok" | "adjusting" | "unreachable" | "no_fit" | "clipped";
+}
+
+export interface CalibrationStatus {
+  active: boolean;
+  phase: "baseline" | "fit" | null;
+  message: string;
+  iteration: number;
+  report: CalibrationRow[];
+  error: string | null;
+}
 
 /** UI state that persists across restarts, keyed however the UI likes.
  *  y_ranges: per-channel waveform display range in volts, [min, max].

@@ -313,6 +313,65 @@ def test_fake_backend_behaves_like_a_board():
         eng.close()
 
 
+def _wait_calibration(eng, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline and eng.calibrator.is_active():
+        time.sleep(0.1)
+    st = eng.calibrator.status()
+    assert not st["active"], "calibration did not finish"
+    return st
+
+
+def test_auto_baseline_centers_every_channel():
+    """Phase 1 servo: a channel parked far off centre comes back to the
+    window middle, and TR0 is steered through its own (different) DAC."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        cfg = eng.get_config()
+        cfg.channels[0].dc_offset = 42598           # ~ -0.3 V: far off centre
+        eng.set_config(cfg)
+        eng.calibrator.baseline_events = 6
+        eng.calibrator.measure_timeout_s = 10.0
+        eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
+        assert eng.calibrator.start("baseline")["ok"]
+        st = _wait_calibration(eng)
+        assert st["error"] is None
+        assert st["report"] and all(r["status"] == "ok" for r in st["report"])
+        assert any(r["channel"] == "TR0" for r in st["report"])
+        got = eng.get_config()
+        assert abs(got.channels[0].dc_offset - 32768) <= 200
+    finally:
+        eng.close()
+
+
+def test_fit_calibration_makes_room_for_the_pulse():
+    """Phase 2, polarity-agnostic: the fake's pulses are negative-going, so
+    fitting them must RAISE the baselines above centre - inferred from the
+    data, with no polarity setting anywhere."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        eng.calibrator.baseline_events = 6
+        eng.calibrator.fit_events = 6
+        eng.calibrator.measure_timeout_s = 10.0
+        eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
+        assert eng.calibrator.start("fit")["ok"]
+        st = _wait_calibration(eng, timeout=90)
+        assert st["error"] is None
+        assert st["report"] and all(r["status"] == "ok" for r in st["report"])
+        got = eng.get_config()
+        # ~800-count pulse below an initially centred baseline: the servo must
+        # shift the baseline up (a smaller DAC word raises it).
+        assert got.channels[0].dc_offset < 31500
+        ch0 = next(r for r in st["report"] if r["channel"] == "CH 0")
+        assert ch0["below_mv"] > 150            # the pulse extent was seen
+    finally:
+        eng.close()
+
+
 def test_recording_stops_itself_at_max_events():
     """A bounded capture: the run closes at exactly N events while acquisition
     keeps running - "give me N triggers to look at" without a stopwatch."""
@@ -577,6 +636,8 @@ if __name__ == "__main__":
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
+               test_auto_baseline_centers_every_channel,
+               test_fit_calibration_makes_room_for_the_pulse,
                test_recording_stops_itself_at_max_events,
                test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,

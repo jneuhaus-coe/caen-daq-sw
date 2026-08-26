@@ -281,6 +281,25 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 .settings-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 
+/* calibration card */
+.calib-btns { display: flex; gap: 8px; margin-bottom: 8px; }
+.calib-progress { font-size: 12px; color: var(--text); }
+.calib-progress .spinner {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: #4a7dcf;
+  animation: calib-spin 0.9s linear infinite; vertical-align: -1px;
+}
+@keyframes calib-spin { to { transform: rotate(360deg); } }
+.calib-error {
+  font-size: 11.5px; color: var(--red); background: #3d1518;
+  border-radius: 6px; padding: 6px 8px;
+}
+.calib-report { font-size: 11px; }
+.calib-sum { margin-bottom: 5px; color: var(--muted); }
+.calib-report table { width: 100%; border-collapse: collapse; }
+.calib-report td { padding: 1px 6px 1px 0; }
+.calib-report tr.bad td { color: var(--orange); }
+
 /* TR0 divergence notice: visible, never modal - the board is the truth */
 .tr-diverged {
   margin-top: 8px; padding: 6px 8px; border-radius: 6px;

@@ -1,0 +1,113 @@
+import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
+import type { CalibrationStatus } from "../api";
+
+interface Props {
+  connected: boolean;
+  recording: boolean;
+  /** Called when a run finishes: the server changed the config underneath the
+   *  UI, so the App must re-fetch what the board now holds. */
+  onFinished: (st: CalibrationStatus) => void;
+  onError: (title: string, lines?: string[]) => void;
+}
+
+/** Closed-loop channel setup, polarity-agnostic - the data says where the
+ *  pulse goes, not a setting:
+ *
+ *  Auto-baseline: software triggers, every baseline (TR0 included) servoed to
+ *  the window centre. The no-signal starting point.
+ *  Fit to signal: with real triggers flowing, each channel's actual
+ *  excursions - afterpulses of either sign included - are measured and the
+ *  baseline placed so the whole pulse sits in the window with margin. */
+export function CalibrationPanel({ connected, recording, onFinished, onError }: Props) {
+  const [st, setSt] = useState<CalibrationStatus | null>(null);
+  const wasActive = useRef(false);
+
+  // Poll while a run is active - also on mount, so a page opened mid-run
+  // picks the progress up rather than showing a dead panel.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const s = await api.calibrateStatus();
+        if (cancelled) return;
+        setSt(s);
+        if (s.active) {
+          timer = window.setTimeout(tick, 600);
+        } else if (wasActive.current) {
+          wasActive.current = false;
+          onFinished(s);
+        }
+        if (s.active) wasActive.current = true;
+      } catch {
+        /* the next user action retries */
+      }
+    };
+    tick();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [st?.active]);   // re-arm the poll loop when activity flips
+
+  const run = async (mode: "baseline" | "fit") => {
+    try {
+      await api.calibrate(mode);
+      wasActive.current = true;
+      setSt((s) => s ? { ...s, active: true, phase: mode, message: "starting" }
+                    : { active: true, phase: mode, message: "starting",
+                        iteration: 0, report: [], error: null });
+    } catch (e) {
+      onError("Could not start the calibration", [String(e)]);
+    }
+  };
+
+  const busy = !!st?.active;
+  const rows = st?.report ?? [];
+  const bad = rows.filter((r) => r.status !== "ok");
+
+  return (
+    <div className="card">
+      <h2>Calibration</h2>
+      <div className="calib-btns">
+        <button disabled={!connected || busy || recording} onClick={() => run("baseline")}
+          title="Software triggers; every channel's baseline (TR0 too) is servoed to the window centre. Needs no signal.">
+          Auto-baseline
+        </button>
+        <button disabled={!connected || busy || recording} onClick={() => run("fit")}
+          title="Needs real triggers. Measures each channel's actual pulse excursions - afterpulses of either sign included - and places the baseline so everything fits in the window with margin.">
+          Fit to signal
+        </button>
+      </div>
+      {busy ? (
+        <p className="calib-progress">
+          <span className="spinner" /> {st!.phase}: {st!.message}
+        </p>
+      ) : null}
+      {st?.error ? <p className="calib-error">{st.error}</p> : null}
+      {!busy && rows.length ? (
+        <div className="calib-report">
+          <div className="calib-sum">
+            {rows.length - bad.length} of {rows.length} channels ok
+            {bad.length ? ` - attention: ${bad.map((r) => r.channel).join(", ")}` : ""}
+          </div>
+          <table>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.channel} className={r.status !== "ok" ? "bad" : ""}>
+                  <td>{r.channel}</td>
+                  <td className="mono">{r.baseline_mv != null ? `${r.baseline_mv} mV` : "-"}</td>
+                  <td className="mono" title="Measured excursion below / above the baseline">
+                    -{r.below_mv}/+{r.above_mv}
+                  </td>
+                  <td>{r.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <p className="muted">
+        Save a session afterwards to give the converged state a name.
+      </p>
+    </div>
+  );
+}

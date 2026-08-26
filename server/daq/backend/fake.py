@@ -89,9 +89,12 @@ class FakeBackend(DigitizerBackend):
             samples[ch] = np.clip(w, 0, C.ADC_MAX).astype(np.float32)
         if cfg and cfg.fast_trigger_digitizing:
             # The digitized TR trace, 16+group, like the real decoder: a
-            # sharp negative edge where the trigger fired.
+            # sharp negative edge where the trigger fired. Its baseline
+            # follows the TR DC offset (nominal slope), so the calibrator's
+            # servo has an honest response to steer.
             t = np.arange(C.RECORD_LENGTH) - int(C.RECORD_LENGTH * 0.66)
-            tr = 2600.0 + self._rng.normal(0.0, _NOISE_COUNTS, C.RECORD_LENGTH)
+            tr_base = 2048.0 - (cfg.groups[0].fast_trigger_dc_offset - 32768) * 0.19
+            tr = tr_base + self._rng.normal(0.0, _NOISE_COUNTS, C.RECORD_LENGTH)
             tr -= 1200.0 * np.exp(-0.5 * (t / 6.0) ** 2)
             for gr, g in enumerate(cfg.groups):
                 if g.enabled:

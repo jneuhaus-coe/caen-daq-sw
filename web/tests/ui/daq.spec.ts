@@ -135,6 +135,22 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(row).toHaveCount(0);
 });
 
+test("auto-baseline centers a mis-set channel from the UI", async ({ page }) => {
+  // Park ch0 far off centre, then let the servo bring it back.
+  const field = page.locator(".tile-dc input[type=number]").first();
+  await field.fill("-0.3");
+  await field.press("Enter");
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset)
+    .toBeGreaterThan(40000);
+
+  await page.locator(".calib-btns button", { hasText: "Auto-baseline" }).click();
+  await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
+  const c = await cfg(page);
+  expect(Math.abs(c.channels[0].dc_offset - 32768)).toBeLessThanOrEqual(300);
+  // The UI re-adopted the board's new state: the field shows ~0 V again.
+  await expect(field).not.toHaveValue("-0.300");
+});
+
 test("the Fire button queues test triggers and events arrive", async ({ page }) => {
   const before = (await (await page.request.get("/api/status")).json()).events_seen;
   await page.locator(".test-trigger input").fill("5");

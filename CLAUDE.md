@@ -139,6 +139,15 @@ Verified open on the real unit: DT5742B, serial 53364, ROC 04.29 / AMC 01.06.
 `OpenDigitizer` returning `-1` while `lsusb` shows the board means the USB
 driver is missing.
 
+- **DC-offset DAC writes during acquisition never reach the analog output.**
+  Measured on serial 53364: write a channel DC offset while acquiring and the
+  register updates - readback agrees, no error anywhere - but the baseline
+  does not move until the next arm (SWStartAcquisition after a stop, when
+  configure() rewrites settings with the board stopped). Distinct from the
+  SPI-busy silent drop below, which corrupts the REGISTER too. Consequence:
+  anything that must see an offset take effect (the calibrator) stops,
+  writes, re-arms, then measures; a slider tweak mid-acquisition looks
+  applied but is not, until the next re-arm.
 - **The Windows CAEN USB driver can wedge, and the signature is distinctive:**
   `OpenDigitizer` returns `-1` on a board Device Manager shows healthy, an
   occasional open *hangs* inside the driver instead of returning (one took 66 s
