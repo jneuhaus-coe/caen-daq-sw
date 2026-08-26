@@ -145,12 +145,12 @@ test("the Fire button queues test triggers and events arrive", async ({ page }) 
     .poll(async () => (await (await page.request.get("/api/status")).json()).events_seen,
           { timeout: 10_000 })
     .toBeGreaterThanOrEqual(before + 5);
-  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
 test("overlay mode paints a density pile and the choice persists", async ({ page }) => {
   // Acquire so single-event traces flow (the fake board emits ~5/s).
-  await page.getByRole("button", { name: /Start Acquisition/ }).click();
+  await page.getByRole("button", { name: /Enable Acquisition/ }).click();
   await page.locator(".wave-mode button", { hasText: "Overlay" }).click();
   await expect(page.locator(".wave-mode button.on")).toHaveText("Overlay");
 
@@ -174,15 +174,15 @@ test("overlay mode paints a density pile and the choice persists", async ({ page
 
   // Back to Avg for the tests that follow.
   await page.locator(".wave-mode button", { hasText: "Avg" }).click();
-  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
 test("the TR0 card appears when the fast trigger is digitized", async ({ page }) => {
-  await page.getByRole("button", { name: /Start Acquisition/ }).click();
+  await page.getByRole("button", { name: /Enable Acquisition/ }).click();
   // "approx scale" is unique to the TR0 waveform card (the TR0 Trigger
   // settings panel also begins with "TR0").
   await expect(page.locator(".card h2", { hasText: "approx scale" })).toBeVisible({ timeout: 10_000 });
-  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
 test("recording a run writes run_N.root and the number advances", async ({ page }) => {
@@ -230,7 +230,7 @@ test("a bounded recording closes itself at N events", async ({ page }) => {
   await expect(page.locator(".rec-group.on")).toHaveCount(0, { timeout: 15_000 });
   const st = await (await page.request.get("/api/status")).json();
   expect(st.running).toBe(true);
-  await page.getByRole("button", { name: /Stop Acquisition/ }).click();
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
   const runs = await (await page.request.get("/api/runs")).json();
   expect(runs.runs.find((r: any) => r.id.startsWith("bounded")).events).toBe(3);
 });

@@ -224,24 +224,28 @@ export function App() {
         <h1>DT5742B DAQ</h1>
         <ConnectionBadge status={status} serverUp={serverUp}
           busy={reconnecting} onReconnect={reconnect} />
+        {/* Acquisition lives beside the connection state, away from the
+            Record cluster: enabling it watches, and only Record writes -
+            keeping the two apart is what stops "for N ev" reading as an
+            acquisition option. */}
+        <div className="acq-group">
+          {!running ? (
+            <button className="primary" onClick={start} disabled={!connected}
+              title={connected ? "Watch live — nothing is written to disk"
+                               : "No unit connected"}>
+              Enable Acquisition
+            </button>
+          ) : null}
+          {/* Hidden while recording: disabling acquisition there would end the
+              run, and "Stop recording" is the button you actually want. */}
+          {running && !recording ? (
+            <button onClick={stop}>Disable Acquisition</button>
+          ) : null}
+        </div>
         <span className={"pill state " + acqState}>{acqState}</span>
         <span className="pill mono">{tele?.events_seen ?? 0} events</span>
         <div className="spacer" />
         <div className="run-controls">
-          <div className="acq-group">
-            {!running ? (
-              <button className="primary" onClick={start} disabled={!connected}
-                title={connected ? "Watch live — nothing is written to disk"
-                                 : "No unit connected"}>
-                Start Acquisition
-              </button>
-            ) : null}
-            {/* Hidden while recording: stopping acquisition there would end the
-                run, and "Stop recording" is the button you actually want. */}
-            {running && !recording ? (
-              <button onClick={stop}>Stop Acquisition</button>
-            ) : null}
-          </div>
           <div className={"rec-group" + (recording ? " on" : "")}>
             {recording ? (
               <>
