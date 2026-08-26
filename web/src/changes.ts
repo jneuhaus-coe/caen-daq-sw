@@ -1,5 +1,5 @@
 import type { BoardConfig, Catalog, SettingDef } from "./types";
-import { dacToVolts, fmtV } from "./volts";
+import { defDacToVolts, fmtV } from "./volts";
 
 /** Describe what the unit actually holds now, in the operator's units.
  *
@@ -15,7 +15,7 @@ export function describeChanges(
 
   const fmt = (def: SettingDef | undefined, v: any) => {
     if (!def) return String(v);
-    if (def.type === "volts") return fmtV(dacToVolts(Number(v), geom));
+    if (def.type === "volts") return fmtV(defDacToVolts(def, Number(v), geom));
     if (def.type === "bool") return v ? "on" : "off";
     if (def.type === "enum") {
       const c = def.choices?.find((c) => String(c.value) === String(v));

@@ -1,6 +1,6 @@
 import type { Catalog, SettingDef } from "../types";
 import { BlurInput } from "./BlurInput";
-import { dacToVolts, voltsToDac } from "../volts";
+import { defDacToVolts, defVoltsToDac } from "../volts";
 import { StepControl } from "./StepControl";
 
 interface Props {
@@ -55,36 +55,22 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
   }
 
   if (def.type === "volts") {
-    // A setting with its own calibration (the TR path) converts linearly by
-    // lsb_v/zero_dac; the channel-input model is the default. Either way the
-    // wire value is a 16-bit DAC word and the bounds are its endpoints.
-    if (def.lsb_v != null && def.zero_dac != null) {
-      const k = def.lsb_v, z = def.zero_dac;
-      const ends = [(0 - z) * k, (0xFFFF - z) * k];
-      const lo = Math.min(...ends), hi = Math.max(...ends);
-      return (
-        <span className="field">
-          <BlurInput
-            type="number" step={0.001} min={lo} max={hi} selectOnFocus
-            disabled={disabled}
-            value={((Number(value ?? z) - z) * k).toFixed(3)}
-            onCommit={(v) => {
-              const volts = clamp(Number(v), lo, hi);
-              onChange(Math.min(0xFFFF, Math.max(0, Math.round(z + volts / k))));
-            }}
-          />
-          <span className="unit">V</span>
-        </span>
-      );
-    }
-    const limit = geom.dc_offset_range_v / 2;
+    // The setting's own calibration (lsb_v/zero_dac, the TR path) or the
+    // channel-input model - through the shared pair in volts.ts, the same
+    // pair the change toast formats with, so field and toast can never quote
+    // different voltages for one DAC word. Bounds are the DAC endpoints
+    // mapped through the same line.
+    const ends = [defDacToVolts(def, 0, geom), defDacToVolts(def, 0xFFFF, geom)];
+    const lo = Math.min(...ends), hi = Math.max(...ends);
+    const mid = def.zero_dac ?? geom.dc_offset_mid;
     return (
       <span className="field">
         <BlurInput
-          type="number" step={0.005} min={-limit} max={limit} selectOnFocus
+          type="number" step={def.lsb_v != null ? 0.001 : 0.005}
+          min={lo} max={hi} selectOnFocus
           disabled={disabled}
-          value={dacToVolts(Number(value ?? geom.dc_offset_mid), geom).toFixed(3)}
-          onCommit={(v) => onChange(voltsToDac(clamp(Number(v), -limit, limit), geom))}
+          value={defDacToVolts(def, Number(value ?? mid), geom).toFixed(3)}
+          onCommit={(v) => onChange(defVoltsToDac(def, clamp(Number(v), lo, hi), geom))}
         />
         <span className="unit">V</span>
       </span>

@@ -43,6 +43,28 @@ export function windowRangeV(dac: number, g: Geom): [number, number] {
  *  window band is always somewhere on screen - including when it is railed. */
 export const DEFAULT_Y: [number, number] = [-1, 1];
 
+/** A setting's own DAC<->volts line, when its catalog entry carries one
+ *  (lsb_v/zero_dac - the TR path); the channel-input model otherwise. EVERY
+ *  place that shows a volts-typed setting must convert through these two, or
+ *  the field and the change toast quote different voltages for one DAC word. */
+export function defDacToVolts(
+  def: { lsb_v?: number; zero_dac?: number }, dac: number, g: Geom,
+): number {
+  if (def.lsb_v != null && def.zero_dac != null) {
+    return (dac - def.zero_dac) * def.lsb_v;
+  }
+  return dacToVolts(dac, g);
+}
+
+export function defVoltsToDac(
+  def: { lsb_v?: number; zero_dac?: number }, v: number, g: Geom,
+): number {
+  if (def.lsb_v != null && def.zero_dac != null) {
+    return Math.min(0xFFFF, Math.max(0, Math.round(def.zero_dac + v / def.lsb_v)));
+  }
+  return voltsToDac(v, g);
+}
+
 /** Signed volts, e.g. "+0.500 V". */
 export function fmtV(v: number) {
   const mag = Math.abs(v) < 5e-4 ? "0.000" : Math.abs(v).toFixed(3);

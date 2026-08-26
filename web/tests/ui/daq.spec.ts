@@ -37,7 +37,14 @@ test("unit settings: required first, optional gated behind checkboxes", async ({
 test("TR threshold is shown in TR-calibrated volts", async ({ page }) => {
   // Fake board default threshold 20000: (20000 - 25448) * 0.0329 mV = -179 mV.
   const row = page.locator(".setting-row", { hasText: "TR threshold" }).first();
-  await expect(row.locator('input[type="number"]')).toHaveValue("-0.179");
+  const input = row.locator('input[type="number"]');
+  await expect(input).toHaveValue("-0.179");
+  // The change toast must quote the SAME calibration as the field - it once
+  // translated the DAC word back through the channel model and announced a
+  // nonsense positive voltage for a negative threshold.
+  await input.fill("-0.049");
+  await input.press("Enter");
+  await expect(page.getByText(/tr threshold: -0\.049 V/).first()).toBeVisible();
 });
 
 test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
