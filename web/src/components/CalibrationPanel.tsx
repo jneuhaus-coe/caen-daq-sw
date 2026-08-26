@@ -5,6 +5,8 @@ import type { CalibrationStatus } from "../api";
 interface Props {
   connected: boolean;
   recording: boolean;
+  /** A run began - here or in another window; the app wipes the piles. */
+  onStarted?: () => void;
   /** Called when a run finishes: the server changed the config underneath the
    *  UI, so the App must re-fetch what the board now holds. */
   onFinished: (st: CalibrationStatus) => void;
@@ -19,7 +21,8 @@ interface Props {
  *  Fit to signal: with real triggers flowing, each channel's actual
  *  excursions - afterpulses of either sign included - are measured and the
  *  baseline placed so the whole pulse sits in the window with margin. */
-export function CalibrationPanel({ connected, recording, onFinished, onError }: Props) {
+export function CalibrationPanel({ connected, recording, onStarted,
+                                   onFinished, onError }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
   const [fitEvents, setFitEvents] = useState("100");
   const wasActive = useRef(false);
@@ -36,6 +39,8 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
         setSt(s);
         if (s.active) {
           timer = window.setTimeout(tick, 600);
+          // A run that began elsewhere (another window) wipes here too.
+          if (!wasActive.current) onStarted?.();
         } else if (wasActive.current) {
           wasActive.current = false;
           onFinished(s);
@@ -53,6 +58,7 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
     try {
       const n = mode === "fit" ? Number(fitEvents) : null;
       await api.calibrate(mode, Number.isFinite(n as number) && (n as number) > 0 ? n : null);
+      onStarted?.();
       wasActive.current = true;
       setSt((s) => s ? { ...s, active: true, phase: mode, message: "starting" }
                     : { active: true, phase: mode, message: "starting",

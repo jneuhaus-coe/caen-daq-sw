@@ -25,6 +25,9 @@ interface Props {
    *  the oscilloscope's ground marker. Drawn (dashed, in the channel colour)
    *  only while there is no data to show; real waveforms replace it. */
   baselineGuide?: number;
+  /** Bumped by the app to wipe the persistence pile - on recording start and
+   *  on calibration start, so a pile is always one coherent story. */
+  clearEpoch?: number;
 }
 
 /** One channel's waveform in WINDOW-referenced volts: the ADC's fixed 1 Vpp
@@ -41,6 +44,7 @@ interface Props {
 export function MiniWave({
   wave, geom, windowNs, postTriggerPct, height = 140, color,
   yRange, onYRange, mode = "avg", lastWave, lastId, baselineGuide,
+  clearEpoch,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const density = useRef(new WaveDensity());
@@ -52,13 +56,20 @@ export function MiniWave({
   const frac = (v: number) => (yMax - v) / (yMax - yMin);   // 0 at top
   const zeroFrac = frac(0);
 
-  // Feed the pile outside the paint effect: a repaint (axis edit) must never
-  // re-add the same event, and the id makes adds exact.
+  // Wipe before any add on the same commit: declared first on purpose.
   useEffect(() => {
-    if (mode === "overlay" && lastWave && lastId != null) {
+    density.current.clear();
+  }, [clearEpoch]);
+
+  // Feed the pile outside the paint effect - and in EVERY mode, so the
+  // profile a calibration painted is already there when the operator flips
+  // to Overlay to review it. A repaint (axis edit) must never re-add the
+  // same event; the id makes adds exact.
+  useEffect(() => {
+    if (lastWave && lastId != null) {
       density.current.add(lastId, lastWave);
     }
-  }, [mode, lastWave, lastId]);
+  }, [lastWave, lastId]);
 
   // Post-trigger is the time AFTER the trigger, so the trigger sits that far
   // back from the right-hand edge.
@@ -149,7 +160,7 @@ export function MiniWave({
     }
     ctx.stroke();
   }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId,
-      baselineGuide]);
+      baselineGuide, clearEpoch]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 

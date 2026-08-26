@@ -14,6 +14,7 @@ interface Props {
   yRanges: Record<number, [number, number]>;
   onYRange: (ch: number, range: [number, number] | null, all: boolean) => void;
   waveMode: "avg" | "overlay";
+  clearEpoch: number;
 }
 
 // DEAD keys off a SINGLE event's peak-to-peak, not the average: averaging
@@ -25,7 +26,7 @@ const DEAD_LAST_VPP = 5;
 const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
-                              yRanges, onYRange, waveMode }: Props) {
+                              yRanges, onYRange, waveMode, clearEpoch }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
@@ -114,7 +115,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         mode={waveMode}
                         lastWave={on ? e?.last : undefined}
                         lastId={on ? e?.last_index : undefined}
-                        baselineGuide={on ? zeroCounts(shownDac, g) : undefined} />
+                        baselineGuide={on ? zeroCounts(shownDac, g) : undefined}
+                        clearEpoch={clearEpoch} />
 
                       <div className="tile-dc" title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
                         <label>DC offset</label>

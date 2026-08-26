@@ -43,6 +43,11 @@ export function App() {
   const [testN, setTestN] = useState("100");
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = useState("");
+  // Bumped to wipe every channel's persistence pile: on recording start and
+  // on calibration start, so each pile tells one coherent story - a
+  // calibration's profile stays on screen for review until the next thing
+  // that would muddle it begins.
+  const [wipeEpoch, setWipeEpoch] = useState(0);
   const saveTimer = useRef<number | undefined>(undefined);
   const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
@@ -219,10 +224,19 @@ export function App() {
     }
   };
 
+  // Recording start wipes the persistence piles (calibration start does too,
+  // via the panel's onStarted).
+  const recordingNow = tele?.recording ?? status?.recording ?? false;
+  const prevRecording = useRef(false);
+  useEffect(() => {
+    if (recordingNow && !prevRecording.current) setWipeEpoch((e) => e + 1);
+    prevRecording.current = recordingNow;
+  }, [recordingNow]);
+
   if (!catalog || !config) return <div className="loading">Loading…</div>;
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
-  const recording = tele?.recording ?? status?.recording ?? false;
+  const recording = recordingNow;
   const acqState = recording ? "recording" : running ? "acquiring" : "idle";
 
   return (
@@ -333,7 +347,8 @@ export function App() {
           <ChannelGrid catalog={catalog} config={config} tele={tele}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
-            yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode} />
+            yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
+            clearEpoch={wipeEpoch} />
         </main>
 
         <aside>
@@ -356,7 +371,8 @@ export function App() {
                   baselineGuide={2048 - (config.groups[trCh! - 16].fast_trigger_dc_offset - 32768) * 0.19}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
-                  mode={waveMode} lastWave={tr.last} lastId={tr.last_index} />
+                  mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
+                  clearEpoch={wipeEpoch} />
               </div>
             );
           })()}
@@ -418,6 +434,7 @@ export function App() {
           </Collapsible>
           <CalibrationPanel
             connected={connected} recording={recording}
+            onStarted={() => setWipeEpoch((e) => e + 1)}
             onError={(title, lines) => push("err", title, lines)}
             onFinished={async (st) => {
               // The server steered the DACs underneath the UI: re-adopt what

@@ -188,6 +188,24 @@ test("auto-baseline centers a mis-set channel from the UI", async ({ page }) => 
   await expect(field).not.toHaveValue("-0.300");
 });
 
+test("a calibration's persistence profile is there to review afterwards", async ({ page }) => {
+  // The pile accumulates in every mode, so the events a calibration collected
+  // are already stacked when the operator flips to Overlay to look.
+  await page.locator(".calib-btns button", { hasText: "Center baselines" }).click();
+  await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
+  await page.locator(".wave-mode button", { hasText: "Overlay" }).click();
+  const lit = await page.evaluate(() => {
+    const cv = document.querySelector(".tile canvas") as HTMLCanvasElement;
+    const d = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 40) n++;
+    return n;
+  });
+  // The fake's baseline run is quick, so the pile is thin - but present.
+  expect(lit).toBeGreaterThan(150);
+  await page.locator(".wave-mode button", { hasText: "Avg" }).click();
+});
+
 test("the Fire button queues test triggers and events arrive", async ({ page }) => {
   const before = (await (await page.request.get("/api/status")).json()).events_seen;
   await page.locator(".test-trigger input").fill("5");
