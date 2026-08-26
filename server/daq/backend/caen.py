@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes as ct
 import sys
+import time
 
 import numpy as np
 
@@ -46,6 +47,14 @@ TriggerMode_EXTOUT_ONLY = 2
 # DRS4 frequency enum values (0=5G,1=2.5G,2=1G,3=750M) — match our constants keys.
 
 REG_ACQUISITION_STATUS = 0x8104   # read-only; used as a liveness probe
+# Group n Status (0x1n88): bit[2] is the mezzanine DAC/SPI busy flag. UM5698
+# warns (sec 1.9) that DAC-backed writes issued while it is set "will not run
+# properly" - in practice they are silently dropped while the library still
+# answers success. Seen live on serial 53364: a TR threshold write read back
+# unchanged, with no error anywhere.
+REG_GROUP_STATUS = 0x1088
+GROUP_REG_STRIDE = 0x100
+BIT_DAC_BUSY = 1 << 2
 # Group configuration. GetFastTriggerDigitizing is broken on this board - it
 # reports the fast-trigger MODE bit (2 when the mode is on, 0 when off) and
 # ignores the digitizing flag entirely, so an "off" always read back as "on".
@@ -319,6 +328,51 @@ class CaenBackend(DigitizerBackend):
             for gr in range(C.NUM_GROUPS):
                 out.groups[gr].enabled = bool(mask & (1 << gr))
 
+    def _wait_dac_idle(self, gr: int, timeout_s: float = 0.15) -> bool:
+        """Give a DAC-backed write a quiet mezzanine to land on."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            rc, v = self._get("ReadRegister",
+                              ct.c_uint32(REG_GROUP_STATUS + GROUP_REG_STRIDE * gr))
+            if rc == CAEN_DGTZ_Success and not (v & BIT_DAC_BUSY):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.003)
+
+    def _retry_dropped_dac_writes(self, want, out, errs):
+        """Re-issue DAC-backed writes whose readback came back unchanged.
+
+        The channel DC offsets and the TR threshold/offset ride the
+        mezzanine's slow SPI; a write landing while that controller is busy -
+        e.g. right after configure() queued twenty of them at arm time - is
+        silently dropped. Rather than reporting a mismatch the operator can
+        only fix by clicking again, wait for the DAC to go idle and write
+        once more; only a value the board refuses three times over reaches
+        _diff and becomes an error."""
+        for gr in range(C.NUM_GROUPS):
+            for spec in GROUP_HW:
+                attr, _g, setter, _ct2, enc, _d = spec
+                if attr in self._write_only or setter in self._unsupported:
+                    continue
+                wanted = getattr(want.groups[gr], attr)
+                for _ in range(3):
+                    if getattr(out.groups[gr], attr) == wanted:
+                        break
+                    self._wait_dac_idle(gr)
+                    self._set(setter, ct.c_uint32(gr), enc(wanted))
+                    self._wait_dac_idle(gr)     # let it land before judging it
+                    self._rd_group(out, gr, spec, errs)
+        for ch in range(C.NUM_CHANNELS):
+            wanted = want.channels[ch].dc_offset & 0xFFFF
+            for _ in range(3):
+                if (out.channels[ch].dc_offset & 0xFFFF) == wanted:
+                    break
+                self._wait_dac_idle(ch // C.GROUP_SIZE)
+                self._set("SetChannelDCOffset", ct.c_uint32(ch), wanted)
+                self._wait_dac_idle(ch // C.GROUP_SIZE)
+                self._rd_channel(out, ch, errs)
+
     def _rd_gpo(self, out, errs):
         rc, v = self._get("ReadRegister", ct.c_uint32(REG_FRONT_PANEL_IO))
         if rc != CAEN_DGTZ_Success:
@@ -459,6 +513,7 @@ class CaenBackend(DigitizerBackend):
 
         for r in reads:
             r()
+        self._retry_dropped_dac_writes(cfg, out, errs)
         self._state = out
         errs += _diff(cfg, out, skip=self._write_only)
         return out, errs
