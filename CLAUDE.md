@@ -487,10 +487,12 @@ downloaded or deleted.
   sign are measured; the intercept rests on the nominal spec).
 - WaveDump writer layout follows the docs but is **not byte-verified** against a
   real dump — check against one sample `.dat` before trusting downstream.
-- **TR traces are never written.** WaveDump emits `TR_%d_0` / `TR_0_%d` files for
-  the x742's digitized fast-trigger traces; our decoder skips channel index 8
-  entirely, so enabling "Digitize TR traces" costs dead time and produces no
-  file. Decode + write them before relying on TR for timing.
+- **TR traces are decoded and written** (channel index 8 per group -> absolute
+  16+group, the ROOT layout's channel[16]/[17]). Verified on serial 53364:
+  both groups digitize the same TR0 input, agreeing to ~10 counts - the
+  DT5742B is 16+1, one shared TR0. The WaveDump-format writers still drop TR
+  (they open files only for channels 0-15); ROOT is the format that carries
+  it.
 - The UI has been used in a real browser and iterated on there; the remaining
   unknown is how it behaves with live data in it, not whether it renders.
 
