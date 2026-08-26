@@ -309,6 +309,9 @@ def test_fake_backend_behaves_like_a_board():
         assert isinstance(ch0["last_index"], int)
         # TR digitizing is on by default, so the trace rides along as 16+group.
         assert "16" in tele["channels"]
+        # Single-event vpp is the DEAD discriminator: the fake's noise floor
+        # plus its pulse must comfortably exceed a live channel's threshold.
+        assert ch0["last_vpp"] > 100
     finally:
         eng.close()
 

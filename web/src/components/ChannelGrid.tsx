@@ -16,7 +16,12 @@ interface Props {
   waveMode: "avg" | "overlay";
 }
 
-const DEAD_VPP = 30;      // below this = likely dead / no signal
+// DEAD keys off a SINGLE event's peak-to-peak, not the average: averaging
+// erases dark pulses and noise alike, so quiet-but-alive channels (SiPMs
+// seeing only darks) were branded DEAD. A live channel always shows its
+// noise floor in a single event (~10 counts on this unit); flat below this
+// means electronics genuinely silent - check the cable, not the source.
+const DEAD_LAST_VPP = 5;
 const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
@@ -58,9 +63,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                   const ch = first + i;
                   const e = tele?.channels[String(ch)];
                   const has = !!e?.wave;
-                  const vpp = e?.vpp ?? 0;
                   const clip = has && (e!.max! >= RAIL_HI || e!.min! <= RAIL_LO);
-                  const dead = on && has && vpp < DEAD_VPP;
+                  const dead = on && e?.last_vpp != null && e.last_vpp < DEAD_LAST_VPP;
                   const color = !on ? "#3a4150" : dead ? "#8b5cf6" : clip ? "#f0883e" : "#4ac776";
                   let badge = "", bcls = "";
                   if (!on) { badge = "off"; bcls = "off"; }

@@ -506,6 +506,11 @@ class AcquisitionEngine:
                 # id lets the client add each event once, not once per render.
                 entry["last"] = decimate(last[1], C.OVERVIEW_POINTS)
                 entry["last_index"] = last[0]
+                # Peak-to-peak of the FULL single event, before decimation:
+                # the liveness discriminator. A live channel always shows its
+                # noise floor here; averaging erases dark pulses and noise
+                # alike, so the averaged vpp cannot tell quiet from dead.
+                entry["last_vpp"] = float(last[1].max() - last[1].min())
             channels[str(ch)] = entry
         return {
             "running": self._running.is_set(),

@@ -318,9 +318,9 @@ export function App() {
                 onClick={() => changeWaveMode("overlay")}>Overlay</button>
             </div>
             <div className="legend">
-              <span className="lg live">live</span>
-              <span className="lg dead">dead</span>
-              <span className="lg clip">clip</span>
+              <span className="lg live" title="Showing at least its noise floor - a quiet channel seeing only dark counts is live, not dead">live</span>
+              <span className="lg dead" title="A single event flatter than any real noise floor: the electronics are silent - check the cable, not the source">dead</span>
+              <span className="lg clip" title="The average touches an ADC rail - part of the signal is outside the window">clip</span>
               <span className="lg off">bank off</span>
             </div>
           </div>

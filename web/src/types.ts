@@ -76,6 +76,9 @@ export interface ChannelTelemetry {
   last?: number[];
   /** Its event counter, so the client adds each event exactly once. */
   last_index?: number;
+  /** Peak-to-peak of the full (undecimated) latest event: the liveness
+   *  discriminator - a live channel always shows its noise floor. */
+  last_vpp?: number;
 }
 
 export interface Telemetry {
