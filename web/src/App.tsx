@@ -155,6 +155,14 @@ export function App() {
     const groups = config.groups.map((gc, i) => (i === g ? { ...gc, [key]: value } : gc));
     pushConfig({ ...config, groups });
   };
+  // The DT5742B has ONE TR0 split to both mezzanines; each keeps its own
+  // registers, but there is no sensible reason for them to differ, so the
+  // TR0 panel writes every bank at once. Divergence (an old config, a raw
+  // register poke) is surfaced below the panel, never silently masked.
+  const updateTrBoth = (key: string, value: any) => {
+    if (!config) return;
+    pushConfig({ ...config, groups: config.groups.map((gc) => ({ ...gc, [key]: value })) });
+  };
   const updateChannel = (ch: number, patch: Partial<BoardConfig["channels"][number]>) => {
     if (!config) return;
     const channels = config.channels.map((c, i) => (i === ch ? { ...c, ...patch } : c));
@@ -357,6 +365,39 @@ export function App() {
           <Collapsible title="Unit Settings" defaultOpen>
             <SettingsList defs={catalog.unit} geom={catalog.geometry}
               get={(k) => (config as any)[k]} onChange={updateBoard} />
+          </Collapsible>
+          <Collapsible title="TR0 Trigger" defaultOpen>
+            {(() => {
+              const trDefs = catalog.bank.filter((d) =>
+                d.key === "fast_trigger_threshold" || d.key === "fast_trigger_dc_offset");
+              const [g0, g1] = config.groups;
+              const diverged = trDefs.some((d) =>
+                (g0 as any)[d.key] !== (g1 as any)[d.key]);
+              return (
+                <>
+                  <SettingsList defs={trDefs} geom={catalog.geometry}
+                    get={(k) => (g0 as any)[k]} onChange={updateTrBoth} />
+                  {diverged ? (
+                    <div className="tr-diverged">
+                      The two banks' TR0 registers differ (bank 1 has its own
+                      values). Editing here writes both;{" "}
+                      <button onClick={() => {
+                        const groups = config.groups.map((gc) => ({
+                          ...gc,
+                          fast_trigger_threshold: g0.fast_trigger_threshold,
+                          fast_trigger_dc_offset: g0.fast_trigger_dc_offset,
+                        }));
+                        pushConfig({ ...config, groups });
+                      }}>sync bank 1 to bank 0</button>
+                    </div>
+                  ) : null}
+                  <p className="muted">
+                    One input, split to both banks - each keeps its own
+                    registers, so this panel writes both together.
+                  </p>
+                </>
+              );
+            })()}
           </Collapsible>
           <Collapsible title="Bank Settings" defaultOpen>
             <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />

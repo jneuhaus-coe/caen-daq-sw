@@ -90,9 +90,9 @@ def _from_legacy(text: str) -> tuple[BoardConfig, list[str]]:
     DC offsets are raw DAC words (not WaveDump's percentages), addressed as
     channel-within-group plus group. TRGPOLAR follows the register convention
     (0 = rising, 1 = falling, UM5698 sec 1.15 bit[6]); LEMO_LEV likewise
-    (0 = NIM, 1 = TTL). Only TR0 is spoken for - the format predates any use
-    of bank 1's TR1 - so TR1 settings are left alone and that is said aloud
-    when both banks are in use. Anything after the values a key defines is
+    (0 = NIM, 1 = TTL). The DT5742B has one TR0 split to both banks, so the
+    TR0 keys land in both banks' registers. Anything after the values a key
+    defines is
     ignored: the descriptions and polarities in the operators' spreadsheet
     were annotation columns around these lines, never part of the file.
     """
@@ -115,9 +115,12 @@ def _from_legacy(text: str) -> tuple[BoardConfig, list[str]]:
                 cfg.channels[gr * C.GROUP_SIZE + ch].dc_offset = dac
                 groups_seen.add(gr)
             elif key == "TR0OFFSE":
-                cfg.groups[0].fast_trigger_dc_offset = int(vals[0])
+                # One TR0, split to both banks: both registers get the value.
+                for g in cfg.groups:
+                    g.fast_trigger_dc_offset = int(vals[0])
             elif key == "TRG__TR0":
-                cfg.groups[0].fast_trigger_threshold = int(vals[0])
+                for g in cfg.groups:
+                    g.fast_trigger_threshold = int(vals[0])
             elif key == "TRGPOLAR":
                 cfg.trigger_edge = "falling" if int(vals[0]) else "rising"
             elif key == "POSTTRIG":
@@ -141,9 +144,6 @@ def _from_legacy(text: str) -> tuple[BoardConfig, list[str]]:
     if groups_seen:
         for gr in range(C.NUM_GROUPS):
             cfg.groups[gr].enabled = gr in groups_seen
-    if len(groups_seen) > 1:
-        notes.append("TR0 settings applied to bank 0; the file carries "
-                     "nothing for TR1, so bank 1 keeps its defaults")
     return cfg, notes
 
 

@@ -172,7 +172,9 @@ test("overlay mode paints a density pile and the choice persists", async ({ page
 
 test("the TR0 card appears when the fast trigger is digitized", async ({ page }) => {
   await page.getByRole("button", { name: /Start Acquisition/ }).click();
-  await expect(page.locator(".card h2", { hasText: "TR0" })).toBeVisible({ timeout: 10_000 });
+  // "approx scale" is unique to the TR0 waveform card (the TR0 Trigger
+  // settings panel also begins with "TR0").
+  await expect(page.locator(".card h2", { hasText: "approx scale" })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: /Stop Acquisition/ }).click();
 });
 

@@ -281,6 +281,17 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 .settings-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 
+/* TR0 divergence notice: visible, never modal - the board is the truth */
+.tr-diverged {
+  margin-top: 8px; padding: 6px 8px; border-radius: 6px;
+  background: #3a2410; color: var(--orange); font-size: 11.5px;
+}
+.tr-diverged button {
+  font: inherit; padding: 0 6px; cursor: pointer; margin-left: 2px;
+  background: #21262d; color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+
 /* software test triggers, in the trigger-rate card */
 .test-trigger {
   display: flex; align-items: center; gap: 7px; margin-top: 8px;

@@ -164,14 +164,15 @@ GPO_BUSY 1
     assert cfg.channels[8].dc_offset == 47000      # group 1 starts at ch 8
     assert cfg.channels[15].dc_offset == 18536
     assert cfg.groups[0].enabled and cfg.groups[1].enabled
-    assert cfg.groups[0].fast_trigger_dc_offset == 32768
-    assert cfg.groups[0].fast_trigger_threshold == 20934
+    # One TR0 split to both banks: the TR0 keys land in both register sets.
+    for g in cfg.groups:
+        assert g.fast_trigger_dc_offset == 32768
+        assert g.fast_trigger_threshold == 20934
     assert cfg.trigger_edge == "falling"
     assert cfg.post_trigger == 0
     assert cfg.io_level == "nim"
     assert cfg.gpo_output == "busy"
     assert any("module number 125" in n for n in notes)
-    assert any("TR1" in n for n in notes)          # both banks, TR0-only file
 
     # A legacy file mentioning only bank 1 must turn the default bank 0 OFF -
     # the file's channel list is the whole statement of what is in use.
