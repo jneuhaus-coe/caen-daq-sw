@@ -11,17 +11,18 @@
 export const PERSIST_TRACES = 64;
 
 export class WaveDensity {
-  private traces: { t: number[]; dac?: number }[] = [];
+  private traces: { t: number[]; dac?: number; post?: number }[] = [];
   private lastId: number | null = null;
 
   /** Add one trace, deduped by event id (a re-render must not re-add).
-   *  `refDac` stamps the DC-offset DAC in force when it was captured, so a
-   *  later offset change can shift the pile PREDICTIVELY - showing where
-   *  history will sit after the change takes effect. */
-  add(id: number, trace: number[], refDac?: number): void {
+   *  The stamps record the DC-offset DAC and the post-trigger percentage in
+   *  force at capture, so later changes shift the pile PREDICTIVELY - up and
+   *  down with the offset, left and right with the trigger position -
+   *  showing where history will sit after the change takes effect. */
+  add(id: number, trace: number[], refDac?: number, refPost?: number): void {
     if (id === this.lastId) return;
     this.lastId = id;
-    this.traces.push({ t: trace, dac: refDac });
+    this.traces.push({ t: trace, dac: refDac, post: refPost });
     if (this.traces.length > PERSIST_TRACES) this.traces.shift();
   }
 
@@ -41,7 +42,8 @@ export class WaveDensity {
    *  paths entirely next to the common ones. */
   render(width: number, height: number,
          toRow: (counts: number) => number,
-         countShift?: (refDac?: number) => number): ImageData {
+         countShift?: (refDac?: number) => number,
+         colShiftPx?: (refPost?: number) => number): ImageData {
     const grid = new Float32Array(width * height);
     const clamp = (r: number) => Math.min(height - 1, Math.max(0, Math.round(r)));
 
@@ -49,13 +51,16 @@ export class WaveDensity {
       const tr = rec.t;
       const n = tr.length;
       if (n < 2) continue;
-      // Predictive shift: where this trace's era will sit under the CURRENT
-      // offset - so tuning moves history to preview the future.
+      // Predictive shifts: where this trace's era will sit under the CURRENT
+      // settings - vertically for the offset, horizontally for the trigger
+      // position - so tuning moves history to preview the future.
       const s = countShift ? countShift(rec.dac) : 0;
+      const dx = colShiftPx ? colShiftPx(rec.post) : 0;
       for (let i = 0; i < n - 1; i++) {
         // Vertical span per column, connecting consecutive samples the way a
         // line stroke would.
-        const x = Math.min(width - 1, Math.round((i / (n - 1)) * (width - 1)));
+        const x = Math.round((i / (n - 1)) * (width - 1) + dx);
+        if (x < 0 || x > width - 1) continue;   // slid out of the record
         const a = clamp(toRow(tr[i] + s));
         const b = clamp(toRow(tr[i + 1] + s));
         const lo = Math.min(a, b), hi = Math.max(a, b);
