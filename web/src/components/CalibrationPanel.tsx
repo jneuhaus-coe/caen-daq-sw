@@ -47,7 +47,11 @@ export function CalibrationPanel({ connected, recording, onStarted,
         }
         if (s.active) wasActive.current = true;
       } catch {
-        /* the next user action retries */
+        // The server is away - a restart, a network blip. Keep asking: a
+        // poll loop that dies here freezes the panel on its last state,
+        // which once left an uncancellable ghost spinner after a redeploy
+        // killed the server mid-run.
+        if (!cancelled) timer = window.setTimeout(tick, 1500);
       }
     };
     tick();
@@ -66,6 +70,14 @@ export function CalibrationPanel({ connected, recording, onStarted,
     } catch (e) {
       onError("Could not start the calibration", [String(e)]);
     }
+  };
+
+  const cancelRun = async () => {
+    // "No calibration is running" is an answer, not a failure: the panel
+    // may be showing a run the server no longer knows about. Either way,
+    // re-fetch the truth so Cancel always resolves what is on screen.
+    try { await api.calibrateCancel(); } catch { /* resolved below */ }
+    try { setSt(await api.calibrateStatus()); } catch { /* the poll retries */ }
   };
 
   const busy = !!st?.active;
@@ -97,7 +109,7 @@ export function CalibrationPanel({ connected, recording, onStarted,
           <span className="spinner" /> {st!.phase}: {st!.message}
           <button className="calib-cancel"
             title="Stop at the next safe point; the board keeps the last completed pass"
-            onClick={() => api.calibrateCancel().catch(() => {})}>
+            onClick={cancelRun}>
             Cancel
           </button>
         </p>
