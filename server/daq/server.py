@@ -215,11 +215,17 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         return r
 
     @app.post("/api/calibrate/{mode}")
-    def calibrate(mode: str):
+    def calibrate(mode: str, payload: dict | None = None):
         """Start a closed-loop calibration: 'baseline' (software triggers,
         centre everything) or 'fit' (real triggers, fit the pulse in the
-        window). Progress is polled at GET /api/calibrate."""
-        r = engine.calibrator.start(mode)
+        window). {"events": N} sets the per-measurement event count.
+        Progress is polled at GET /api/calibrate."""
+        p = payload or {}
+        try:
+            ev = int(p.get("events")) if p.get("events") not in (None, "") else None
+        except (TypeError, ValueError):
+            ev = None
+        r = engine.calibrator.start(mode, ev)
         if not r["ok"]:
             raise HTTPException(409, r["error"])
         return {**r, "status": engine.status()}

@@ -84,9 +84,10 @@ class _Servo:
 class Calibrator:
     """Owns one calibration run at a time; state is what the UI polls."""
 
-    # Overridable per instance - the tests shrink them to keep suites fast.
+    # Overridable per instance - the tests shrink them to keep suites fast,
+    # and the UI passes the operator's count for a fit run.
     baseline_events = 24
-    fit_events = 40
+    fit_events = 100
     # Event-count-driven, not time-driven: a measurement waits for its events
     # however long they take. The only clock is the stall detector - this
     # long with NO events means nothing is triggering, and the run stops with
@@ -115,9 +116,15 @@ class Calibrator:
         with self._lock:
             return self._state["active"]
 
-    def start(self, mode: str) -> dict:
+    def start(self, mode: str, events: int | None = None) -> dict:
         if mode not in ("baseline", "fit"):
             return {"ok": False, "error": f"unknown calibration mode {mode!r}"}
+        if events:
+            events = max(4, min(100_000, int(events)))
+            if mode == "fit":
+                self.fit_events = events
+            else:
+                self.baseline_events = events
         if self._engine.status()["recording"]:
             return {"ok": False, "error": "a run is recording - stop it first"}
         with self._lock:

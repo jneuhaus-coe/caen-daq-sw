@@ -382,9 +382,9 @@ def test_calibration_cancel_stops_a_patient_wait():
     eng = AcquisitionEngine(lambda: make_backend("fake"))
     try:
         assert eng.probe() is True
-        eng.calibrator.fit_events = 100000       # would take hours at 5 Hz
         eng.calibrator.settle_s = 0.05
-        assert eng.calibrator.start("fit")["ok"]
+        # The operator's event count rides in via start(); hours at 5 Hz.
+        assert eng.calibrator.start("fit", events=100000)["ok"]
         time.sleep(0.8)                          # let it settle into the wait
         assert eng.calibrator.cancel()["ok"]
         deadline = time.time() + 5

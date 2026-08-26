@@ -21,6 +21,7 @@ interface Props {
  *  baseline placed so the whole pulse sits in the window with margin. */
 export function CalibrationPanel({ connected, recording, onFinished, onError }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
+  const [fitEvents, setFitEvents] = useState("100");
   const wasActive = useRef(false);
 
   // Poll while a run is active - also on mount, so a page opened mid-run
@@ -50,7 +51,8 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
 
   const run = async (mode: "baseline" | "fit") => {
     try {
-      await api.calibrate(mode);
+      const n = mode === "fit" ? Number(fitEvents) : null;
+      await api.calibrate(mode, Number.isFinite(n as number) && (n as number) > 0 ? n : null);
       wasActive.current = true;
       setSt((s) => s ? { ...s, active: true, phase: mode, message: "starting" }
                     : { active: true, phase: mode, message: "starting",
@@ -76,6 +78,13 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
           title="Needs real triggers. Measures each channel's actual pulse excursions - afterpulses of either sign included - and places the baseline so everything fits in the window with margin.">
           Fit to signal
         </button>
+        <label className="calib-events"
+          title="Triggered events per fit measurement. It waits however long they take; it only stops if nothing triggers for 30 s.">
+          <input type="number" min={4} value={fitEvents}
+            disabled={busy}
+            onChange={(e) => setFitEvents(e.target.value)} />
+          ev
+        </label>
       </div>
       {busy ? (
         <p className="calib-progress">

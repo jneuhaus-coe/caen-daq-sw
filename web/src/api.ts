@@ -34,9 +34,11 @@ export const api = {
       body: JSON.stringify({ count, rate_hz: rateHz }),
     }).then(j<{ ok: boolean; error?: string; queued?: number; status: Status }>),
 
-  calibrate: (mode: "baseline" | "fit") =>
-    fetch(`/api/calibrate/${mode}`, { method: "POST" })
-      .then(j<{ ok: boolean; status: Status }>),
+  calibrate: (mode: "baseline" | "fit", events?: number | null) =>
+    fetch(`/api/calibrate/${mode}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: events ?? null }),
+    }).then(j<{ ok: boolean; status: Status }>),
   calibrateStatus: () =>
     fetch("/api/calibrate").then(j<CalibrationStatus>),
   calibrateCancel: () =>
