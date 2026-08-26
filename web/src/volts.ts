@@ -33,15 +33,18 @@ export function voltsAtCount(counts: number, dac: number, g: Geom) {
   return (counts - zeroCounts(dac, g)) * (g.input_range_vpp / (g.adc_max + 1));
 }
 
-/** The absolute voltages the 1 Vpp hardware window spans at this DC offset:
- *  [bottom, top]. What the shaded band in the waveform view draws. */
-export function windowRangeV(dac: number, g: Geom): [number, number] {
-  return [voltsAtCount(0, dac, g), voltsAtCount(g.adc_max, dac, g)];
+/** Window-referenced volts: the ADC always reads its fixed 1 Vpp window, and
+ *  the DC offset moves the SIGNAL within it - so the display frame is the
+ *  window itself, 0 at its centre. Counts map to fixed screen positions,
+ *  which is what makes recorded history immovable: no knob turned today can
+ *  shift what was measured a moment ago. No calibration model involved. */
+export function windowVolts(counts: number, g: Geom): number {
+  return (counts - (g.adc_max + 1) / 2) / (g.adc_max + 1) * g.input_range_vpp;
 }
 
-/** Default display range: the nominal reach of the DC offset, so the hardware
- *  window band is always somewhere on screen - including when it is railed. */
-export const DEFAULT_Y: [number, number] = [-1, 1];
+/** Default display range: the full 1 Vpp window. The plot edges ARE the ADC
+ *  rails - a clipped signal sits pinned against them. */
+export const DEFAULT_Y: [number, number] = [-0.5, 0.5];
 
 /** A setting's own DAC<->volts line, when its catalog entry carries one
  *  (lsb_v/zero_dac - the TR path); the channel-input model otherwise. EVERY

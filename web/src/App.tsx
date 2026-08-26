@@ -65,7 +65,13 @@ export function App() {
   const fromPrefs = (d: DisplayPrefs): Record<number, [number, number]> => {
     const out: Record<number, [number, number]> = {};
     for (const [k, v] of Object.entries(d.y_ranges ?? {})) {
-      if (Array.isArray(v) && v.length === 2 && v[0] < v[1]) out[Number(k)] = [v[0], v[1]];
+      // Window-referenced volts: nothing outside the 1 Vpp window is ever
+      // readable, and ranges saved under the older input-referred frame
+      // (up to +/-1 V) are silently retired by the same check.
+      if (Array.isArray(v) && v.length === 2 && v[0] < v[1]
+          && v[0] >= -0.501 && v[1] <= 0.501) {
+        out[Number(k)] = [v[0], v[1]];
+      }
     }
     return out;
   };
@@ -339,8 +345,8 @@ export function App() {
             if (!config.fast_trigger_digitizing || !tr) return null;
             return (
               <div className="card">
-                <h2>TR0 <span className="sub">fast trigger · approx scale</span></h2>
-                <MiniWave wave={tr.wave} dcOffset={config.groups[trCh! - 16].fast_trigger_dc_offset}
+                <h2>TR0 <span className="sub">fast trigger</span></h2>
+                <MiniWave wave={tr.wave}
                   geom={catalog.geometry}
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}

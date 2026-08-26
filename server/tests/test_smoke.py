@@ -375,6 +375,40 @@ def test_fit_calibration_makes_room_for_the_pulse():
         eng.close()
 
 
+def test_dac_changes_rearm_while_acquiring_and_refuse_while_recording():
+    """A DC-offset change only takes analog effect at an arm (measured on the
+    real unit), so writing one mid-acquisition must re-arm - and mid-recording
+    must be refused, not smuggled into the run."""
+    from daq import runs
+    from daq.backend.base import make_backend
+    old_root = runs.DATA_ROOT
+    with tempfile.TemporaryDirectory() as d:
+        runs.DATA_ROOT = d
+        eng = AcquisitionEngine(lambda: make_backend("fake"))
+        try:
+            assert eng.probe() is True
+            eng.start()
+            assert eng.status()["running"]
+            cfg = eng.get_config()
+            cfg.channels[0].dc_offset = 30000
+            got = eng.set_config(cfg)
+            assert got.channels[0].dc_offset == 30000
+            assert eng.status()["running"]           # re-armed, still going
+
+            assert eng.start_recording("guard", timestamp=False)["ok"]
+            before = len(eng.status()["errors"])
+            cfg2 = eng.get_config()
+            cfg2.channels[0].dc_offset = 29000
+            got2 = eng.set_config(cfg2)
+            assert got2.channels[0].dc_offset == 30000   # refused, unchanged
+            assert len(eng.status()["errors"]) > before
+            assert eng.status()["recording"]             # the run survived
+            eng.stop_recording()
+        finally:
+            eng.close()
+            runs.DATA_ROOT = old_root
+
+
 def test_calibration_cancel_stops_a_patient_wait():
     """Measurements are event-count-driven with no overall timeout, so Cancel
     must end a long wait promptly - and read as cancelled, not failed."""
@@ -663,6 +697,7 @@ if __name__ == "__main__":
                test_fake_backend_behaves_like_a_board,
                test_auto_baseline_centers_every_channel,
                test_fit_calibration_makes_room_for_the_pulse,
+               test_dac_changes_rearm_while_acquiring_and_refuse_while_recording,
                test_calibration_cancel_stops_a_patient_wait,
                test_recording_stops_itself_at_max_events,
                test_sessions_and_display_roundtrip,

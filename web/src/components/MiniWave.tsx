@@ -1,19 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_Y, fmtV, voltsAtCount, windowRangeV } from "../volts";
+import { DEFAULT_Y, fmtV, windowVolts } from "../volts";
 import type { Geom } from "../volts";
 import { WaveDensity } from "../waveDensity";
 import { BlurInput } from "./BlurInput";
 
 interface Props {
   wave?: number[];
-  /** uint16 DAC word; positions the 1 Vpp hardware window in voltage space. */
-  dcOffset: number;
   geom: Geom;
   windowNs?: number;      // full record length in ns
   postTriggerPct?: number;// how much of the record follows the trigger
   height?: number;
   color: string;
-  /** Display range in volts, [min, max]. Defaults to DEFAULT_Y. */
+  /** Display range in window volts, [min, max]. Defaults to the full window. */
   yRange?: [number, number];
   /** min/max label edited. `range` null = reset to default; `all` = every channel. */
   onYRange?: (range: [number, number] | null, all: boolean) => void;
@@ -25,18 +23,19 @@ interface Props {
   lastId?: number;
 }
 
-/** One channel's averaged waveform in ABSOLUTE volts on a fixed default range,
- * with the 1 Vpp hardware window drawn as a band inside it. Fixed axes mean a
- * railed or badly-offset channel shows as a band pushed off toward an edge
- * with its baseline outside - visible, instead of a mute flat line. Sliding
- * the DC offset visibly slides the band.
+/** One channel's waveform in WINDOW-referenced volts: the ADC's fixed 1 Vpp
+ * window is the frame, 0 V at its centre, and the DC offset moves the SIGNAL
+ * within it - the same frame WaveDump and every oscilloscope use. Counts map
+ * to fixed screen positions, so recorded history can never shift when a knob
+ * moves; when an offset genuinely takes effect (at re-arm), the trace itself
+ * moves. At the default full range the plot edges ARE the ADC rails.
  *
  * The min/max labels are buttons: click to type a new bound (optionally for
  * all channels), so zooming onto a pulse is two clicks, not a config file.
  * Axis labels are HTML rather than canvas text: crisper, and they stay put
  * without re-measuring on every repaint. */
 export function MiniWave({
-  wave, dcOffset, geom, windowNs, postTriggerPct, height = 140, color,
+  wave, geom, windowNs, postTriggerPct, height = 140, color,
   yRange, onYRange, mode = "avg", lastWave, lastId,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -45,18 +44,17 @@ export function MiniWave({
   const [editing, setEditing] = useState<"min" | "max" | null>(null);
   const [editAll, setEditAll] = useState(false);
   const [yMin, yMax] = yRange ?? DEFAULT_Y;
-  const [winLo, winHi] = windowRangeV(dcOffset, geom);
 
-  // Feed the pile outside the paint effect: a repaint (axis edit, offset
-  // drag) must never re-add the same event, and the id makes adds exact.
+  const frac = (v: number) => (yMax - v) / (yMax - yMin);   // 0 at top
+  const zeroFrac = frac(0);
+
+  // Feed the pile outside the paint effect: a repaint (axis edit) must never
+  // re-add the same event, and the id makes adds exact.
   useEffect(() => {
     if (mode === "overlay" && lastWave && lastId != null) {
       density.current.add(lastId, lastWave);
     }
   }, [mode, lastWave, lastId]);
-
-  const frac = (v: number) => (yMax - v) / (yMax - yMin);   // 0 at top
-  const zeroFrac = frac(0);
 
   // Post-trigger is the time AFTER the trigger, so the trigger sits that far
   // back from the right-hand edge.
@@ -79,26 +77,12 @@ export function MiniWave({
     const y = (v: number) => frac(v) * h;
     const clampY = (v: number) => Math.min(h, Math.max(0, v));
 
-    // The hardware window: everything the ADC can actually see. Band fill,
-    // with its edges drawn only when they are inside the view.
-    const top = y(winHi), bot = y(winLo);
-    ctx.fillStyle = "rgba(110,130,160,0.10)";
-    ctx.fillRect(0, clampY(top), w, Math.max(0, clampY(bot) - clampY(top)));
-    ctx.strokeStyle = "rgba(110,130,160,0.35)";
-    ctx.lineWidth = 1;
-    for (const edge of [top, bot]) {
-      if (edge >= 0 && edge <= h) {
-        ctx.beginPath();
-        ctx.moveTo(0, edge); ctx.lineTo(w, edge); ctx.stroke();
-      }
-    }
-
     // Overlay mode: the density pile, under the reference lines so the
     // chrome stays legible on top of even the hottest paths.
     if (mode === "overlay" && density.current.count) {
       const gw = 256;
       const img = density.current.render(
-        gw, h, (counts) => frac(voltsAtCount(counts, dcOffset, geom)) * h);
+        gw, h, (counts) => frac(windowVolts(counts, geom)) * h);
       let off = offscreen.current;
       if (!off || off.width !== gw || off.height !== h) {
         off = document.createElement("canvas");
@@ -109,9 +93,10 @@ export function MiniWave({
       ctx.drawImage(off, 0, 0, gw, h, 0, 0, w, h);
     }
 
-    // 0 V reference, when it is on screen.
+    // Window centre, when it is on screen.
     if (zeroFrac >= 0 && zeroFrac <= 1) {
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, y(0)); ctx.lineTo(w, y(0)); ctx.stroke();
     }
@@ -124,6 +109,7 @@ export function MiniWave({
       ctx.save();
       ctx.strokeStyle = "rgba(31,111,235,0.55)";
       ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
       ctx.restore();
     }
@@ -135,12 +121,11 @@ export function MiniWave({
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
       const px = (i / (n - 1)) * w;
-      const yy = clampY(y(voltsAtCount(wave[i], dcOffset, geom)));
+      const yy = clampY(y(windowVolts(wave[i], geom)));
       i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
     }
     ctx.stroke();
-  }, [wave, dcOffset, yMin, yMax, winLo, winHi, height, color, trigFrac,
-      geom, zeroFrac, mode, lastId]);
+  }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 
@@ -166,7 +151,7 @@ export function MiniWave({
           <input type="checkbox" checked={editAll}
             onChange={(e) => setEditAll(e.target.checked)} />all
         </label>
-        <button title="Reset to the full range"
+        <button title="Reset to the full window"
           onMouseDown={(e) => { e.preventDefault(); setEditing(null); onYRange?.(null, editAll); }}>
           full
         </button>

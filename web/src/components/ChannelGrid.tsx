@@ -106,7 +106,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         {badge ? <span className={"badge " + bcls}>{badge}</span> : null}
                       </div>
 
-                      <MiniWave wave={on ? e?.wave : undefined} dcOffset={shownDac}
+                      <MiniWave wave={on ? e?.wave : undefined}
                         geom={g} windowNs={windowNs} postTriggerPct={config.post_trigger}
                         color={color}
                         yRange={yRanges[ch]}

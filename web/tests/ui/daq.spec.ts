@@ -101,18 +101,19 @@ test("clicking a Y label edits the display range, and it persists", async ({ pag
   await expect(tile.locator("button.ax.y.max")).toHaveText("+0.250 V");
   await expect
     .poll(async () => (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"])
-    .toEqual([-1, 0.25]);
+    .toEqual([-0.5, 0.25]);   // window frame: min stays at the window bottom
   // Survives a full reload: the display prefs live on the server.
   await page.reload();
   await expect(page.locator(".tile").first().locator("button.ax.y.max"))
     .toHaveText("+0.250 V");
 });
 
-test("the 'full' button resets a channel's range to the default", async ({ page }) => {
+test("the 'full' button resets a channel's range to the full window", async ({ page }) => {
   const tile = page.locator(".tile").first();
   await tile.locator("button.ax.y.max").click();
   await tile.locator(".yedit button", { hasText: "full" }).click();
-  await expect(tile.locator("button.ax.y.max")).toHaveText("+1.000 V");
+  // Window-referenced frame: full range IS the 1 Vpp window, +/-0.5 V.
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.500 V");
 });
 
 test("sessions: save, perturb, apply restores the unit, delete", async ({ page }) => {
@@ -198,9 +199,9 @@ test("overlay mode paints a density pile and the choice persists", async ({ page
 
 test("the TR0 card appears when the fast trigger is digitized", async ({ page }) => {
   await page.getByRole("button", { name: /Enable Acquisition/ }).click();
-  // "approx scale" is unique to the TR0 waveform card (the TR0 Trigger
-  // settings panel also begins with "TR0").
-  await expect(page.locator(".card h2", { hasText: "approx scale" })).toBeVisible({ timeout: 10_000 });
+  // "fast trigger" is unique to the TR0 waveform card's subtitle (the TR0
+  // Trigger settings panel is a different heading).
+  await expect(page.locator(".card h2", { hasText: "fast trigger" })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 

@@ -136,12 +136,36 @@ class AcquisitionEngine:
             return self._board_info
 
     def get_config(self) -> BoardConfig:
+        """A COPY, deliberately: callers mutate what they get (the calibrator,
+        the tests), and handing out the live object let a mutation slip past
+        set_config's changed-DAC comparison - it compared the object with
+        itself and saw nothing to re-arm for."""
         with self._lock:
-            return self._cfg
+            return BoardConfig.from_dict(self._cfg.to_dict())
+
+    def _dac_backed_changed(self, cfg: BoardConfig) -> bool:
+        """Did this write touch a setting that lives on a mezzanine DAC?
+
+        Those (channel DC offsets, TR threshold/offset) only take ANALOG
+        effect at an arm - written mid-acquisition they update the register
+        and change nothing, measured on serial 53364."""
+        with self._lock:
+            cur = self._cfg
+        if any(c.dc_offset != o.dc_offset
+               for c, o in zip(cfg.channels, cur.channels)):
+            return True
+        return any(g.fast_trigger_dc_offset != o.fast_trigger_dc_offset
+                   or g.fast_trigger_threshold != o.fast_trigger_threshold
+                   for g, o in zip(cfg.groups, cur.groups))
 
     def set_config(self, cfg: BoardConfig) -> BoardConfig:
         """Push to the board and adopt what it reports back. Returns the actual
-        config; anything the board refused lands in the error list."""
+        config; anything the board refused lands in the error list.
+
+        A DAC-backed change while acquiring re-arms automatically (stop,
+        write, start) - the only way it takes analog effect - and is refused
+        outright while recording, where a mid-run baseline shift would
+        corrupt the data with a straight face."""
         if not self._opened or self._backend is None:
             # Nothing was sent anywhere. Returning the requested config here
             # would have the UI show - and confirm - a value the unit never
@@ -151,6 +175,16 @@ class AcquisitionEngine:
             self._record_error("no unit connected: settings were not applied")
             with self._lock:
                 return self._cfg
+
+        rearm = False
+        if self._running.is_set() and self._dac_backed_changed(cfg):
+            if self._writer is not None:
+                self._record_error("DC offsets and TR levels cannot change "
+                                   "during a recording - stop it first")
+                with self._lock:
+                    return self._cfg
+            rearm = True
+            self.stop()
 
         errors: list[str] = []
         with logsetup.step(log, "Writing settings to the unit") as writing:
@@ -165,6 +199,8 @@ class AcquisitionEngine:
                          if errors else "All settings accepted and read back")
         with self._lock:
             self._cfg = cfg
+        if rearm:
+            self.start()               # the arm is what loads the DACs
         return cfg
 
     def start(self):
