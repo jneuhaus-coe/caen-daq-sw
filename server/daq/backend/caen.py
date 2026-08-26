@@ -61,7 +61,15 @@ BIT_DAC_BUSY = 1 << 2
 # The setter works fine; bit 11 here is the truth. Verified on serial 53364:
 # mode off/dig off 0x0110, dig on 0x0910; mode on 0x1110 / 0x1910.
 REG_GROUP_CONFIG = 0x8000
+REG_GROUP_CONFIG_BITSET = 0x8004      # write-1-to-set companion of 0x8000
 BIT_TR_DIGITIZE = 1 << 11
+# UM5698 sec 1.15 bit[8] "Individual trigger": power-on default 0, and the
+# manual says MUST BE 1 for the 742 to work properly. With it clear the board
+# triggers happily and delivers header-only events - hundreds counted, all
+# empty. Soft resets preserve a previously-set 1 (which is how earlier
+# software's leftover state masked this for two days); a POWER cycle clears
+# it. Set it at every arm.
+BIT_INDIVIDUAL_TRIGGER = 1 << 8
 
 # GPO (TRG-OUT) routing lives in the Front Panel I/O Control register; the
 # CAENDigitizer API has no function for it, so this is the one setting done
@@ -526,6 +534,11 @@ class CaenBackend(DigitizerBackend):
         self._chk(L.CAEN_DGTZ_Reset(h), "Reset")
         self._state = None      # Reset invalidated everything we knew
         self._chk(L.CAEN_DGTZ_SetAcquisitionMode(h, AcqMode_SW_CONTROLLED), "SetAcquisitionMode")
+        # See BIT_INDIVIDUAL_TRIGGER: without this the board counts triggers
+        # and delivers no waveforms.
+        self._chk(self._set("WriteRegister", ct.c_uint32(REG_GROUP_CONFIG_BITSET),
+                            ct.c_uint32(BIT_INDIVIDUAL_TRIGGER)),
+                  "WriteRegister(individual trigger bit)")
         actual, errs = self.write_settings(cfg)
         # DRS4 corrections. Three regimes:
         #   auto/manual - the library corrects inside DecodeEvent, including

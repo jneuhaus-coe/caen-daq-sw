@@ -139,6 +139,14 @@ Verified open on the real unit: DT5742B, serial 53364, ROC 04.29 / AMC 01.06.
 `OpenDigitizer` returning `-1` while `lsusb` shows the board means the USB
 driver is missing.
 
+- **Board-config bit[8] ("Individual trigger") MUST be 1, and a power cycle
+  clears it.** UM5698 sec 1.15 says so outright; with it 0 the board counts
+  triggers normally and delivers HEADER-ONLY events - hundreds seen, all
+  empty, no error anywhere. Soft resets preserve a previously-set 1, so
+  leftover state from other software (WaveDump/CAENScope) masked this for
+  two days until a power cycle produced 928 perfectly counted, perfectly
+  empty events. configure() sets it at every arm via the 0x8004 bit-set
+  register. Symptom to remember: "triggers but no waveforms" = check bit[8].
 - **DC-offset DAC writes during acquisition never reach the analog output.**
   Measured on serial 53364: write a channel DC offset while acquiring and the
   register updates - readback agrees, no error anywhere - but the baseline
