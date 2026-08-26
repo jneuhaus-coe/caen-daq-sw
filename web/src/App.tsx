@@ -46,6 +46,14 @@ export function App() {
   const [testN, setTestN] = useState("100");
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = useState("");
+  // The TR0 baseline marker's memory: the last MEASURED baseline and the
+  // offset DAC it was measured under. The measured and bench-predicted
+  // baselines disagree by ~200 mV on this unit, so falling back to
+  // prediction whenever the 1 s averaging window drained made the marker
+  // jump on every trigger pause. Hold the measurement instead, shifted by
+  // the predicted DELTA when the offset moves - deltas are robust even
+  // where the absolute calibration is not.
+  const trBaseMem = useRef<{ counts: number; dac: number } | null>(null);
   // Bumped to wipe every channel's persistence pile: on recording start and
   // on calibration start, so each pile tells one coherent story - a
   // calibration's profile stays on screen for review until the next thing
@@ -380,11 +388,18 @@ export function App() {
             const tr = trCh != null ? tele!.channels[String(trCh)] : null;
             if (!config.fast_trigger_digitizing || !tr) return null;
             const trGroup = config.groups[trCh! - 16];
-            // Baseline: measured from live data when there is any; predicted
-            // from the offset (TR's own DAC slope, RADiCAL bench cal) when
-            // the input is dark.
-            const baseCounts = tr.baseline
-              ?? 2048 - (trGroup.fast_trigger_dc_offset - 32768) * 0.19;
+            // Baseline: the held measurement (see trBaseMem), predictively
+            // shifted if the offset moved since; bench prediction only
+            // before anything was ever measured.
+            if (tr.baseline != null) {
+              trBaseMem.current = { counts: tr.baseline,
+                                    dac: trGroup.fast_trigger_dc_offset };
+            }
+            const mem = trBaseMem.current;
+            const baseCounts = mem
+              ? mem.counts + TR_OFF_SLOPE_COUNTS
+                  * (trGroup.fast_trigger_dc_offset - mem.dac)
+              : 2048 + (trGroup.fast_trigger_dc_offset - 32768) * TR_OFF_SLOPE_COUNTS;
             // Trigger: the comparator lives in the WINDOW frame - deduced
             // from the observed fact that moving the TR offset changes the
             // trigger margin - so its line is a function of the threshold
