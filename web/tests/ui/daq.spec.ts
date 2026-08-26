@@ -252,7 +252,18 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   await page.getByRole("button", { name: /Enable Acquisition/ }).click();
   // "fast trigger" is unique to the TR0 waveform card's subtitle (the TR0
   // Trigger settings panel is a different heading).
-  await expect(page.locator(".card h2", { hasText: "fast trigger" })).toBeVisible({ timeout: 10_000 });
+  const trCard = page.locator(".card", { has: page.locator("h2", { hasText: "fast trigger" }) });
+  await expect(trCard).toBeVisible({ timeout: 10_000 });
+  // The labelled trigger line: red-dominant pixels drawn across the plot.
+  await expect.poll(async () => trCard.evaluate((card) => {
+    const cv = card.querySelector("canvas") as HTMLCanvasElement;
+    const d = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height).data;
+    let red = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 100 && d[i] > 180 && d[i + 1] < 130) red++;
+    }
+    return red;
+  }), { timeout: 10_000 }).toBeGreaterThan(50);
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 

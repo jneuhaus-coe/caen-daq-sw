@@ -20,6 +20,7 @@ import { MiniWave } from "./components/MiniWave";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
+import { windowVolts } from "./volts";
 
 export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -358,6 +359,24 @@ export function App() {
             const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
             const tr = trCh != null ? tele!.channels[String(trCh)] : null;
             if (!config.fast_trigger_digitizing || !tr) return null;
+            const trGroup = config.groups[trCh! - 16];
+            // Baseline: measured from live data when there is any; predicted
+            // from the offset (TR's own DAC slope, RADiCAL bench cal) when
+            // the input is dark.
+            const baseCounts = tr.baseline
+              ?? 2048 - (trGroup.fast_trigger_dc_offset - 32768) * 0.19;
+            // Trigger: the comparator lives in the WINDOW frame - deduced
+            // from the observed fact that moving the TR offset changes the
+            // trigger margin - so its line is a function of the threshold
+            // DAC alone (RADiCAL cal: 0.0329 mV/LSB, zero at 25448),
+            // independent of the offset. Constants provisional until the
+            // comparator-domain experiment refines them.
+            const markers = [
+              { v: windowVolts(baseCounts, catalog.geometry),
+                label: "baseline", color: "#4ac776" },
+              { v: (trGroup.fast_trigger_threshold - 25448) * 0.0329 / 1000,
+                label: "trigger", color: "#f85149" },
+            ];
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -366,9 +385,7 @@ export function App() {
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}
                   color="#e3b341" height={110}
-                  // TR's own DAC slope (~0.19 counts/LSB, RADiCAL bench cal),
-                  // distinct from the channels': the ground marker for TR0.
-                  baselineGuide={2048 - (config.groups[trCh! - 16].fast_trigger_dc_offset - 32768) * 0.19}
+                  markers={markers}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
                   mode={waveMode} lastWave={tr.last} lastId={tr.last_index}

@@ -28,6 +28,9 @@ interface Props {
   /** Bumped by the app to wipe the persistence pile - on recording start and
    *  on calibration start, so a pile is always one coherent story. */
   clearEpoch?: number;
+  /** Labelled horizontal reference lines in window volts - the TR0 card's
+   *  "baseline" and "trigger". Drawn on top of the data, always. */
+  markers?: { v: number; label: string; color: string }[];
 }
 
 /** One channel's waveform in WINDOW-referenced volts: the ADC's fixed 1 Vpp
@@ -44,7 +47,7 @@ interface Props {
 export function MiniWave({
   wave, geom, windowNs, postTriggerPct, height = 140, color,
   yRange, onYRange, mode = "avg", lastWave, lastId, baselineGuide,
-  clearEpoch,
+  clearEpoch, markers,
 }: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const density = useRef(new WaveDensity());
@@ -148,19 +151,40 @@ export function MiniWave({
       }
     }
 
-    if (mode !== "avg" || !wave || wave.length === 0) return;
-    const n = wave.length;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.25;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const px = (i / (n - 1)) * w;
-      const yy = clampY(y(windowVolts(wave[i], geom)));
-      i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
+    if (mode === "avg" && wave && wave.length > 0) {
+      const n = wave.length;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const px = (i / (n - 1)) * w;
+        const yy = clampY(y(windowVolts(wave[i], geom)));
+        i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+
+    // Labelled reference lines, on top of everything: the whole point is
+    // that "where is the trigger, where is the baseline" is never ambiguous.
+    for (const m of markers ?? []) {
+      const my = y(m.v);
+      if (my < -1 || my > h + 1) continue;
+      ctx.save();
+      ctx.strokeStyle = m.color;
+      ctx.globalAlpha = 0.9;
+      ctx.setLineDash([5, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, my); ctx.lineTo(w, my); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = "9px system-ui, sans-serif";
+      ctx.fillStyle = m.color;
+      // Label above the line, or below when hugging the top edge.
+      ctx.fillText(m.label, 3, my < 12 ? my + 10 : my - 3);
+      ctx.restore();
+    }
   }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId,
-      baselineGuide, clearEpoch]);
+      baselineGuide, clearEpoch, markers]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 
