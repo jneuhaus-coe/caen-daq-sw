@@ -49,6 +49,10 @@ SLOPE_TR = -0.19
 TR_KEY = "TR0"
 
 
+class _Cancelled(Exception):
+    """The operator asked the run to stop; not an error."""
+
+
 def _counts_to_mv(counts: float) -> float:
     return (counts - CENTER) / (C.ADC_MAX + 1) * 1000.0
 
@@ -83,7 +87,11 @@ class Calibrator:
     # Overridable per instance - the tests shrink them to keep suites fast.
     baseline_events = 24
     fit_events = 40
-    measure_timeout_s = 20.0
+    # Event-count-driven, not time-driven: a measurement waits for its events
+    # however long they take. The only clock is the stall detector - this
+    # long with NO events means nothing is triggering, and the run stops with
+    # an honest count instead of fitting on scraps.
+    stall_s = 30.0
     # After an adjustment pass, 17 DAC writes sit on the mezzanine's slow SPI
     # and the baselines SLEW through the next moments. Measuring during the
     # slew poisoned every number on the first live run - quiet channels
@@ -95,6 +103,7 @@ class Calibrator:
         self._engine = engine
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._abort = threading.Event()
         self._state = {"active": False, "phase": None, "message": "",
                        "iteration": 0, "report": [], "error": None}
 
@@ -116,9 +125,18 @@ class Calibrator:
                 return {"ok": False, "error": "a calibration is already running"}
             self._state = {"active": True, "phase": mode, "message": "starting",
                            "iteration": 0, "report": [], "error": None}
+        self._abort.clear()
         self._thread = threading.Thread(target=self._run, args=(mode,),
                                         name="calib", daemon=True)
         self._thread.start()
+        return {"ok": True}
+
+    def cancel(self) -> dict:
+        """End a run at the next safe point; the board keeps whatever the
+        last completed pass wrote - never a half-applied one."""
+        if not self.is_active():
+            return {"ok": False, "error": "no calibration is running"}
+        self._abort.set()
         return {"ok": True}
 
     # ---------- the run ----------
@@ -135,6 +153,12 @@ class Calibrator:
                 bad = [s.key for s in servos if s.status != "ok"]
                 step.done(f"{len(servos) - len(bad)} of {len(servos)} channels ok"
                           + (f"; needs attention: {', '.join(bad)}" if bad else ""))
+        except _Cancelled:
+            log.info("calibration cancelled")
+            with self._lock:
+                self._state["message"] = "cancelled"
+                self._state["active"] = False
+            return
         except Exception as e:
             log.error("calibration failed: %s", e)
             with self._lock:
@@ -142,7 +166,8 @@ class Calibrator:
         finally:
             with self._lock:
                 self._state["active"] = False
-                self._state["message"] = "done"
+                if self._state["message"] != "cancelled":
+                    self._state["message"] = "done"
 
     def _say(self, msg: str, iteration: int | None = None) -> None:
         with self._lock:
@@ -172,12 +197,21 @@ class Calibrator:
         return servos
 
     def _measure(self, servos: list[_Servo], events: int, fire_sw: bool) -> None:
-        stats = self._engine.collect_stats(events, self.measure_timeout_s, fire_sw)
+        base_msg = self.status()["message"]
+        stats, seen = self._engine.collect_stats(
+            events, fire_sw, stall_s=self.stall_s, abort=self._abort,
+            progress=lambda n: self._say(f"{base_msg} - {n}/{events} events"))
+        if self._abort.is_set():
+            raise _Cancelled()
+        if seen < events:
+            # The stall detector fired: nothing has triggered for stall_s.
+            # Better an honest stop than a fit built on scraps.
+            raise RuntimeError(
+                f"only {seen} of {events} events, then nothing for "
+                f"{self.stall_s:.0f}s - is anything triggering?")
         missing = [s.key for s in servos if s.stat_ch not in stats]
         if missing:
-            raise RuntimeError(
-                "no events seen for " + ", ".join(missing)
-                + (" - is anything triggering?" if not fire_sw else ""))
+            raise RuntimeError("no events carried data for " + ", ".join(missing))
         for s in servos:
             st = stats[s.stat_ch]
             s.baseline = st["baseline"]

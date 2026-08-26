@@ -336,7 +336,7 @@ def test_auto_baseline_centers_every_channel():
         cfg.channels[0].dc_offset = 42598           # ~ -0.3 V: far off centre
         eng.set_config(cfg)
         eng.calibrator.baseline_events = 6
-        eng.calibrator.measure_timeout_s = 10.0
+        eng.calibrator.stall_s = 5.0
         eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
         assert eng.calibrator.start("baseline")["ok"]
         st = _wait_calibration(eng)
@@ -359,7 +359,7 @@ def test_fit_calibration_makes_room_for_the_pulse():
         assert eng.probe() is True
         eng.calibrator.baseline_events = 6
         eng.calibrator.fit_events = 6
-        eng.calibrator.measure_timeout_s = 10.0
+        eng.calibrator.stall_s = 5.0
         eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
         assert eng.calibrator.start("fit")["ok"]
         st = _wait_calibration(eng, timeout=90)
@@ -371,6 +371,28 @@ def test_fit_calibration_makes_room_for_the_pulse():
         assert got.channels[0].dc_offset < 31500
         ch0 = next(r for r in st["report"] if r["channel"] == "CH 0")
         assert ch0["below_mv"] > 150            # the pulse extent was seen
+    finally:
+        eng.close()
+
+
+def test_calibration_cancel_stops_a_patient_wait():
+    """Measurements are event-count-driven with no overall timeout, so Cancel
+    must end a long wait promptly - and read as cancelled, not failed."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        eng.calibrator.fit_events = 100000       # would take hours at 5 Hz
+        eng.calibrator.settle_s = 0.05
+        assert eng.calibrator.start("fit")["ok"]
+        time.sleep(0.8)                          # let it settle into the wait
+        assert eng.calibrator.cancel()["ok"]
+        deadline = time.time() + 5
+        while time.time() < deadline and eng.calibrator.is_active():
+            time.sleep(0.1)
+        st = eng.calibrator.status()
+        assert not st["active"]
+        assert st["message"] == "cancelled" and st["error"] is None
     finally:
         eng.close()
 
@@ -641,6 +663,7 @@ if __name__ == "__main__":
                test_fake_backend_behaves_like_a_board,
                test_auto_baseline_centers_every_channel,
                test_fit_calibration_makes_room_for_the_pulse,
+               test_calibration_cancel_stops_a_patient_wait,
                test_recording_stops_itself_at_max_events,
                test_sessions_and_display_roundtrip,
                test_runtime_url_is_always_loopback_for_a_local_window,

@@ -30,11 +30,13 @@ class _StatsCollector:
         self.want = events
         self.seen = 0
         self.done = threading.Event()
+        self.last_add = time.monotonic()   # for the stall detector
         self._by_ch: dict[int, dict] = {}
         self._lock = threading.Lock()
 
     def add(self, ev) -> None:
         with self._lock:
+            self.last_add = time.monotonic()
             if self.seen >= self.want:
                 return
             for ch, wave in ev.samples.items():
@@ -199,14 +201,19 @@ class AcquisitionEngine:
             self._thread.start()
             starting.done("Acquisition running")
 
-    def collect_stats(self, events: int, timeout_s: float,
-                      fire_sw: bool) -> dict[int, dict]:
+    def collect_stats(self, events: int, fire_sw: bool,
+                      stall_s: float = 30.0,
+                      abort: threading.Event | None = None,
+                      progress=None) -> tuple[dict[int, dict], int]:
         """Per-channel {baseline, min, max} over the next `events` events.
 
+        Event-count-driven, not time-driven: the wait lasts as long as events
+        keep arriving, however slowly. The only clock is the STALL detector -
+        `stall_s` with no events at all means nothing is triggering, and the
+        caller gets whatever arrived plus the honest count to judge it by.
         With fire_sw the engine supplies its own software triggers (the
-        no-signal measurement); without it the events must come from real
-        triggers, and a timeout returns whatever arrived - the caller decides
-        whether that is enough."""
+        no-signal measurement). `abort` ends the wait early; `progress` is
+        told the running event count for a live status line."""
         col = _StatsCollector(events)
         with self._lock:
             self._stats_col = col
@@ -219,11 +226,19 @@ class AcquisitionEngine:
                 self.start()
                 if not self._running.is_set():
                     raise RuntimeError("no unit connected")
-            col.done.wait(timeout_s)
+            last_reported = -1
+            while not col.done.wait(0.2):
+                if abort is not None and abort.is_set():
+                    break
+                if time.monotonic() - col.last_add > stall_s:
+                    break
+                if progress is not None and col.seen != last_reported:
+                    last_reported = col.seen
+                    progress(col.seen)
         finally:
             with self._lock:
                 self._stats_col = None
-        return col.summary()
+        return col.summary(), col.seen
 
     def fire_software_triggers(self, count: int = 1, rate_hz: float = 10.0) -> dict:
         """Queue `count` software triggers for the readout loop to fire.

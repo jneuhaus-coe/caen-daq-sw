@@ -80,6 +80,11 @@ export function CalibrationPanel({ connected, recording, onFinished, onError }: 
       {busy ? (
         <p className="calib-progress">
           <span className="spinner" /> {st!.phase}: {st!.message}
+          <button className="calib-cancel"
+            title="Stop at the next safe point; the board keeps the last completed pass"
+            onClick={() => api.calibrateCancel().catch(() => {})}>
+            Cancel
+          </button>
         </p>
       ) : null}
       {st?.error ? <p className="calib-error">{st.error}</p> : null}

@@ -417,7 +417,10 @@ export function App() {
               setConfig(cfg); confirmed.current = cfg;
               const bad = st.report.filter((r) => r.status !== "ok");
               if (st.error) push("err", "Calibration failed", [st.error]);
-              else if (bad.length) {
+              else if (st.message === "cancelled") {
+                push("warn", "Calibration cancelled",
+                     ["The board keeps the last completed pass."]);
+              } else if (bad.length) {
                 push("warn", "Calibration finished with findings",
                      bad.map((r) => `${r.channel}: ${r.status}`));
               } else {

@@ -206,6 +206,14 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         engine.start()
         return engine.status()
 
+    # Registered before the {mode} route, which would otherwise swallow it.
+    @app.post("/api/calibrate/cancel")
+    def calibrate_cancel():
+        r = engine.calibrator.cancel()
+        if not r["ok"]:
+            raise HTTPException(409, r["error"])
+        return r
+
     @app.post("/api/calibrate/{mode}")
     def calibrate(mode: str):
         """Start a closed-loop calibration: 'baseline' (software triggers,

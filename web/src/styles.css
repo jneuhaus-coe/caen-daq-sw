@@ -290,6 +290,11 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
   animation: calib-spin 0.9s linear infinite; vertical-align: -1px;
 }
 @keyframes calib-spin { to { transform: rotate(360deg); } }
+.calib-progress .calib-cancel {
+  margin-left: 8px; font-size: 11px; padding: 1px 8px; cursor: pointer;
+  background: #21262d; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+}
 .calib-error {
   font-size: 11.5px; color: var(--red); background: #3d1518;
   border-radius: 6px; padding: 6px 8px;

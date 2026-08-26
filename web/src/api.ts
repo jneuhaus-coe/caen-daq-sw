@@ -39,6 +39,8 @@ export const api = {
       .then(j<{ ok: boolean; status: Status }>),
   calibrateStatus: () =>
     fetch("/api/calibrate").then(j<CalibrationStatus>),
+  calibrateCancel: () =>
+    fetch("/api/calibrate/cancel", { method: "POST" }).then(j<{ ok: boolean }>),
 
   getDisplay: () => fetch("/api/display").then(j<DisplayPrefs>),
   setDisplay: (d: DisplayPrefs) =>
