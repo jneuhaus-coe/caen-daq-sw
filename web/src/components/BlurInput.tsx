@@ -10,6 +10,7 @@ interface Props {
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
+  disabled?: boolean;
   onCancel?: () => void;
   /** Canonical display text for what was typed, e.g. the reachable step it
    *  lands on. Without it the field falls back to the current value. */
@@ -29,7 +30,7 @@ interface Props {
  *  yank the field out from under the typist. */
 export function BlurInput({
   value, onCommit, onCancel, type = "text", step, min, max,
-  placeholder, autoFocus, className, selectOnFocus, format,
+  placeholder, autoFocus, className, disabled, selectOnFocus, format,
 }: Props) {
   const [draft, setDraft] = useState(String(value));
   const editing = useRef(false);
@@ -66,6 +67,7 @@ export function BlurInput({
       step={step}
       min={min}
       max={max}
+      disabled={disabled}
       placeholder={placeholder}
       value={draft}
       onFocus={() => { editing.current = true; }}

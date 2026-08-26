@@ -12,6 +12,7 @@ import uvicorn
 
 from . import __version__, launcher, logsetup, runtime
 from .acquisition import AcquisitionEngine
+from .backend.base import make_backend
 from .server import create_app
 
 
@@ -149,7 +150,13 @@ def _serve(args, with_tray: bool) -> int:
     _check_bindable(args.host, args.port)
     logsetup.did(log, f"Checking port {args.port} is free", "Ok")
 
-    engine = AcquisitionEngine()
+    # DAQ_BACKEND=fake runs against the synthetic board - for the UI test
+    # suite and demos, never the default, and loud when it is in effect so a
+    # beamline shift can not mistake synthetic data for the real thing.
+    backend_kind = os.environ.get("DAQ_BACKEND", "caen")
+    if backend_kind != "caen":
+        log.warning("DAQ_BACKEND=%s: this is NOT real hardware", backend_kind)
+    engine = AcquisitionEngine(lambda: make_backend(backend_kind))
     if not args.no_open:
         _open_board_in_background(engine, BOARD_OPEN_WAIT_S)
     else:
@@ -373,7 +380,7 @@ def _stop(_args) -> int:
     while time.time() < deadline and runtime.process_alive(pid):
         time.sleep(0.25)
     if runtime.process_alive(pid):
-        _err(f"pid {pid} is still running 15s after being asked to stop.")
+        _explain_unkillable(pid)
         return 1
 
     runtime.clear()
@@ -391,6 +398,25 @@ def _stop(_args) -> int:
 
     _say(f"stopped the server on port {port}.")
     return 0
+
+
+def _explain_unkillable(pid: int) -> None:
+    """A process that survives a kill is not refusing to stop - it cannot.
+
+    On Windows the kill above is TerminateProcess, which does not wait for
+    consent: the process only lingers when a thread is blocked in an
+    uninterruptible kernel call, and here that is almost always the CAEN USB
+    driver (CAENUSBdrv.sys) wedged inside OpenDigitizer. Seen live on serial
+    53364: the open hung in the driver, every kill "succeeded", and the process
+    stayed until the unit was power-cycled. Without naming the remedy the
+    operator is left kill-looping a process that can never exit on its own.
+    """
+    _err(f"pid {pid} is still running 15s after being asked to stop.")
+    if os.name == "nt":
+        _err("a process that survives a kill on Windows is stuck in a kernel")
+        _err("driver call - usually the CAEN USB driver wedged mid-open.")
+        _err("power-cycle (or unplug and replug) the digitizer to release it;")
+        _err("if the process still does not exit, reboot the machine.")
 
 
 def _status(_args) -> int:

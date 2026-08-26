@@ -34,16 +34,80 @@ export const api = {
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () =>
     fetch("/api/acq/start", { method: "POST" }).then(j<Status & { started: boolean }>),
-  recStart: (name: string, timestamp: boolean) =>
+  recStart: (name: string, timestamp: boolean, runNumber?: number | null,
+             maxEvents?: number | null) =>
     fetch("/api/rec/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, timestamp }),
+      body: JSON.stringify({ name, timestamp, run_number: runNumber ?? null,
+                             max_events: maxEvents ?? null }),
     }).then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   recStop: () =>
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
+  trigger: (count: number, rateHz: number) =>
+    fetch("/api/trigger", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count, rate_hz: rateHz }),
+    }).then(j<{ ok: boolean; error?: string; queued?: number; status: Status }>),
+
+  calibrate: (mode: "baseline" | "fit", events?: number | null) =>
+    fetch(`/api/calibrate/${mode}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: events ?? null }),
+    }).then(j<{ ok: boolean; status: Status }>),
+  calibrateStatus: () =>
+    fetch("/api/calibrate").then(j<CalibrationStatus>),
+  calibrateCancel: () =>
+    fetch("/api/calibrate/cancel", { method: "POST" }).then(j<{ ok: boolean }>),
+
+  getDisplay: () => fetch("/api/display").then(j<DisplayPrefs>),
+  setDisplay: (d: DisplayPrefs) =>
+    fetch("/api/display", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(d),
+    }).then(j<{ ok: boolean }>),
+  listSessions: () =>
+    fetch("/api/sessions").then(j<{ sessions: SessionInfo[] }>),
+  saveSession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "POST" })
+      .then(j<{ ok: boolean; name: string; saved_at: number }>),
+  applySession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}/apply`, { method: "POST" })
+      .then(j<{ ok: boolean; config: BoardConfig; display: DisplayPrefs;
+                errors: string[]; connected: boolean }>),
+  deleteSession: (name: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" })
+      .then(j<{ ok: boolean }>),
 };
+
+export interface SessionInfo { name: string; saved_at: number | null; }
+
+export interface CalibrationRow {
+  channel: string;
+  dac: number;
+  baseline_mv: number | null;
+  below_mv: number;
+  above_mv: number;
+  status: "ok" | "adjusting" | "unreachable" | "no_fit" | "clipped";
+}
+
+export interface CalibrationStatus {
+  active: boolean;
+  phase: "baseline" | "fit" | null;
+  message: string;
+  iteration: number;
+  report: CalibrationRow[];
+  error: string | null;
+}
+
+/** UI state that persists across restarts, keyed however the UI likes.
+ *  y_ranges: per-channel waveform display range in volts, [min, max].
+ *  wave_mode: "avg" (rolling average) or "overlay" (persistence density). */
+export interface DisplayPrefs {
+  y_ranges?: Record<string, [number, number]>;
+  wave_mode?: "avg" | "overlay";
+}
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */
 export function openTelemetry(onData: (t: Telemetry) => void): () => void {

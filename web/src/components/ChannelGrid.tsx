@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { BoardConfig, Catalog, Telemetry } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
-import { dacToVolts, voltsToDac } from "../volts";
+import { countsPerLsb, dacToVolts, voltsToDac, zeroCounts } from "../volts";
 
 interface Props {
   catalog: Catalog;
@@ -10,17 +10,32 @@ interface Props {
   tele: Telemetry | null;
   onDcOffset: (ch: number, dac: number) => void;
   onName: (ch: number, name: string) => void;
+  /** Per-channel display range in volts; a missing entry means the default. */
+  yRanges: Record<number, [number, number]>;
+  onYRange: (ch: number, range: [number, number] | null, all: boolean) => void;
+  waveMode: "avg" | "overlay";
+  clearEpoch: number;
 }
 
-const DEAD_VPP = 30;      // below this = likely dead / no signal
+// DEAD keys off a SINGLE event's peak-to-peak, not the average: averaging
+// erases dark pulses and noise alike, so quiet-but-alive channels (SiPMs
+// seeing only darks) were branded DEAD. A live channel always shows its
+// noise floor in a single event (~10 counts on this unit); flat below this
+// means electronics genuinely silent - check the cable, not the source.
+const DEAD_LAST_VPP = 5;
 const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
-export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props) {
+export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
+                              yRanges, onYRange, waveMode, clearEpoch }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
   const [open, setOpen] = useState<Record<number, boolean>>({});
   const [renaming, setRenaming] = useState<number | null>(null);
+  // Slider previews: value shown (and band drawn) while dragging, in volts.
+  // The hardware write happens once, on release - a drag must not become a
+  // register-write storm on a bus that answers -1 under bursts.
+  const [preview, setPreview] = useState<Record<number, number | undefined>>({});
 
   const windowNs = tele ? tele.sample_period_ns * tele.record_length : undefined;
   const dcDef = catalog.channel.find((d) => d.key === "dc_offset");
@@ -49,9 +64,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
                   const ch = first + i;
                   const e = tele?.channels[String(ch)];
                   const has = !!e?.wave;
-                  const vpp = e?.vpp ?? 0;
                   const clip = has && (e!.max! >= RAIL_HI || e!.min! <= RAIL_LO);
-                  const dead = on && has && vpp < DEAD_VPP;
+                  const dead = on && e?.last_vpp != null && e.last_vpp < DEAD_LAST_VPP;
                   const color = !on ? "#3a4150" : dead ? "#8b5cf6" : clip ? "#f0883e" : "#4ac776";
                   let badge = "", bcls = "";
                   if (!on) { badge = "off"; bcls = "off"; }
@@ -61,6 +75,15 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
                   const cc = config.channels[ch];
                   const name = cc?.name ?? "";
                   const dac = cc?.dc_offset ?? g.dc_offset_mid;
+                  const pv = preview[ch];
+                  const shownV = pv ?? dacToVolts(dac, g);
+                  const shownDac = pv != null ? voltsToDac(pv, g) : dac;
+                  const vLimit = g.dc_offset_range_v / 2;
+                  const commitSlider = () => {
+                    if (pv == null) return;
+                    setPreview((p) => ({ ...p, [ch]: undefined }));
+                    onDcOffset(ch, voltsToDac(pv, g));
+                  };
 
                   return (
                     <div key={ch} className={"tile" + (on ? "" : " disabled")}>
@@ -84,26 +107,50 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName }: Props
                         {badge ? <span className={"badge " + bcls}>{badge}</span> : null}
                       </div>
 
-                      <MiniWave wave={on ? e?.wave : undefined} dcOffset={dac} geom={g}
-                        windowNs={windowNs} postTriggerPct={config.post_trigger}
-                        color={color} />
+                      <MiniWave wave={on ? e?.wave : undefined}
+                        geom={g} windowNs={windowNs} postTriggerPct={config.post_trigger}
+                        color={color}
+                        yRange={yRanges[ch]}
+                        onYRange={(range, all) => onYRange(ch, range, all)}
+                        mode={waveMode}
+                        lastWave={on ? e?.last : undefined}
+                        lastId={on ? e?.last_index : undefined}
+                        baselineGuide={on ? zeroCounts(shownDac, g) : undefined}
+                        offsetDac={shownDac} offsetSlope={countsPerLsb(g)}
+                        clearEpoch={clearEpoch} />
 
-                      <div className="tile-dc" title={dcHelp}>
+                      <div className="tile-dc" title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
                         <label>DC offset</label>
+                        {/* Coarse placement by slider (0.01 V steps, previewed
+                            live in the band above, written on release); fine
+                            trim by typing (1 mV). */}
+                        <input className="dc-slider" type="range"
+                          min={-vLimit} max={vLimit} step={0.01}
+                          value={shownV}
+                          onChange={(ev) => setPreview((p) => ({ ...p, [ch]: Number(ev.target.value) }))}
+                          onPointerUp={commitSlider}
+                          onKeyUp={commitSlider}
+                          onBlur={commitSlider} />
                         <span className="field">
                           <BlurInput
                             type="number" step={0.005}
-                            min={-g.dc_offset_range_v / 2} max={g.dc_offset_range_v / 2}
-                            value={dacToVolts(dac, g).toFixed(3)}
+                            min={-vLimit} max={vLimit}
+                            value={shownV.toFixed(3)}
                             selectOnFocus
-                            onCommit={(v) => onDcOffset(ch, voltsToDac(Number(v || 0), g))}
+                            onCommit={(v) => {
+                              const clamped = Math.min(vLimit, Math.max(-vLimit, Number(v || 0)));
+                              onDcOffset(ch, voltsToDac(clamped, g));
+                            }}
                           />
                           <span className="unit">V</span>
                         </span>
                       </div>
 
                       <div className="tile-foot">
-                        <span className="n">{e?.count ? "n=" + e.count : ""}</span>
+                        {/* Always rendered, so the tile never resizes when
+                            events start arriving - an empty span has no
+                            height, and the grid used to jump. */}
+                        <span className="n">n={e?.count ?? 0}</span>
                       </div>
                     </div>
                   );

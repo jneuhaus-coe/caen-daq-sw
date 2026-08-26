@@ -7,10 +7,17 @@ build/
 dist/
 .venv/
 venv/
+# Auto-created by `uv run` during local dev; the operator install comes from
+# the wheel, so there is nothing for a lock file to pin.
+uv.lock
 
 # Node / Vite
 node_modules/
 web/dist/
+
+# Playwright UI tests: reports, traces, and the fake server's isolated state
+web/test-results/
+web/playwright-report/
 
 # NOTE: the built UI bundle (server/daq/static/) IS committed on purpose, so the
 # app runs with just `pip install -e . && python -m daq` — no Node on the target.

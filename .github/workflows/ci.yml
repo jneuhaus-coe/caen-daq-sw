@@ -68,6 +68,41 @@ jobs:
           }
           Write-Host "install.ps1: parse OK, lint clean"
 
+  ui-tests:
+    name: Playwright UI tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the server
+        run: cd server && python -m pip install --quiet -e .
+
+      - name: Install Playwright
+        run: |
+          cd web
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # The suite launches its own server with DAQ_BACKEND=fake on port 8801,
+      # state isolated under web/test-results - no hardware anywhere.
+      - name: UI tests
+        run: cd web && npx playwright test
+        env:
+          DAQ_TEST_SERVER_CMD: python -m daq --serve --host 127.0.0.1 --port 8801
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: web/test-results
+          retention-days: 7
+
   install-windows:
     name: install.ps1 on Windows
     runs-on: windows-latest

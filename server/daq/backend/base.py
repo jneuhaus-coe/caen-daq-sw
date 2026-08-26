@@ -29,13 +29,20 @@ class Event:
     """One trigger's worth of corrected waveforms.
 
     samples: {absolute_channel_index: float32 array of length record_length}.
-    For the 742 these are DRS4-corrected (baseline/time/peak) millivolt-ish
-    ADC counts as floats, matching CAEN's Event742 after ApplyDataCorrection.
+    For the 742 these are DRS4-corrected ADC counts as floats. In "auto"
+    correction mode the library also resampled them onto a uniform time grid;
+    in "timing" mode they are amplitude-corrected only and `times_ns` carries
+    each group's true, non-uniform sample times instead.
+
+    trigger_cells: {group: DRS4 start cell} - maketree's `tc`, recorded in
+    every mode so the two analysis paths can be cross-checked.
     """
     index: int
     timestamp_s: float
     trigger_time_tag: int
     samples: dict[int, np.ndarray] = field(default_factory=dict)
+    trigger_cells: dict[int, int] = field(default_factory=dict)
+    times_ns: Optional[dict[int, np.ndarray]] = None
 
 
 class DigitizerBackend(abc.ABC):
@@ -76,6 +83,15 @@ class DigitizerBackend(abc.ABC):
         hardware that can be powered off or unplugged underneath us."""
         return True
 
+    def trigger(self) -> None:
+        """Fire one software trigger into an armed board.
+
+        The x742 has no channel self-trigger, so a bench check with no signal
+        source relies on this. Optional: a backend without one raises, and the
+        engine surfaces that as an error instead of pretending it fired.
+        """
+        raise NotImplementedError("this backend has no software trigger")
+
     # convenience
     @property
     def record_length(self) -> int:
@@ -83,7 +99,11 @@ class DigitizerBackend(abc.ABC):
 
 
 def make_backend(kind: str = "caen", **kwargs) -> DigitizerBackend:
-    if (kind or "caen").lower() in ("caen", "real", "hw", "hardware"):
+    kind = (kind or "caen").lower()
+    if kind in ("caen", "real", "hw", "hardware"):
         from .caen import CaenBackend
         return CaenBackend(**kwargs)
-    raise ValueError(f"unknown backend {kind!r} (use 'caen')")
+    if kind in ("fake", "sim"):
+        from .fake import FakeBackend
+        return FakeBackend(**kwargs)
+    raise ValueError(f"unknown backend {kind!r} (use 'caen' or 'fake')")

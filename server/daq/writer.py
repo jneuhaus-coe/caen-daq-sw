@@ -18,6 +18,8 @@ import os
 import struct
 import time
 
+import numpy as np
+
 from .backend.base import Event
 from . import logsetup
 
@@ -33,6 +35,46 @@ class Writer(abc.ABC):
     def close(self) -> None: ...
 
 
+def write_run_metadata(directory: str, cfg, run_name: str,
+                       run_number: int | None = None) -> None:
+    """Channel names and settings go in a sidecar next to the data, whatever
+    the format - the data files' own layouts are fixed by compatibility.
+    Names are stored bare, without the UI's "CH n - " prefix."""
+    meta = {
+        "run_name": run_name,
+        "run_number": run_number,
+        "started": time.time(),
+        "channels": {
+            str(ch): {"name": cfg.channels[ch].name,
+                      "dc_offset": cfg.channels[ch].dc_offset}
+            for ch in cfg.enabled_channels()
+        },
+        "drs4_frequency": cfg.drs4_frequency,
+        "record_length": cfg.record_length,
+        "post_trigger": cfg.post_trigger,
+        "output_format": cfg.output_format,
+    }
+    with open(os.path.join(directory, "run_metadata.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def stamp_run_end(directory: str, events: int) -> None:
+    """Final event count into the sidecar, so a listing can show it without
+    opening every data file. Losing it only costs the listing an event count,
+    so it must never take a close down - but it is worth a line in the log,
+    because a run that will not stamp usually cannot be written to either."""
+    path = os.path.join(directory, "run_metadata.json")
+    try:
+        with open(path) as f:
+            meta = json.load(f)
+        meta["events"] = events
+        meta["ended"] = time.time()
+        with open(path, "w") as f:
+            json.dump(meta, f, indent=2)
+    except (OSError, ValueError) as e:
+        log.warning("Could not stamp the event count into %s: %s", path, e)
+
+
 class NullWriter(Writer):
     def open(self, cfg): pass
     def write(self, ev): pass
@@ -40,13 +82,15 @@ class NullWriter(Writer):
 
 
 class WaveDumpWriter(Writer):
-    def __init__(self, directory: str, run_name: str = ""):
+    def __init__(self, directory: str, run_name: str = "",
+                 run_number: int | None = None):
         self._files = {}
         self._cfg = None
         self._ascii = True
         self._header = False
         self._dir = directory
         self._run_name = run_name
+        self._run_number = run_number
         self._events = 0
 
     def open(self, cfg) -> None:
@@ -60,7 +104,7 @@ class WaveDumpWriter(Writer):
             for ch in cfg.enabled_channels():
                 path = os.path.join(self._dir, f"wave_{ch}.{ext}")
                 self._files[ch] = open(path, mode)
-            self._write_metadata(cfg)
+            write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
             self._cfg = cfg         # last: close() takes this as "there is a run"
         except OSError:
             # Do not leave half a run open: the caller discards the directory,
@@ -68,25 +112,6 @@ class WaveDumpWriter(Writer):
             # still unset, close() knows there is no metadata to stamp.
             self.close()
             raise
-
-    def _write_metadata(self, cfg) -> None:
-        """Channel names and settings go in a sidecar, not the WaveDump header -
-        that header layout is fixed and the point of this writer is byte
-        compatibility. Names are stored bare, without the UI's "CH n - " prefix."""
-        meta = {
-            "run_name": self._run_name,
-            "started": time.time(),
-            "channels": {
-                str(ch): {"name": cfg.channels[ch].name,
-                          "dc_offset": cfg.channels[ch].dc_offset}
-                for ch in cfg.enabled_channels()
-            },
-            "drs4_frequency": cfg.drs4_frequency,
-            "record_length": cfg.record_length,
-            "post_trigger": cfg.post_trigger,
-        }
-        with open(os.path.join(self._dir, "run_metadata.json"), "w") as f:
-            json.dump(meta, f, indent=2)
 
     def write(self, ev: Event) -> None:
         self._events += 1
@@ -134,23 +159,126 @@ class WaveDumpWriter(Writer):
                 log.error("wave file for channel %d did not close cleanly, so its "
                           "last events may be missing: %s", ch, e)
         self._files = {}
-        # Stamp the final event count so a listing can show it without opening
-        # every wave file. Losing this only costs the listing an event count, so
-        # it must never take a close down - but it is worth a line in the log,
-        # because a run that will not stamp usually cannot be written to either.
-        if self._cfg is None:
+        if self._cfg is not None:
+            stamp_run_end(self._dir, self._events)
+
+
+class RootWriter(Writer):
+    """One waveforms.root per run: TTree "pulse", readable by CERN ROOT and
+    uproot alike, written with no ROOT install on the DAQ machine.
+
+    The branch layout follows the group's RADiCAL testbeam converter
+    (gitlab.cern.ch/ledovsk/tb_fnal_radical, drs2root/maketree.cc) so files
+    drop straight into that analysis:
+
+      event/I               event number
+      channel[18][1024]/F   16 signal channels + the two TR traces
+      times[2][1024]/F      per-group sample times, ns
+      tc[2]/s               per-group DRS4 start cell (trigger cell)
+
+    In "timing" correction mode the times branch carries each event's TRUE
+    non-uniform axis, exactly as maketree produces - full timing precision,
+    no converter. In "auto" mode times are uniform steps, which is what the
+    library's resampling time correction leaves behind. tc is recorded in
+    every mode so the two paths can be cross-checked. One honest deviation:
+    TR traces (indices 16, 17) are zero until TR decoding lands - the
+    decoder skips them, see CLAUDE.md. trigger_time_tag rides along as an
+    extra branch.
+
+    Events are buffered and written in batches so baskets stay a sane size;
+    a stream of one-event extends would bloat the file and the read path.
+    """
+    BATCH = 64
+    N_CHANNELS_OUT = 18            # matches maketree's channel[18][1024]
+
+    def __init__(self, directory: str, run_name: str = "",
+                 run_number: int | None = None):
+        self._dir = directory
+        self._run_name = run_name
+        self._run_number = run_number
+        self._file = None
+        self._tree = None
+        self._cfg = None
+        self._events = 0
+        self._buf: list[dict] = []
+        self._times = None
+
+    def open(self, cfg) -> None:
+        import uproot          # deferred: only a ROOT run pays the import
+        from . import constants as C
+
+        self._cfg = cfg
+        os.makedirs(self._dir, exist_ok=True)
+        n = cfg.record_length
+        # run_<N>.root: the number is the analysis-facing identity of the file
+        # (test-beam convention), inferred or set at record time.
+        fname = (f"run_{self._run_number}.root" if self._run_number
+                 else "waveforms.root")
+        self._file = uproot.recreate(os.path.join(self._dir, fname))
+        self._tree = self._file.mktree(
+            "pulse",
+            {"event": np.int32, "trigger_time_tag": np.uint32,
+             "channel": (np.float32, (self.N_CHANNELS_OUT, n)),
+             "times": (np.float32, (2, n)),
+             "tc": (np.uint16, (2,))},
+            title="Digitized waveforms")
+        dt = C.sample_period_ns(cfg.drs4_frequency)
+        self._times = np.tile(np.arange(n, dtype=np.float32) * dt, (2, 1))
+        write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
+
+    def write(self, ev: Event) -> None:
+        n = self._cfg.record_length
+        chans = np.zeros((self.N_CHANNELS_OUT, n), dtype=np.float32)
+        for ch, wave in ev.samples.items():
+            if 0 <= ch < self.N_CHANNELS_OUT:
+                chans[ch, :len(wave)] = wave
+        # True per-event times when the correction mode produced them
+        # ("timing"); the uniform axis otherwise.
+        times = self._times
+        if ev.times_ns:
+            times = self._times.copy()
+            for gr, t in ev.times_ns.items():
+                if 0 <= gr < 2:
+                    times[gr, :len(t)] = t
+        tc = np.zeros(2, dtype=np.uint16)
+        for gr, cell in (ev.trigger_cells or {}).items():
+            if 0 <= gr < 2:
+                tc[gr] = cell
+        self._buf.append({"event": ev.index,
+                          "trigger_time_tag": ev.trigger_time_tag & 0xFFFFFFFF,
+                          "channel": chans, "times": times, "tc": tc})
+        self._events += 1
+        if len(self._buf) >= self.BATCH:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._buf:
             return
-        path = os.path.join(self._dir, "run_metadata.json")
+        b = self._buf
+        self._buf = []
+        self._tree.extend({
+            "event": np.array([e["event"] for e in b], dtype=np.int32),
+            "trigger_time_tag": np.array([e["trigger_time_tag"] for e in b],
+                                         dtype=np.uint32),
+            "channel": np.stack([e["channel"] for e in b]),
+            "times": np.stack([e["times"] for e in b]),
+            "tc": np.stack([e["tc"] for e in b]),
+        })
+
+    def close(self) -> None:
         try:
-            with open(path) as f:
-                meta = json.load(f)
-            meta["events"] = self._events
-            meta["ended"] = time.time()
-            with open(path, "w") as f:
-                json.dump(meta, f, indent=2)
-        except (OSError, ValueError) as e:
-            log.warning("Could not stamp the event count into %s: %s", path, e)
+            self._flush()
+        finally:
+            if self._file is not None:
+                self._file.close()
+                self._file = None
+        if self._cfg is not None:
+            stamp_run_end(self._dir, self._events)
 
 
-def make_writer(directory: str, run_name: str = "") -> Writer:
-    return WaveDumpWriter(directory, run_name)
+def make_writer(directory: str, run_name: str = "",
+                output_format: str = "ascii",
+                run_number: int | None = None) -> Writer:
+    if (output_format or "").lower() == "root":
+        return RootWriter(directory, run_name, run_number)
+    return WaveDumpWriter(directory, run_name, run_number)

@@ -21,18 +21,66 @@ from . import logsetup
 log = logsetup.get("daq.acq")
 
 
+class _StatsCollector:
+    """Accumulates per-channel (baseline, min, max) over the next N events -
+    the calibrator's measuring instrument. Baseline is the median of each
+    event's median, so a pulse in the record does not drag it."""
+
+    def __init__(self, events: int):
+        self.want = events
+        self.seen = 0
+        self.done = threading.Event()
+        self.last_add = time.monotonic()   # for the stall detector
+        self._by_ch: dict[int, dict] = {}
+        self._lock = threading.Lock()
+
+    def add(self, ev) -> None:
+        with self._lock:
+            self.last_add = time.monotonic()
+            if self.seen >= self.want:
+                return
+            for ch, wave in ev.samples.items():
+                e = self._by_ch.setdefault(
+                    ch, {"medians": [], "min": float("inf"), "max": float("-inf")})
+                e["medians"].append(float(np.median(wave)))
+                e["min"] = min(e["min"], float(wave.min()))
+                e["max"] = max(e["max"], float(wave.max()))
+            self.seen += 1
+            if self.seen >= self.want:
+                self.done.set()
+
+    def summary(self) -> dict[int, dict]:
+        with self._lock:
+            return {ch: {"baseline": float(np.median(e["medians"])),
+                         "min": e["min"], "max": e["max"],
+                         "n": len(e["medians"])}
+                    for ch, e in self._by_ch.items() if e["medians"]}
+
+
 class AcquisitionEngine:
-    def __init__(self):
+    def __init__(self, backend_factory=make_backend):
+        # Injectable so tests can refuse hardware outright. The default factory
+        # loads the real libCAENDigitizer, so on a machine with a unit attached
+        # a "hardware-free" test would open — or hang on — the actual board.
+        self._backend_factory = backend_factory
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
         self._cfg = default_config()   # only a seed; the board wins once open
         self._avg = RollingAverage()
         self._rate = TriggerRateMeter()
+        # Latest single event per channel, as (event_index, wave). Telemetry
+        # ships it decimated so the UI's overlay mode can accumulate a
+        # density picture client-side - one trace per tick, so the stream
+        # stays the same size class as the averages and can never throttle
+        # data-taking. (index, wave) as one tuple: assignment is atomic, so
+        # the telemetry thread never sees a wave paired with the wrong id.
+        self._last: dict[int, tuple[int, np.ndarray]] = {}
         # Recording is independent of acquiring: you watch first, then record.
         self._writer = None
         self._run_id: str | None = None
         self._run_started: float | None = None
         self._recorded = 0
+        self._rec_limit: int | None = None    # auto-close the run at N events
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -45,12 +93,24 @@ class AcquisitionEngine:
         self._errors: list[str] = []
         self._opened = False
         self._last_open_attempt = 0.0
+        # Software triggers are queued here and fired by the readout loop, one
+        # per pass at the requested pace. Firing from the request thread that
+        # asked for them would put a second thread inside libCAENDigitizer
+        # while the loop is in ReadData on the same handle.
+        self._sw_pending = 0
+        self._sw_interval_s = 0.0
+        self._sw_next_fire = 0.0
+        # Per-event stats tap for the calibrator: set for the duration of one
+        # measurement, fed by the readout loop, then cleared.
+        self._stats_col: _StatsCollector | None = None
+        from .calibration import Calibrator
+        self.calibrator = Calibrator(self)
 
     # ---------- lifecycle ----------
     def open(self, level: int = logging.INFO):
         with self._open_lock:
             with logsetup.step(log, "Opening the digitizer", level=level) as opening:
-                backend = make_backend()
+                backend = self._backend_factory()
                 board_info = backend.open()
                 self._backend = backend
                 self._board_info = board_info
@@ -76,8 +136,27 @@ class AcquisitionEngine:
             return self._board_info
 
     def get_config(self) -> BoardConfig:
+        """A COPY, deliberately: callers mutate what they get (the calibrator,
+        the tests), and handing out the live object let a mutation slip past
+        set_config's changed-DAC comparison - it compared the object with
+        itself and saw nothing to re-arm for."""
         with self._lock:
-            return self._cfg
+            return BoardConfig.from_dict(self._cfg.to_dict())
+
+    def _dac_backed_changed(self, cfg: BoardConfig) -> bool:
+        """Did this write touch a setting that lives on a mezzanine DAC?
+
+        Those (channel DC offsets, TR threshold/offset) only take ANALOG
+        effect at an arm - written mid-acquisition they update the register
+        and change nothing, measured on serial 53364."""
+        with self._lock:
+            cur = self._cfg
+        if any(c.dc_offset != o.dc_offset
+               for c, o in zip(cfg.channels, cur.channels)):
+            return True
+        return any(g.fast_trigger_dc_offset != o.fast_trigger_dc_offset
+                   or g.fast_trigger_threshold != o.fast_trigger_threshold
+                   for g, o in zip(cfg.groups, cur.groups))
 
     def set_config(self, cfg: BoardConfig) -> tuple[BoardConfig, list[str]]:
         """Push to the board and adopt what it reports back.
@@ -86,6 +165,11 @@ class AcquisitionEngine:
         rather than left for the caller to recover from `status()`: that list is
         a capped ring, so once it is full a diff of it reports no errors at all
         and a refused write reads as a success.
+
+        A DAC-backed change while acquiring re-arms automatically (stop,
+        write, start) - the only way it takes analog effect - and is refused
+        outright while recording, where a mid-run baseline shift would
+        corrupt the data with a straight face.
         """
         if not self._opened or self._backend is None:
             # Nothing was sent anywhere. Returning the requested config here
@@ -97,6 +181,18 @@ class AcquisitionEngine:
             self._record_error(err)
             with self._lock:
                 return self._cfg, [err]
+
+        rearm = False
+        if self._running.is_set() and self._dac_backed_changed(cfg):
+            if self._writer is not None:
+                err = ("DC offsets and TR levels cannot change "
+                       "during a recording - stop it first")
+                self._record_error(err)
+                with self._lock:
+                    return self._cfg, [err]
+            rearm = True
+            self.stop()
+
 
         with logsetup.step(log, "Writing settings to the unit") as writing:
             try:
@@ -115,6 +211,8 @@ class AcquisitionEngine:
                          if errors else "All settings accepted and read back")
         with self._lock:
             self._cfg = actual
+        if rearm:
+            self.start()               # the arm is what loads the DACs
         return actual, errors
 
     def start(self) -> bool:
@@ -171,9 +269,92 @@ class AcquisitionEngine:
             starting.done("Acquisition running")
             return True
 
+    def collect_stats(self, events: int, fire_sw: bool,
+                      stall_s: float = 30.0,
+                      abort: threading.Event | None = None,
+                      progress=None) -> tuple[dict[int, dict], int]:
+        """Per-channel {baseline, min, max} over the next `events` events.
+
+        Event-count-driven, not time-driven: the wait lasts as long as events
+        keep arriving, however slowly. The only clock is the STALL detector -
+        `stall_s` with no events at all means nothing is triggering, and the
+        caller gets whatever arrived plus the honest count to judge it by.
+        With fire_sw the engine supplies its own software triggers (the
+        no-signal measurement). `abort` ends the wait early; `progress` is
+        told the running event count for a live status line."""
+        col = _StatsCollector(events)
+        with self._lock:
+            self._stats_col = col
+        try:
+            if fire_sw:
+                r = self.fire_software_triggers(events, rate_hz=100.0)
+                if not r.get("ok"):
+                    raise RuntimeError(r.get("error") or "could not fire triggers")
+            elif not self._running.is_set():
+                self.start()
+                if not self._running.is_set():
+                    raise RuntimeError("no unit connected")
+            last_reported = -1
+            while not col.done.wait(0.2):
+                if abort is not None and abort.is_set():
+                    break
+                if time.monotonic() - col.last_add > stall_s:
+                    break
+                if progress is not None and col.seen != last_reported:
+                    last_reported = col.seen
+                    progress(col.seen)
+        finally:
+            with self._lock:
+                self._stats_col = None
+        return col.summary(), col.seen
+
+    def fire_software_triggers(self, count: int = 1, rate_hz: float = 10.0) -> dict:
+        """Queue `count` software triggers for the readout loop to fire.
+
+        The bench check with no signal source: the x742 cannot self-trigger, so
+        the board is poked from software instead. Starts acquisition if the
+        operator has not already, the same courtesy start_recording extends.
+        """
+        if not self._running.is_set():
+            self.start()
+        if not self._running.is_set():           # start() refused: no unit
+            return {"ok": False, "error": "no unit connected"}
+        with self._lock:
+            mode = self._cfg.software_trigger
+        if mode == "disabled":
+            # The board would swallow every SendSWtrigger without a trace;
+            # say so now instead of reporting 100 triggers that did nothing.
+            return {"ok": False, "error": "the software trigger is disabled "
+                                          "in the unit settings"}
+        count = max(1, min(int(count), 100_000))
+        rate_hz = min(max(float(rate_hz), 0.1), 1000.0)
+        with self._lock:
+            self._sw_pending += count
+            self._sw_interval_s = 1.0 / rate_hz
+        logsetup.did(log, f"Queueing {count} software triggers at {rate_hz:g} Hz", "Ok")
+        return {"ok": True, "queued": count, "rate_hz": rate_hz}
+
+    def _fire_due_software_trigger(self):
+        """One trigger per loop pass, no sooner than the requested pace."""
+        with self._lock:
+            due = self._sw_pending > 0 and time.monotonic() >= self._sw_next_fire
+            if due:
+                self._sw_pending -= 1
+                self._sw_next_fire = time.monotonic() + self._sw_interval_s
+        if not due:
+            return
+        try:
+            self._backend.trigger()
+        except Exception as e:
+            with self._lock:
+                self._sw_pending = 0    # one report, not one per queued trigger
+            self._record_error(f"software trigger: {e}")
+
     def stop(self):
         if not self._running.is_set():
             return
+        with self._lock:
+            self._sw_pending = 0        # owed triggers die with the acquisition
         with logsetup.step(log, "Stopping acquisition") as stopping:
             self._running.clear()
             # Before the join, not after: this clears the writer, so the loop
@@ -275,14 +456,30 @@ class AcquisitionEngine:
                 self._record_error(f"reconnect: {e}")
 
     # ---------- recording ----------
-    def start_recording(self, name: str, timestamp: bool = True) -> dict:
+    def start_recording(self, name: str, timestamp: bool = True,
+                        run_number: int | None = None,
+                        max_events: int | None = None) -> dict:
         """Begin writing to a new run directory, starting acquisition if the
-        operator has not already. Watching and recording are separate actions."""
+        operator has not already. Watching and recording are separate actions.
+
+        The run number is the analysis-facing identity (run_<N>.root): given
+        explicitly it is taken as-is; otherwise it is one past the highest
+        number already in the data directory. With `max_events` the recording
+        closes itself after exactly that many events - the bounded capture for
+        "give me N triggers to look at" - while acquisition keeps running."""
         if self._writer is not None:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
             return {"ok": False, "error": "no unit connected"}
-        with logsetup.step(log, f"Starting a recording named {name!r}") as rec:
+        if self.calibrator.is_active():
+            # A run recorded while the servo is moving baselines is garbage
+            # with a straight face; refuse rather than let it happen.
+            return {"ok": False, "error": "calibration in progress - wait for it"}
+        if run_number is None:
+            run_number = runs.next_run_number()
+        self._rec_limit = max(1, int(max_events)) if max_events else None
+        with logsetup.step(log, f"Starting a recording named {name!r} "
+                                f"(run {run_number})") as rec:
             # Acquisition must actually be running, or this opens a run that can
             # never receive an event and reports it as a success.
             if not self._running.is_set() and not self.start():
@@ -302,7 +499,7 @@ class AcquisitionEngine:
                 return {"ok": False, "error": f"could not create the run directory: {e}"}
             with self._lock:
                 cfg = self._cfg
-            writer = make_writer(path, run_id)  # the directory name is the name
+            writer = make_writer(path, run_id, cfg.output_format, run_number)
             try:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)
@@ -356,6 +553,7 @@ class AcquisitionEngine:
     def _read_loop(self):
         fails = 0
         while self._running.is_set():
+            self._fire_due_software_trigger()
             try:
                 events = self._backend.read_events()
                 fails = 0
@@ -378,6 +576,10 @@ class AcquisitionEngine:
                 self._events_seen += 1
                 for ch, wave in ev.samples.items():
                     self._avg.add(ch, wave, t)
+                    self._last[ch] = (ev.index, wave)
+                col = self._stats_col
+                if col is not None:
+                    col.add(ev)
                 # A write failure is a DISK failure. Reporting it as a read
                 # error blamed the board for a full or unwritable filesystem,
                 # and ten of them halted a perfectly healthy acquisition.
@@ -388,6 +590,11 @@ class AcquisitionEngine:
                         self._recorded += 1
                     except Exception as e:
                         self._end_recording_from_loop(f"could not write: {e}")
+                    else:
+                        if self._rec_limit and self._recorded >= self._rec_limit:
+                            # The bounded capture is complete: close the run and
+                            # keep acquiring, so the operator can keep watching.
+                            self.stop_recording()
             self._rate.add(len(events))
 
     def _end_recording_from_loop(self, why: str):
@@ -417,14 +624,18 @@ class AcquisitionEngine:
             cfg = self._cfg
         chans = cfg.enabled_channels()
         dt = C.sample_period_ns(cfg.drs4_frequency)
+        # The digitized TR trace rides along as 16+group when enabled.
+        shown = list(chans)
+        if cfg.fast_trigger_digitizing:
+            shown += [16 + gr for gr, g in enumerate(cfg.groups) if g.enabled]
         channels = {}
-        for ch in chans:
+        for ch in shown:
             mean, count = self._avg.snapshot(ch)
             if mean is None:
                 channels[str(ch)] = {"count": 0}
                 continue
             vpp = float(mean.max() - mean.min())
-            channels[str(ch)] = {
+            entry = {
                 "wave": decimate(mean, C.OVERVIEW_POINTS),
                 "count": count,
                 "vpp": vpp,
@@ -432,6 +643,18 @@ class AcquisitionEngine:
                 "max": float(mean.max()),
                 "baseline": float(np.median(mean)),
             }
+            last = self._last.get(ch)
+            if last is not None:
+                # One single-event trace per tick for the overlay display; the
+                # id lets the client add each event once, not once per render.
+                entry["last"] = decimate(last[1], C.OVERVIEW_POINTS)
+                entry["last_index"] = last[0]
+                # Peak-to-peak of the FULL single event, before decimation:
+                # the liveness discriminator. A live channel always shows its
+                # noise floor here; averaging erases dark pulses and noise
+                # alike, so the averaged vpp cannot tell quiet from dead.
+                entry["last_vpp"] = float(last[1].max() - last[1].min())
+            channels[str(ch)] = entry
         return {
             "running": self._running.is_set(),
             "sample_period_ns": dt,
@@ -460,10 +683,12 @@ class AcquisitionEngine:
                 "sw_release": bi.sw_release,
             },
             "events_seen": self._events_seen,
+            "sw_triggers_pending": self._sw_pending,
             "recording": self._writer is not None,
             "run_id": self._run_id,
             "run_started": self._run_started,
             "recorded": self._recorded,
             "data_dir": runs.DATA_ROOT,
+            "next_run_number": runs.next_run_number(),
             "errors": list(self._errors),
         }

@@ -193,12 +193,17 @@ else
 fi
 
 # --- 4. Install --------------------------------------------------------------
+# --managed-python: build the tool on uv's own pinned CPython, never on whatever
+# Python 3.11 uv discovers on the system. On Windows the discovered one can be
+# the Microsoft Store Python, whose MSIX filesystem virtualization hides the
+# app's state files (runtime.json, logs) inside the package's LocalCache; the
+# same flag here keeps both installers on the interpreter this design promises.
 say "Installing $PKG on Python $PYTHON_VERSION"
 # What is on disk decides, not uv's exit code - uv can report oddly while having
 # installed perfectly well. Letting `set -e` abort on the code aborted with no
 # message whatsoever, which is the worst of both.
 uv_code=0
-uv tool install --python "$PYTHON_VERSION" --force "$SPEC" || uv_code=$?
+uv tool install --managed-python --python "$PYTHON_VERSION" --force "$SPEC" || uv_code=$?
 uv tool update-shell >/dev/null 2>&1 || true
 
 if [ ! -x "$DAQ_BIN" ]; then

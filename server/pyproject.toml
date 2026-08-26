@@ -18,6 +18,9 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "numpy>=1.26",
+    # ROOT output without a ROOT install: uproot writes TTrees in pure Python,
+    # so the Windows DAQ box needs no CERN software stack.
+    "uproot>=5",
     # Tray icon. Windows only on purpose: it is the deployment target, and on
     # Linux pystray wants an X display that the headless DAQ box does not have.
     "pystray>=0.19; sys_platform == 'win32'",

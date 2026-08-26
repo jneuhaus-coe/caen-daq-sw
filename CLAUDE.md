@@ -24,7 +24,31 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   endpoints through its own kernel module, not libusb — see *Hardware bringup*.
 - Reference for the correct 742 init/correction/decode sequence: CAEN's WaveDump
   and the x742 sample code (github.com/cjpl/caen-suite — `WaveDump.c`,
-  `X742CorrectionRoutines.c`, `CAENDigitizerType.h`).
+  `X742CorrectionRoutines.c`, `CAENDigitizerType.h`). The 742 register map is
+  UM5698, committed under `docs/`.
+- The group's original DAQ (github.com/carlosperezlara/Dec21_RADiCAL,
+  `x742/acquire/source/daq.cc`) is hard-coded, not config-driven — the
+  "Configuration B" spreadsheet was values transcribed into the source by
+  hand, and our legacy importer reads that sheet's key format. Facts mined
+  from it: measured TR0 calibrations for this setup (threshold
+  mV ~ (DAC - 25448) * 0.0329; TR DC offset mV ~ -(DAC - 33540) * 0.0466),
+  and its GPO-busy write `(3<<18)|(1<<16)` to 0x811C — the same field value
+  `gpo_output = "busy"` writes, an independent confirmation. Do NOT copy its
+  channel DC-offset block: it is commented out and shifts the channel-select
+  field by 17 where 0x1n98 wants bits[19:16] (UM5698 sec 1.9) —
+  `SetChannelDCOffset` does this correctly. Its spreadsheet's mV labels are
+  measured, not nominal - see the baseline calibration below.
+- **Measured DC-offset baseline positions on serial 53364** (Configuration B
+  loaded, 30 software-triggered events, median of DRS4-corrected samples,
+  2026-08-25): DAC mid-scale 32768 puts the baseline at **+145 mV**, not 0 -
+  the intercept the nominal model lacks. DAC 47000 lands at -335 mV (the
+  sheet's "-350" is honest), slope ~33.7 uV/DAC LSB (2.21 V full span,
+  matching the 2.19 V sweep above). Consequence: **DAC 18536 ("+350 mV")
+  RAILS the baseline at ADC max** (+145 + 480 = +625 mV, past the +500 mV
+  window top) - every negative-pulse channel in Configuration B sits clipped
+  at 4095 with its true baseline invisible. A baseline at an actual +350 mV
+  on this unit is DAC ~26700. Rule of thumb: baseline_mV ~ +145 -
+  (DAC - 32768) * 0.0337.
 - This board: serial **53364**, ROC 04.29 build 8716, AMC 01.06 build 6530 —
   standard 742 **waveform** firmware (not DPP). Read back off the board itself.
 - `BoardInfo.Channels` reads **2** on the x742 — it is the *group* count, not
@@ -32,6 +56,18 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
 - **DRS4 corrections are mandatory** for trustworthy waveforms. We use the
   library's built-in path: `LoadDRS4CorrectionData` + `EnableDRS4Correction`, so
   `DecodeEvent` returns cell/time/peak-corrected floats.
+- **The library's time correction RESAMPLES onto a uniform grid** (linear
+  interpolation, see `X742CorrectionRoutines.c` shipped with WaveDump) - a
+  small low-pass on every pulse edge, which matters at ps-level timing. The
+  "timing" correction mode (`backend/corrections.py`) applies only the
+  amplitude corrections (cell, nsample, peak - a numpy port of the same
+  routine, same tables via `GetCorrectionTables`) and records each event's
+  TRUE non-uniform time axis plus the trigger cell instead. Verified on
+  serial 53364: cell widths spread 196.6-202.0 ps around the nominal 200
+  (sigma ~1 ps/cell - the aperture non-uniformity itself), the axis closes
+  to exactly 204.6 ns, and baselines agree with the library path to the
+  count. **"timing" is the default** - this is a timing program - with
+  "auto" kept for anything downstream that assumes uniform sampling.
 
 ### Setting tiers (verified against WaveDump's x742 branch — get these right)
 
@@ -103,6 +139,36 @@ Verified open on the real unit: DT5742B, serial 53364, ROC 04.29 / AMC 01.06.
 `OpenDigitizer` returning `-1` while `lsusb` shows the board means the USB
 driver is missing.
 
+- **Board-config bit[8] ("Individual trigger") MUST be 1, and a power cycle
+  clears it.** UM5698 sec 1.15 says so outright; with it 0 the board counts
+  triggers normally and delivers HEADER-ONLY events - hundreds seen, all
+  empty, no error anywhere. Soft resets preserve a previously-set 1, so
+  leftover state from other software (WaveDump/CAENScope) masked this for
+  two days until a power cycle produced 928 perfectly counted, perfectly
+  empty events. configure() sets it at every arm via the 0x8004 bit-set
+  register. Symptom to remember: "triggers but no waveforms" = check bit[8].
+- **DC-offset DAC writes during acquisition never reach the analog output.**
+  Measured on serial 53364: write a channel DC offset while acquiring and the
+  register updates - readback agrees, no error anywhere - but the baseline
+  does not move until the next arm (SWStartAcquisition after a stop, when
+  configure() rewrites settings with the board stopped). Distinct from the
+  SPI-busy silent drop below, which corrupts the REGISTER too. Consequence:
+  anything that must see an offset take effect (the calibrator) stops,
+  writes, re-arms, then measures; a slider tweak mid-acquisition looks
+  applied but is not, until the next re-arm.
+- **The Windows CAEN USB driver can wedge, and the signature is distinctive:**
+  `OpenDigitizer` returns `-1` on a board Device Manager shows healthy, an
+  occasional open *hangs* inside the driver instead of returning (one took 66 s
+  to fail, another never came back), and the hung process **survives
+  TerminateProcess** — a thread blocked in an uninterruptible kernel call
+  cannot die, which is why `daq stop` reports a process still running after a
+  kill that "succeeded". Seen live on serial 53364 under CAENUSBdrv.sys 3.4.9
+  (2014 — the newest CAEN ships for the DT57xx) on Windows 11 with the unit on
+  a USB 3 root hub. The remedy is physical: power-cycle or replug the unit to
+  cancel the stuck I/O (reboot if that fails), and keep USB selective suspend
+  off for the port. Do not diagnose software from anything a wedged driver
+  says.
+
 **Windows is the deployment target.** The Mac + lima guest is a dev convenience
 for fast iteration; keep host-specific setup out of this repo.
 
@@ -152,6 +218,7 @@ python -m daq                            # http://127.0.0.1:8800/
 cd server && python tests/test_smoke.py  # hardware-free smoke tests
 cd web && npm install && npm run build   # rebuild UI into server/daq/static
 cd web && npm run dev                     # UI hot-reload, proxies API/WS to :8800
+cd web && npm run test:ui                 # Playwright UI suite (DAQ_BACKEND=fake)
 ```
 
 ## Logging and startup
@@ -219,6 +286,16 @@ root) that installs **uv**, which brings its own pinned 64-bit CPython and then
 installs the release wheel as a uv tool. Bringing the interpreter along is the
 point: it makes the Python/CAEN-DLL bitness mismatch impossible. Updating is
 re-running the same one-liner.
+
+- **`uv tool install` must pass `--managed-python`.** Without it uv builds the
+  tool on any Python 3.11 it discovers — on one beamline machine that was the
+  **Microsoft Store Python**, whose MSIX filesystem virtualization silently
+  redirects `%LOCALAPPDATA%\dt5742b-daq` (runtime.json, logs) into the
+  package's `LocalCache`. Everything *inside* that sandbox stays consistent, so
+  it mostly works — until `daq status` names a log file that does not exist at
+  the printed path, and no process outside the sandbox can see the runtime
+  record. The venv's `pyvenv.cfg` `home` pointing under `WindowsApps` is the
+  tell.
 
 - **`daq/static/` is not an importable package**, so `packages.find` cannot see
   it and setuptools silently drops the UI from the wheel unless
@@ -401,6 +478,17 @@ downloaded or deleted.
 - Keep the **test suite minimal** — just enough smoke coverage to trust the
   hardware-free paths (rolling-average vs numpy, config tiers, HTTP API).
   Don't grow coverage for its own sake. The acquisition loop needs the board.
+- **The Playwright UI suite** (`web/tests/ui`, `npm run test:ui`) drives a
+  real server started with **`DAQ_BACKEND=fake`** — `FakeBackend` behind the
+  `DigitizerBackend` seam: settings stick exactly, events are synthetic. It
+  is never the default and the server logs a warning when active, so a shift
+  cannot mistake synthetic data for the real thing. The suite runs on port
+  8801 with its state redirected under `web/test-results` (both LOCALAPPDATA
+  and XDG_STATE_HOME), so it can never clobber a live daq's runtime record,
+  sessions, or runs. Hardware-facing assertions poll `/api/config`, not the
+  DOM — a DOM-only test would pass while the write silently failed. One
+  worker, file order: the tests share the one fake board's state. CI runs it
+  on ubuntu with `DAQ_TEST_SERVER_CMD` overriding the local uv launch.
 - Nothing is persisted between runs of the process: the unit holds the settings
   and is read at open. Save/Load write and read an explicit file instead.
 - The `Writer` interface is byte-compatible-WaveDump for v1; ROOT/HDF5 are meant
@@ -416,10 +504,12 @@ downloaded or deleted.
   sign are measured; the intercept rests on the nominal spec).
 - WaveDump writer layout follows the docs but is **not byte-verified** against a
   real dump — check against one sample `.dat` before trusting downstream.
-- **TR traces are never written.** WaveDump emits `TR_%d_0` / `TR_0_%d` files for
-  the x742's digitized fast-trigger traces; our decoder skips channel index 8
-  entirely, so enabling "Digitize TR traces" costs dead time and produces no
-  file. Decode + write them before relying on TR for timing.
+- **TR traces are decoded and written** (channel index 8 per group -> absolute
+  16+group, the ROOT layout's channel[16]/[17]). Verified on serial 53364:
+  both groups digitize the same TR0 input, agreeing to ~10 counts - the
+  DT5742B is 16+1, one shared TR0. The WaveDump-format writers still drop TR
+  (they open files only for channels 0-15); ROOT is the format that carries
+  it.
 - The UI has been used in a real browser and iterated on there; the remaining
   unknown is how it behaves with live data in it, not whether it renders.
 

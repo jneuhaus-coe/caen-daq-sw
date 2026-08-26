@@ -59,7 +59,7 @@ export const QUICK_USE: TourStep[] = [
     body: (
       <>
         <ol className="tour-steps">
-          <li><b>Start Acquisition</b> — live view, nothing written to disk.</li>
+          <li><b>Enable Acquisition</b> — live view, nothing written to disk.</li>
           <li>Check the traces and the trigger rate look right.</li>
           <li>Type a <b>Run name</b> and press <b>Record</b>.</li>
           <li><b>Stop recording</b> when done — the live view keeps running.</li>

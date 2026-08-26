@@ -13,6 +13,17 @@ export interface SettingDef {
   depends_on?: string;
   values_by_freq?: Record<string, { pct: number; ns: number }[]>;
   record_ns_by_freq?: Record<string, number>;
+  /** For type "volts": a linear DAC<->volts calibration of the setting's own
+   *  path (volts per DAC LSB, signed, and the DAC word that reads 0 V).
+   *  Absent means the channel-input model. */
+  lsb_v?: number;
+  zero_dac?: number;
+  /** Must be deliberately chosen for every run; listed before the optional
+   *  settings, which sit behind a per-setting checkbox. */
+  required?: boolean;
+  /** What an optional setting is pinned to while its checkbox is off.
+   *  Injected server-side from default_config(), so it cannot drift. */
+  default?: any;
 }
 
 export interface Catalog {
@@ -58,6 +69,13 @@ export interface ChannelTelemetry {
   min?: number;
   max?: number;
   baseline?: number;
+  /** Latest single event, decimated - one per tick, for the overlay mode. */
+  last?: number[];
+  /** Its event counter, so the client adds each event exactly once. */
+  last_index?: number;
+  /** Peak-to-peak of the full (undecimated) latest event: the liveness
+   *  discriminator - a live channel always shows its noise floor. */
+  last_vpp?: number;
 }
 
 export interface Telemetry {
@@ -86,6 +104,8 @@ export interface Status {
   run_started: number | null;
   recorded: number;
   data_dir: string;
+  next_run_number?: number;
+  sw_triggers_pending?: number;
   backend: string;
   board: { model: string; family: string; serial: number; roc_firmware: string; amc_firmware: string; sw_release: string };
   events_seen: number;

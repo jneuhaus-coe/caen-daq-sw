@@ -20,8 +20,34 @@ export function voltsToDac(v: number, g: Geom) {
 
 /** ADC counts per DAC LSB: negative, and the offset range is twice the window,
  *  so a full DAC sweep drags the baseline across the window twice over. */
-function countsPerLsb(g: Geom) {
+export function countsPerLsb(g: Geom) {
   return -(g.dc_offset_range_v / (g.dc_offset_max + 1)) * ((g.adc_max + 1) / g.input_range_vpp);
+}
+
+/** TR path constants (RADiCAL bench calibration; provisional until the
+ *  comparator-domain experiment refines them). Both in window ADC counts. */
+export const TR_OFF_SLOPE_COUNTS = -0.19;              // per offset-DAC LSB
+export const TR_THR_ZERO_DAC = 25448;
+export const TR_THR_COUNTS_PER_LSB = 0.0329 * 4.096;   // mV/LSB -> counts/LSB
+
+export function trBaselineCounts(offDac: number): number {
+  return 2048 + (offDac - 32768) * TR_OFF_SLOPE_COUNTS;
+}
+
+export function trThresholdCounts(thrDac: number): number {
+  return 2048 + (thrDac - TR_THR_ZERO_DAC) * TR_THR_COUNTS_PER_LSB;
+}
+
+/** The threshold DAC that puts the trigger `relV` volts from the baseline the
+ *  current offset predicts - how the operator thinks ("trigger at -100 mV"). */
+export function trThresholdDacFor(relV: number, offDac: number, g: Geom): number {
+  const target = trBaselineCounts(offDac) + relV * (g.adc_max + 1);
+  const dac = Math.round(TR_THR_ZERO_DAC + (target - 2048) / TR_THR_COUNTS_PER_LSB);
+  return Math.min(0xFFFF, Math.max(0, dac));
+}
+
+export function trRelThresholdV(thrDac: number, offDac: number, g: Geom): number {
+  return (trThresholdCounts(thrDac) - trBaselineCounts(offDac)) / (g.adc_max + 1);
 }
 
 /** Where 0 V lands in ADC counts for a given DC offset. */
@@ -31,6 +57,41 @@ export function zeroCounts(dac: number, g: Geom) {
 
 export function voltsAtCount(counts: number, dac: number, g: Geom) {
   return (counts - zeroCounts(dac, g)) * (g.input_range_vpp / (g.adc_max + 1));
+}
+
+/** Window-referenced volts: the ADC always reads its fixed 1 Vpp window, and
+ *  the DC offset moves the SIGNAL within it - so the display frame is the
+ *  window itself, 0 at its centre. Counts map to fixed screen positions,
+ *  which is what makes recorded history immovable: no knob turned today can
+ *  shift what was measured a moment ago. No calibration model involved. */
+export function windowVolts(counts: number, g: Geom): number {
+  return (counts - (g.adc_max + 1) / 2) / (g.adc_max + 1) * g.input_range_vpp;
+}
+
+/** Default display range: the full 1 Vpp window. The plot edges ARE the ADC
+ *  rails - a clipped signal sits pinned against them. */
+export const DEFAULT_Y: [number, number] = [-0.5, 0.5];
+
+/** A setting's own DAC<->volts line, when its catalog entry carries one
+ *  (lsb_v/zero_dac - the TR path); the channel-input model otherwise. EVERY
+ *  place that shows a volts-typed setting must convert through these two, or
+ *  the field and the change toast quote different voltages for one DAC word. */
+export function defDacToVolts(
+  def: { lsb_v?: number; zero_dac?: number }, dac: number, g: Geom,
+): number {
+  if (def.lsb_v != null && def.zero_dac != null) {
+    return (dac - def.zero_dac) * def.lsb_v;
+  }
+  return dacToVolts(dac, g);
+}
+
+export function defVoltsToDac(
+  def: { lsb_v?: number; zero_dac?: number }, v: number, g: Geom,
+): number {
+  if (def.lsb_v != null && def.zero_dac != null) {
+    return Math.min(0xFFFF, Math.max(0, Math.round(def.zero_dac + v / def.lsb_v)));
+  }
+  return voltsToDac(v, g);
 }
 
 /** Signed volts, e.g. "+0.500 V". */

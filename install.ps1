@@ -234,12 +234,19 @@ if ($otherUv.Count -gt 0) {
     Warn 'If it is left over from an interrupted run, end it: Stop-Process -Name uv -Force'
 }
 
+# --managed-python is load-bearing: without it uv happily builds the tool on
+# any Python 3.11 it discovers, including the Microsoft Store one. Store Python
+# runs with MSIX filesystem virtualization, which silently redirects the app's
+# %LOCALAPPDATA% state (runtime.json, logs) into the package's LocalCache -
+# `daq status` then reports a log path that does not exist, and nothing outside
+# that sandbox can see the runtime record. Bringing uv's own pinned CPython is
+# the whole point of this installer; make uv actually do it.
 foreach ($attempt in 1..3) {
     Say "Installing $Pkg on Python $PyVer (attempt $attempt of 3)"
     if ($attempt -gt 1) {
-        uv tool install --python $PyVer --force --verbose $Spec
+        uv tool install --managed-python --python $PyVer --force --verbose $Spec
     } else {
-        uv tool install --python $PyVer --force $Spec
+        uv tool install --managed-python --python $PyVer --force $Spec
     }
     $code = $LASTEXITCODE
 

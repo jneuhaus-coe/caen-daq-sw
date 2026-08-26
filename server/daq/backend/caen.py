@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import ctypes as ct
 import sys
+import time
 
 import numpy as np
 
+from . import corrections
 from .base import DigitizerBackend, Event, BoardInfo
 from .. import constants as C
 
@@ -55,13 +57,43 @@ TriggerMode_EXTOUT_ONLY = 2
 # DRS4 frequency enum values (0=5G,1=2.5G,2=1G,3=750M) — match our constants keys.
 
 REG_ACQUISITION_STATUS = 0x8104   # read-only; used as a liveness probe
+# Group n Status (0x1n88): bit[2] is the mezzanine DAC/SPI busy flag. UM5698
+# warns (sec 1.9) that DAC-backed writes issued while it is set "will not run
+# properly" - in practice they are silently dropped while the library still
+# answers success. Seen live on serial 53364: a TR threshold write read back
+# unchanged, with no error anywhere.
+REG_GROUP_STATUS = 0x1088
+GROUP_REG_STRIDE = 0x100
+BIT_DAC_BUSY = 1 << 2
 # Group configuration. GetFastTriggerDigitizing is broken on this board - it
 # reports the fast-trigger MODE bit (2 when the mode is on, 0 when off) and
 # ignores the digitizing flag entirely, so an "off" always read back as "on".
 # The setter works fine; bit 11 here is the truth. Verified on serial 53364:
 # mode off/dig off 0x0110, dig on 0x0910; mode on 0x1110 / 0x1910.
 REG_GROUP_CONFIG = 0x8000
+REG_GROUP_CONFIG_BITSET = 0x8004      # write-1-to-set companion of 0x8000
 BIT_TR_DIGITIZE = 1 << 11
+# UM5698 sec 1.15 bit[8] "Individual trigger": power-on default 0, and the
+# manual says MUST BE 1 for the 742 to work properly. With it clear the board
+# triggers happily and delivers header-only events - hundreds counted, all
+# empty. Soft resets preserve a previously-set 1 (which is how earlier
+# software's leftover state masked this for two days); a POWER cycle clears
+# it. Set it at every arm.
+BIT_INDIVIDUAL_TRIGGER = 1 << 8
+
+# GPO (TRG-OUT) routing lives in the Front Panel I/O Control register; the
+# CAENDigitizer API has no function for it, so this is the one setting done
+# with raw register access. UM5698 sec 1.25 (0x811C): bits[17:16] select the
+# source (00 trigger, 01 motherboard probes), bits[19:18] pick the probe
+# (00 RUN, 11 BUSY), bit[20] picks board-BUSY over PLL-lock-loss on ROC >=
+# 4.12 (this board runs 4.29), and bits[15:14] are a test-level override,
+# kept off. The field bits [20:14] are owned here wholesale; bit[0] is the
+# LEMO level, which SetIOLevel manages, so the two never collide.
+REG_FRONT_PANEL_IO = 0x811C
+GPO_FIELD_MASK = 0x1FC000                  # bits [20:14]
+_GPO_FIELD = {"trigger": 0x000000,         # [17:16]=00: propagate the trigger
+              "busy":    0x0D0000,         # [17:16]=01, [19:18]=11: board BUSY
+              "run":     0x010000}         # [17:16]=01, [19:18]=00: RUN
 
 # --- codecs between our config vocabulary and CAEN's enums ---
 _TRIGMODE = {"disabled": TriggerMode_DISABLED,
@@ -84,6 +116,9 @@ def _codec(fwd, fallback):
 
 _TRIG_ENC, _TRIG_DEC = _codec(_TRIGMODE, "disabled")
 _EDGE_ENC, _EDGE_DEC = _codec(_EDGE, "falling")
+# CAEN_DGTZ_IOLevel_t: the electrical standard of the front-panel LEMOs.
+_IOLEVEL = {"nim": 0, "ttl": 1}
+_IO_ENC, _IO_DEC = _codec(_IOLEVEL, "nim")
 _BOOL_ENC, _BOOL_DEC = (lambda v: 1 if v else 0), (lambda v: bool(v))
 _INT_ENC, _INT_DEC = int, int
 
@@ -94,7 +129,9 @@ BOARD_HW = [
     ("post_trigger", "GetPostTriggerSize", "SetPostTriggerSize", ct.c_uint32, _INT_ENC, _INT_DEC),
     ("external_trigger", "GetExtTriggerInputMode", "SetExtTriggerInputMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
     ("fast_trigger", "GetFastTriggerMode", "SetFastTriggerMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
+    ("software_trigger", "GetSWTriggerMode", "SetSWTriggerMode", ct.c_int, _TRIG_ENC, _TRIG_DEC),
     ("fast_trigger_digitizing", "GetFastTriggerDigitizing", "SetFastTriggerDigitizing", ct.c_int, _BOOL_ENC, _BOOL_DEC),
+    ("io_level", "GetIOLevel", "SetIOLevel", ct.c_int, _IO_ENC, _IO_DEC),
 ]
 GROUP_HW = [
     ("fast_trigger_threshold", "GetGroupFastTriggerThreshold", "SetGroupFastTriggerThreshold", ct.c_uint32, _INT_ENC, _INT_DEC),
@@ -124,6 +161,7 @@ def _diff(want, got, skip=()) -> list[str]:
     for attr, *_ in BOARD_HW:
         cmp(attr, getattr(want, attr), getattr(got, attr))
     cmp("trigger_edge", want.trigger_edge, got.trigger_edge)
+    cmp("gpo_output", want.gpo_output, got.gpo_output)
     for gr in range(C.NUM_GROUPS):
         for attr in [a for a, *_ in GROUP_HW] + ["enabled"]:
             cmp(f"group {gr} {attr}",
@@ -155,6 +193,18 @@ class _EventInfo(ct.Structure):
         ("EventSize", ct.c_uint32), ("BoardId", ct.c_uint32),
         ("Pattern", ct.c_uint32), ("ChannelMask", ct.c_uint32),
         ("EventCounter", ct.c_uint32), ("TriggerTimeTag", ct.c_uint32),
+    ]
+
+
+class _DRS4CorrectionC(ct.Structure):
+    """CAEN_DGTZ_DRS4Correction_t: the calibration stored on the board, read
+    back with GetCorrectionTables for the "timing" correction mode. cell is
+    indexed by physical DRS4 cell, nsample by readout position, time holds
+    the per-cell time stamps the true axis is built from."""
+    _fields_ = [
+        ("cell", (ct.c_int16 * 1024) * MAX_X742_CHANNEL_SIZE),
+        ("nsample", (ct.c_int8 * 1024) * MAX_X742_CHANNEL_SIZE),
+        ("time", ct.c_float * 1024),
     ]
 
 
@@ -209,6 +259,7 @@ class CaenBackend(DigitizerBackend):
         self._write_only: set[str] = set()    # settable, but not readable back
         self._unsupported: set[str] = set()   # the DT5742B rejects these outright
         self._state = None                    # last known board state, for deltas
+        self._timing_tables = None            # set by configure() in timing mode
 
     def _chk(self, ret, what):
         if ret != CAEN_DGTZ_Success:
@@ -308,6 +359,61 @@ class CaenBackend(DigitizerBackend):
             for gr in range(C.NUM_GROUPS):
                 out.groups[gr].enabled = bool(mask & (1 << gr))
 
+    def _wait_dac_idle(self, gr: int, timeout_s: float = 0.15) -> bool:
+        """Give a DAC-backed write a quiet mezzanine to land on."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            rc, v = self._get("ReadRegister",
+                              ct.c_uint32(REG_GROUP_STATUS + GROUP_REG_STRIDE * gr))
+            if rc == CAEN_DGTZ_Success and not (v & BIT_DAC_BUSY):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.003)
+
+    def _retry_dropped_dac_writes(self, want, out, errs):
+        """Re-issue DAC-backed writes whose readback came back unchanged.
+
+        The channel DC offsets and the TR threshold/offset ride the
+        mezzanine's slow SPI; a write landing while that controller is busy -
+        e.g. right after configure() queued twenty of them at arm time - is
+        silently dropped. Rather than reporting a mismatch the operator can
+        only fix by clicking again, wait for the DAC to go idle and write
+        once more; only a value the board refuses three times over reaches
+        _diff and becomes an error."""
+        for gr in range(C.NUM_GROUPS):
+            for spec in GROUP_HW:
+                attr, _g, setter, _ct2, enc, _d = spec
+                if attr in self._write_only or setter in self._unsupported:
+                    continue
+                wanted = getattr(want.groups[gr], attr)
+                for _ in range(3):
+                    if getattr(out.groups[gr], attr) == wanted:
+                        break
+                    self._wait_dac_idle(gr)
+                    self._set(setter, ct.c_uint32(gr), enc(wanted))
+                    self._wait_dac_idle(gr)     # let it land before judging it
+                    self._rd_group(out, gr, spec, errs)
+        for ch in range(C.NUM_CHANNELS):
+            wanted = want.channels[ch].dc_offset & 0xFFFF
+            for _ in range(3):
+                if (out.channels[ch].dc_offset & 0xFFFF) == wanted:
+                    break
+                self._wait_dac_idle(ch // C.GROUP_SIZE)
+                self._set("SetChannelDCOffset", ct.c_uint32(ch), wanted)
+                self._wait_dac_idle(ch // C.GROUP_SIZE)
+                self._rd_channel(out, ch, errs)
+
+    def _rd_gpo(self, out, errs):
+        rc, v = self._get("ReadRegister", ct.c_uint32(REG_FRONT_PANEL_IO))
+        if rc != CAEN_DGTZ_Success:
+            errs.append(f"ReadRegister(0x{REG_FRONT_PANEL_IO:04x}): error {rc}")
+            return
+        # A field state we never write (clock probes, the test override) decodes
+        # as "trigger", matching the codec convention for unknown enum values;
+        # the next write of this setting normalizes the register.
+        out.gpo_output = _inv(_GPO_FIELD).get(v & GPO_FIELD_MASK, "trigger")
+
     def _rd_edge(self, out, errs):
         ok, pol = self._rd(errs, "GetTriggerPolarity", "GetTriggerPolarity",
                            ct.c_uint32(0), ctype=ct.c_int, key="trigger_edge")
@@ -338,6 +444,7 @@ class CaenBackend(DigitizerBackend):
             self._rd_board(out, spec, errs)
         self._rd_mask(out, errs)
         self._rd_edge(out, errs)
+        self._rd_gpo(out, errs)
         for gr in range(C.NUM_GROUPS):
             for spec in GROUP_HW:
                 self._rd_group(out, gr, spec, errs)
@@ -406,6 +513,23 @@ class CaenBackend(DigitizerBackend):
             if put("SetTriggerPolarity", ct.c_uint32(0), _EDGE_ENC(cfg.trigger_edge)):
                 reads.append(lambda: self._rd_edge(out, errs))
 
+        if prev is None or prev.gpo_output != cfg.gpo_output:
+            # Read-modify-write: only the GPO field is ours; the rest of the
+            # register (LEMO level, TRG-IN options) belongs to other settings.
+            rc, v = self._get("ReadRegister", ct.c_uint32(REG_FRONT_PANEL_IO))
+            if rc == CAEN_DGTZ_Success:
+                word = (v & ~GPO_FIELD_MASK) | _GPO_FIELD.get(cfg.gpo_output, 0)
+                if put("WriteRegister", ct.c_uint32(REG_FRONT_PANEL_IO),
+                       ct.c_uint32(word)):
+                    reads.append(lambda: self._rd_gpo(out, errs))
+                elif prev is not None:
+                    out.gpo_output = prev.gpo_output
+            else:
+                errs.append(f"gpo_output: ReadRegister(0x{REG_FRONT_PANEL_IO:04x})"
+                            f" error {rc}")
+                if prev is not None:
+                    out.gpo_output = prev.gpo_output
+
         for gr in range(C.NUM_GROUPS):
             g = cfg.groups[gr]
             pg = prev.groups[gr] if prev is not None else None
@@ -431,6 +555,7 @@ class CaenBackend(DigitizerBackend):
 
         for r in reads:
             r()
+        self._retry_dropped_dac_writes(cfg, out, errs)
         self._state = out
         errs += _diff(cfg, out, skip=self._write_only)
         return out, errs
@@ -443,9 +568,30 @@ class CaenBackend(DigitizerBackend):
         self._chk(L.CAEN_DGTZ_Reset(h), "Reset")
         self._state = None      # Reset invalidated everything we knew
         self._chk(L.CAEN_DGTZ_SetAcquisitionMode(h, AcqMode_SW_CONTROLLED), "SetAcquisitionMode")
+        # See BIT_INDIVIDUAL_TRIGGER: without this the board counts triggers
+        # and delivers no waveforms.
+        self._chk(self._set("WriteRegister", ct.c_uint32(REG_GROUP_CONFIG_BITSET),
+                            ct.c_uint32(BIT_INDIVIDUAL_TRIGGER)),
+                  "WriteRegister(individual trigger bit)")
         actual, errs = self.write_settings(cfg)
-        # DRS4 corrections: let the library apply them inside DecodeEvent
-        if cfg.correction_level != "disabled":
+        # DRS4 corrections. Three regimes:
+        #   auto/manual - the library corrects inside DecodeEvent, including
+        #     its time step, which RESAMPLES onto a uniform grid;
+        #   timing      - we read the same tables off the board and apply only
+        #     the amplitude part ourselves in read_events, keeping the samples
+        #     untouched in time and carrying the true axis alongside;
+        #   disabled    - raw cells.
+        self._timing_tables = None
+        if cfg.correction_level == "timing":
+            tables = (_DRS4CorrectionC * MAX_X742_GROUP_SIZE)()
+            self._chk(L.CAEN_DGTZ_GetCorrectionTables(
+                h, cfg.drs4_frequency, ct.byref(tables)), "GetCorrectionTables")
+            self._timing_tables = [
+                {"cell": np.ctypeslib.as_array(t.cell).astype(np.float32),
+                 "nsample": np.ctypeslib.as_array(t.nsample).astype(np.float32),
+                 "time": np.ctypeslib.as_array(t.time).copy()}
+                for t in tables]
+        elif cfg.correction_level != "disabled":
             self._chk(L.CAEN_DGTZ_LoadDRS4CorrectionData(h, cfg.drs4_frequency),
                       "LoadDRS4CorrectionData")
             self._chk(L.CAEN_DGTZ_EnableDRS4Correction(h), "EnableDRS4Correction")
@@ -474,6 +620,11 @@ class CaenBackend(DigitizerBackend):
     def stop(self) -> None:
         self._chk(self._lib.CAEN_DGTZ_SWStopAcquisition(self._h), "SWStopAcquisition")
 
+    def trigger(self) -> None:
+        # One register write, so it shares the sporadic -1 every other call can
+        # answer with; _set gives it the same single retry.
+        self._chk(self._set("SendSWtrigger"), "SendSWtrigger")
+
     def read_events(self) -> list[Event]:
         L, h = self._lib, self._h
         read = ct.c_uint32(0)
@@ -492,19 +643,49 @@ class CaenBackend(DigitizerBackend):
             self._chk(L.CAEN_DGTZ_DecodeEvent(h, evtdata, ct.byref(self._evtptr)), "DecodeEvent")
             ev742 = ct.cast(self._evtptr, ct.POINTER(_X742_EVENT)).contents
             samples: dict[int, np.ndarray] = {}
+            trigger_cells: dict[int, int] = {}
+            times_ns: dict[int, np.ndarray] = {}
             for gr in range(C.NUM_GROUPS):
                 if not ev742.GrPresent[gr]:
                     continue
                 group = ev742.DataGroup[gr]
-                for ci in range(C.GROUP_SIZE):
+                tc = int(group.StartIndexCell)
+                trigger_cells[gr] = tc
+                chans: dict[int, np.ndarray] = {}
+                # 9 slots per group: 8 signal channels plus the digitized TR
+                # trace at index 8 (present only when TR digitizing is on -
+                # its ChSize is 0 otherwise). On the DT5742B both groups
+                # digitize the same TR0 input.
+                for ci in range(MAX_X742_CHANNEL_SIZE):
                     size = group.ChSize[ci]
                     if size == 0:
                         continue
                     ptr = group.DataChannel[ci]
-                    arr = np.ctypeslib.as_array(ptr, shape=(size,)).astype(np.float32).copy()
-                    samples[gr * C.GROUP_SIZE + ci] = arr
+                    chans[ci] = np.ctypeslib.as_array(
+                        ptr, shape=(size,)).astype(np.float32).copy()
+                if self._timing_tables is not None and chans:
+                    # Amplitude corrections only, on the whole group at once -
+                    # peak removal votes across the group's 8 channels - and
+                    # the true time axis instead of the library's resampling.
+                    t = self._timing_tables[gr]
+                    rows = sorted(chans)
+                    stack = np.stack([chans[ci] for ci in rows])
+                    corrections.amplitude_correct(
+                        stack, t["cell"][rows], t["nsample"][rows], tc)
+                    for k, ci in enumerate(rows):
+                        chans[ci] = stack[k]
+                    times_ns[gr] = corrections.true_times(
+                        t["time"], tc, C.sample_period_ns(self._cfg.drs4_frequency),
+                        stack.shape[1])
+                for ci, arr in chans.items():
+                    # TR traces land at 16+group - the RADiCAL channel[18]
+                    # layout's last two slots.
+                    ch = (16 + gr) if ci == C.GROUP_SIZE else gr * C.GROUP_SIZE + ci
+                    samples[ch] = arr
             out.append(Event(index=info.EventCounter, timestamp_s=0.0,
-                             trigger_time_tag=info.TriggerTimeTag, samples=samples))
+                             trigger_time_tag=info.TriggerTimeTag, samples=samples,
+                             trigger_cells=trigger_cells,
+                             times_ns=times_ns or None))
         return out
 
     def close(self) -> None:

@@ -27,6 +27,7 @@ export function BankPanel({ catalog, config, onGroupChange }: Props) {
             geom={catalog.geometry}
             get={(k) => (g as any)[k]}
             onChange={(k, v) => onGroupChange(gi, k, v)}
+            skip={["fast_trigger_threshold", "fast_trigger_dc_offset"]}
           />
         </Collapsible>
       ))}

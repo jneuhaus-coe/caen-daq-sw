@@ -46,6 +46,38 @@ def _root() -> str:
     return DATA_ROOT
 
 
+_RUN_FILE = re.compile(r"^run_(\d+)\.root$", re.IGNORECASE)
+
+
+def next_run_number() -> int:
+    """One more than the highest run number anywhere in the data directory.
+
+    The number lives both in each run's metadata and in its run_<N>.root
+    filename; both are scanned, so a directory of files copied in from another
+    machine still counts. Max-based, so deleting old runs never causes a
+    number to be reused - a run number must never mean two different datasets.
+    """
+    top = 0
+    try:
+        entries = list(os.scandir(_root()))
+    except OSError:
+        return 1
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        n = _read_meta(entry.path).get("run_number")
+        if isinstance(n, int):
+            top = max(top, n)
+        try:
+            for f in os.scandir(entry.path):
+                m = _RUN_FILE.match(f.name)
+                if m:
+                    top = max(top, int(m.group(1)))
+        except OSError:
+            continue
+    return top + 1
+
+
 def create(name: str, timestamp: bool = True) -> tuple[str, str]:
     """Make a fresh run directory. Returns (run_name, path).
 

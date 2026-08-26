@@ -76,14 +76,29 @@ class BoardConfig:
     drs4_frequency: int = C.DEFAULT_DRS4_FREQUENCY
     record_length: int = C.RECORD_LENGTH
     post_trigger: int = 20
-    correction_level: str = "auto"
+    # "timing" by default: amplitude corrections plus each event's true
+    # non-uniform time axis. The library's "auto" path resamples onto a
+    # uniform grid, which costs ps-level timing precision - and this group's
+    # program is a timing program.
+    correction_level: str = "timing"
     trigger_edge: str = "falling"
     external_trigger: str = "acquisition_only"
     fast_trigger: str = "acquisition_only"
+    # What a software trigger (POST /api/trigger) does: acquire, pulse the
+    # GPO/TRG-OUT connector, or both. Same mode vocabulary as the other two.
+    software_trigger: str = "acquisition_only"
     fast_trigger_digitizing: bool = True
+    # Electrical standard of the front-panel LEMOs (GPO/TRG-OUT and TRG-IN).
+    io_level: str = "nim"
+    # What the GPO connector emits: the trigger, the board's BUSY (dead-time
+    # veto for downstream electronics), or RUN (for daisy-chained start/stop).
+    gpo_output: str = "trigger"
     max_events_blt: int = 1023   # 1024 is silently clamped to this; see CLAUDE.md
-    # output
-    output_format: str = "ascii"
+    test_pattern: bool = False
+    # output. ROOT by default: the analysis
+    # (gitlab.cern.ch/ledovsk/tb_fnal_radical) reads it directly, so the
+    # conversion step disappears. ASCII/binary remain for WaveDump parity.
+    output_format: str = "root"
     output_header: bool = False
     # tiers
     groups: list[GroupConfig] = field(
