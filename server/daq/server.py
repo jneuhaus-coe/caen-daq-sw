@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 
 from fastapi import (BackgroundTasks, FastAPI, HTTPException, Request, Response,
@@ -21,6 +22,7 @@ from .catalog import catalog
 from . import configfile
 from . import runs
 from . import sessions
+from . import runtime
 from . import constants as C
 
 log = logsetup.get("daq.api")
@@ -331,6 +333,30 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     def stop():
         engine.stop()
         return engine.status()
+
+    @app.post("/api/shutdown")
+    def shutdown(force: bool = False):
+        """Graceful stop for the deploy flow: close the digitizer - the step a
+        hard kill (TerminateProcess) skips, and skipping it is what wedges the
+        CAEN link - then clear the runtime record and exit. Refused while
+        recording unless forced, so a deploy can never truncate a run."""
+        if engine.status()["recording"] and not force:
+            raise HTTPException(409, "a run is recording - stop it first")
+        log.info("Graceful shutdown requested: closing the digitizer cleanly")
+        try:
+            engine.close()            # CAEN_DGTZ_CloseDigitizer - the clean close
+        except Exception as e:
+            log.error("shutdown: closing the digitizer failed: %s", e)
+        try:
+            runtime.clear()
+        except Exception:
+            pass
+
+        def _exit():
+            time.sleep(0.4)           # let the HTTP response flush first
+            os._exit(0)
+        threading.Thread(target=_exit, daemon=True).start()
+        return {"ok": True, "message": "digitizer closed; server exiting"}
 
     @app.websocket("/ws/telemetry")
     async def telemetry(ws: WebSocket):
