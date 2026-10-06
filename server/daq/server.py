@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 import time
 
@@ -29,6 +30,49 @@ log = logsetup.get("daq.api")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+_ASSET_REF = re.compile(r'(?:src|href)="(/assets/[^"]+)"')
+_ui_cache: dict = {"mtime": None, "assets": []}
+
+
+def ui_assets() -> list[str]:
+    """The hashed bundle files index.html loads, sorted.
+
+    An open page compares this with the files it was itself loaded from: any
+    difference means a different UI is being served now - after `daq update`,
+    or a `git pull` under a running server - and the page offers a reload.
+    Read from disk (re-read only when index.html changes) rather than once at
+    startup, so a page loaded after a git pull is not told it is stale forever.
+    """
+    path = os.path.join(STATIC_DIR, "index.html")
+    try:
+        mtime = os.stat(path).st_mtime_ns
+        if mtime != _ui_cache["mtime"]:
+            with open(path, encoding="utf-8") as f:
+                _ui_cache["assets"] = sorted(set(_ASSET_REF.findall(f.read())))
+            _ui_cache["mtime"] = mtime
+    except OSError:
+        return []
+    return _ui_cache["assets"]
+
+
+class _UiFiles(StaticFiles):
+    """The built UI, with caching that survives an update.
+
+    Without Cache-Control the browser caches index.html heuristically, so a
+    window opened after an update could load the OLD index.html - naming
+    hashed bundles that no longer exist, which renders a blank page. The page
+    must always revalidate; the hashed bundles never change, so they may be
+    kept for good.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if path.replace(os.sep, "/").startswith("assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
 
 def create_app(engine: AcquisitionEngine) -> FastAPI:
     app = FastAPI(title="DT5742B DAQ")
@@ -42,7 +86,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         # before it signals it - that record outlives crashes, and pids are
         # recycled, so acting on it unchecked can signal an unrelated process.
         return {**engine.status(), "app": "dt5742b-daq", "version": __version__,
-                "pid": os.getpid(), "log_file": logsetup.active_log_path()}
+                "pid": os.getpid(), "log_file": logsetup.active_log_path(),
+                "ui_assets": ui_assets()}
 
     @app.post("/api/board/reconnect")
     def reconnect():
@@ -375,7 +420,7 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
             return
 
     if os.path.isdir(STATIC_DIR):
-        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+        app.mount("/", _UiFiles(directory=STATIC_DIR, html=True), name="static")
     else:
         # The UI is built into the package; without it every page is a 404 and
         # the browser shows a blank window with nothing to explain it.

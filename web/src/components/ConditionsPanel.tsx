@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { onFlush } from "../flush";
 import type { Condition } from "../api";
 
 interface Props {
@@ -14,6 +15,7 @@ export function ConditionsPanel({ onError }: Props) {
   const [items, setItems] = useState<Condition[]>([]);
   const [loaded, setLoaded] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
+  const pending = useRef<(() => Promise<unknown>) | null>(null);
 
   useEffect(() => {
     api.conditions()
@@ -25,13 +27,20 @@ export function ConditionsPanel({ onError }: Props) {
   const push = (next: Condition[]) => {
     setItems(next);
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
+    const send = () => {
+      pending.current = null;
       // Blank-key rows are drafts; the server drops them, the form keeps
       // them until the operator fills or removes them.
-      api.setConditions(next).catch(() =>
+      return api.setConditions(next).catch(() =>
         onError("Could not save the experiment conditions"));
-    }, 500);
+    };
+    pending.current = send;
+    saveTimer.current = window.setTimeout(send, 500);
   };
+  useEffect(() => onFlush(() => {
+    window.clearTimeout(saveTimer.current);
+    return pending.current?.();
+  }), []);
 
   const edit = (i: number, patch: Partial<Condition>) =>
     push(items.map((c, k) => (k === i ? { ...c, ...patch } : c)));

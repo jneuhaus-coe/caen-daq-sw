@@ -98,6 +98,11 @@ export interface Status {
   opened: boolean;
   /** The server's own pid, so `daq stop` can tell it from a stale record. */
   pid?: number;
+  /** The server's release, e.g. "0.12.0". */
+  version?: string;
+  /** The bundle files the server's index.html loads. Differs from the ones
+   *  this page loaded from once a newer UI is being served. */
+  ui_assets?: string[];
   running: boolean;
   recording: boolean;
   run_id: string | null;

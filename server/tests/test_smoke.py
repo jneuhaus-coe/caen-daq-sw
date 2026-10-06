@@ -861,6 +861,101 @@ def test_status_endpoint_identifies_the_app():
     assert body["version"]
 
 
+def test_status_names_the_ui_bundle_and_the_page_always_revalidates():
+    """An open page compares status.ui_assets with what it loaded to offer a
+    reload after an update. And index.html must revalidate: cached, a window
+    opened after an update loads the old page, naming bundles that are gone."""
+    import re
+    from daq import server
+    c = TestClient(create_app(_engine_without_a_unit()))
+    assets = c.get("/api/status").json()["ui_assets"]
+    page = c.get("/")
+    assert assets == sorted(set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', page.text)))
+    assert any(a.endswith(".js") for a in assets)
+    assert page.headers["cache-control"] == "no-cache"
+    assert "immutable" in c.get(assets[0]).headers["cache-control"]
+    assert server.ui_assets() == assets
+
+
+def test_update_reads_versions_and_releases():
+    """`daq update` compares versions and reads GitHub's release record - here
+    from a local stand-in, which is what DAQ_UPDATE_URL is for."""
+    import http.server
+    import threading
+    from daq import update, __version__
+
+    key = update.version_key
+    assert key("0.11.0") < key("0.12.0") < key("v0.12.1") < key("1.0.0")
+    assert key("0.12.0rc1") < key("0.12.0") and key("0.12.0a2") < key("0.12.0b1")
+    assert key("v0.12.0") == key("0.12.0")
+    try:
+        key("latest")
+        raise AssertionError("an unreadable version must not be compared")
+    except update.UpdateError:
+        pass
+
+    release = {"tag_name": None, "assets": [
+        {"name": "dt5742b_daq-9.0.0-py3-none-any.whl", "browser_download_url": "http://x/w.whl"},
+        {"name": "install.sh", "browser_download_url": "http://x/install.sh"},
+        {"name": "install.ps1", "browser_download_url": "http://x/install.ps1"}]}
+
+    class Releases(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps(release).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Releases)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ[update.URL_ENV] = f"http://127.0.0.1:{srv.server_address[1]}/latest"
+    try:
+        release["tag_name"] = "v9.0.0"
+        r = update.latest_release()
+        assert (r.version, r.tag, r.wheel) == ("9.0.0", "v9.0.0", "http://x/w.whl")
+        assert r.installer.endswith("install.ps1" if os.name == "nt" else "install.sh")
+        assert update.run(check_only=True) == 0          # reports, touches nothing
+
+        release["tag_name"] = f"v{__version__}"
+        assert update.run() == 0                         # already current: no-op
+    finally:
+        os.environ.pop(update.URL_ENV, None)
+        srv.shutdown()
+
+    os.environ[update.URL_ENV] = "http://127.0.0.1:9/latest"   # nothing listening
+    try:
+        assert update.run() == 1
+    finally:
+        os.environ.pop(update.URL_ENV, None)
+
+
+def test_update_restarts_only_servers_it_may_own():
+    """After an update, the tray server and a foreground `daq` come back as
+    they were; a `daq --serve` belongs to its service or terminal, and is left
+    for its owner to start."""
+    from daq.update import _relaunch_args
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["XDG_STATE_HOME"] = d
+        os.environ["LOCALAPPDATA"] = d
+        runtime.write("0.0.0.0", 8123, mode="tray", no_open=True)
+        assert _relaunch_args(runtime.read()) == [
+            "--host", "0.0.0.0", "--port", "8123", "--no-open"]
+        runtime.write("127.0.0.1", 8800, mode="launcher")
+        assert _relaunch_args(runtime.read()) == ["--host", "127.0.0.1", "--port", "8800"]
+        runtime.write("127.0.0.1", 8800, mode="serve")
+        assert _relaunch_args(runtime.read()) is None
+        runtime.clear()
+    # A record from before the mode was kept: pythonw is the tray server.
+    old = {"host": "127.0.0.1", "port": 8800}
+    assert _relaunch_args({**old, "executable": r"C:\uv\pythonw.exe"}) is not None
+    assert _relaunch_args({**old, "executable": "/usr/bin/python3"}) is None
+
+
 def test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port():
     """Closing a server leaves its connections in TIME_WAIT, and a bind without
     SO_REUSEADDR fails there — so a plain probe reports "port already in use" for
@@ -1006,6 +1101,9 @@ if __name__ == "__main__":
                test_runtime_record_roundtrips_and_clears,
                test_stale_and_foreign_servers_are_not_attached_to,
                test_status_endpoint_identifies_the_app,
+               test_status_names_the_ui_bundle_and_the_page_always_revalidates,
+               test_update_reads_versions_and_releases,
+               test_update_restarts_only_servers_it_may_own,
                test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port,
                test_bind_probe_still_reports_a_port_that_is_really_taken,
                test_log_steps_nest_outside_in_then_close_inside_out,

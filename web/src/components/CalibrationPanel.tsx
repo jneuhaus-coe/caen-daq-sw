@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePersistentState } from "../persist";
 import { api } from "../api";
 import type { CalibrationStatus } from "../api";
 
@@ -27,7 +28,7 @@ interface Props {
 export function CalibrationPanel({ connected, recording, locked, onUnlock,
                                    onStarted, onFinished, onError }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
-  const [fitEvents, setFitEvents] = useState("100");
+  const [fitEvents, setFitEvents] = usePersistentState("calFitEvents", "100");
   const wasActive = useRef(false);
 
   // Poll while a run is active - also on mount, so a page opened mid-run

@@ -236,6 +236,7 @@ server/daq/
   writer.py        Writer interface + WaveDump-compatible writer
   acquisition.py   threaded readout engine + telemetry snapshots
   server.py        FastAPI REST + WS + static
+  update.py        `daq update`: release check, then hand-over to the installer
   __main__.py      entrypoint
 web/               React + Vite + TypeScript; builds into server/daq/static
 ```
@@ -318,7 +319,7 @@ Operators install with a one-liner (`install.sh` / `install.ps1` at the repo
 root) that installs **uv**, which brings its own pinned 64-bit CPython and then
 installs the release wheel as a uv tool. Bringing the interpreter along is the
 point: it makes the Python/CAEN-DLL bitness mismatch impossible. Updating is
-re-running the same one-liner.
+`daq update`, which runs that same installer (see *Updating in place*).
 
 - **`uv tool install` must pass `--managed-python`.** Without it uv builds the
   tool on any Python 3.11 it discovers — on one beamline machine that was the
@@ -446,6 +447,56 @@ re-running the same one-liner.
 - CI runs `install.ps1` for real on `windows-latest` and `install.sh` on Linux,
   then starts the installed `daq` and fetches the UI and one asset. That is the
   only Windows verification available from a Mac; keep it working.
+
+## Updating in place: `daq update`
+
+- **The release's own installer does the installing.** `daq update` reads
+  `releases/latest`, downloads that release's `install.sh`/`install.ps1`
+  (BEFORE stopping anything, so a failed download changes nothing), refuses
+  while recording, stops the server through `/api/shutdown`, and hands over.
+  Do not reimplement the install in Python: every lesson in *Packaging and
+  install* lives in those scripts.
+- **The hand-over is platform-shaped.** POSIX `execve`s bash on the installer,
+  so nothing of ours is running while uv replaces the env. Windows cannot do
+  that - the running `daq.exe`/python live inside the env uv deletes - so it
+  starts the installer in a NEW console (`CREATE_NEW_CONSOLE`) and exits; the
+  installer waits on `DAQ_WAIT_PID`, then for every daq process under the uv
+  dirs to vanish (the trampoline outlives python by a moment), before its own
+  server check. That window closes itself on success and waits for Enter on
+  failure.
+- **Installer hooks, kept in both scripts:** `DAQ_WHEEL` (install this URL, no
+  second API call), `DAQ_WAIT_PID`, `DAQ_RELAUNCH` (run `daq <args>` after a
+  good install). Older installers ignore them, which only costs the relaunch.
+- **Who restarts the server is decided by `runtime.json` `mode`.** `tray` and
+  `launcher` (`daq` in the foreground) come back with their host/port/no-open;
+  `serve` belongs to systemd/NSSM/a terminal and is left stopped with a message.
+  A record without `mode` is a pre-update server: `pythonw` means tray.
+- `/api/shutdown` closes the digitizer, then exits; it answers 409 while
+  recording, which closes the race between our check and the stop. `daq stop`
+  uses the same path (`launcher.stop_server`) and falls back to a signal only
+  for servers older than the endpoint.
+- **The UI notices a new bundle by itself.** `/api/status` lists `ui_assets`
+  (the hashed files index.html loads, re-read when index.html's mtime moves so
+  a `git pull` deployment works too); the page compares them with the files it
+  was loaded from and shows "Update ready - Reload", held back while
+  recording. No service worker - nothing to go stale. index.html is served
+  `no-cache` and `/assets/*` `immutable`: with heuristic caching, a window
+  opened after an update can load the old index.html naming deleted bundles,
+  which is a blank page.
+- **A reload must lose nothing.** Form state goes through
+  `usePersistentState` (`local` = remembered last-used value, every window;
+  `session` = this window's draft: run-number override, run note, offset
+  being typed). Debounced server writes register with `flush.ts`, and Reload
+  flushes them first. New UI state that should survive a reload uses the hook.
+- `DAQ_UPDATE_URL` points the check at a stand-in for GitHub. The end-to-end
+  recipe: build two wheels (the second with a bumped version and a renamed
+  CSS asset), serve them plus `install.sh` and a `latest` JSON with
+  `python -m http.server`, install the first with `UV_TOOL_DIR`/
+  `UV_TOOL_BIN_DIR`/`XDG_STATE_HOME` pointed into a scratch dir, and run
+  `daq update`. Shim `uv tool update-shell` to a no-op or it edits your shell
+  rc. Verified that way on macOS; the Windows hand-over has been exercised
+  only as far as its PowerShell wrapper under pwsh 7 - not yet on a real
+  Windows box.
 
 Run the server on the machine physically attached to the board.
 
