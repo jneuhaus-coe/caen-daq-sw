@@ -30,7 +30,7 @@ import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, trAbsThresholdV,
 // then protected on the Experiment view where a mid-run hand cannot brush it.
 const LIVE_UNIT_KEYS = new Set([
   "post_trigger", "trigger_edge", "external_trigger", "fast_trigger",
-  "software_trigger", "fast_trigger_digitizing",
+  "software_trigger", "fast_trigger_digitizing", "io_level",
 ]);
 
 export function App() {

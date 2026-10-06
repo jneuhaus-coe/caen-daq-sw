@@ -116,11 +116,14 @@ UNIT_SETTINGS = [
              "reference in the data.\n\n"
              "Costs conversion time: dead time per event rises from 110 us "
              "to 181 us."},
-    {"key": "io_level", "label": "Front-panel level (GPO, TRG-IN)", "type": "enum",
+    {"key": "io_level", "required": True,
+     "label": "TRG-IN / GPO level", "type": "enum",
      "choices": [{"value": "nim", "label": "NIM"}, {"value": "ttl", "label": "TTL"}],
      "caen": "CAEN_DGTZ_SetIOLevel",
      "help": "Electrical standard of the front-panel LEMO connectors - the "
-             "GPO/TRG-OUT output and the TRG-IN input switch together.\n\n"
+             "TRG-IN input and the GPO/TRG-OUT output switch together. It "
+             "MUST match your external trigger signal or TRG-IN will never "
+             "fire: a TTL pulse into a NIM-configured input is invisible.\n\n"
              "NIM - negative logic, the usual choice with NIM crates and PMTs\n"
              "TTL - positive logic\n\n"
              "Match what the cabling expects, especially before trusting the "
