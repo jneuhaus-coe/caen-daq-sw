@@ -150,6 +150,30 @@ test("typing a DC offset lands on the unit exactly", async ({ page }) => {
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
 });
 
+test("global channel controls set window and DC offset on all 16 at once", async ({ page }) => {
+  const disp = async () => (await (await page.request.get("/api/display")).json())?.y_ranges ?? {};
+  // Set the display window for every channel.
+  const bar = page.locator(".chan-global");
+  await bar.locator(".cg-group").first().locator(".cg-num").nth(0).fill("-0.2");
+  await bar.locator(".cg-group").first().locator(".cg-num").nth(1).fill("0.2");
+  await bar.locator(".cg-group").first().getByRole("button", { name: "set", exact: true }).click();
+  await expect.poll(async () => {
+    const y = await disp();
+    return [0, 7, 15].every((c) => JSON.stringify(y[String(c)]) === "[-0.2,0.2]");
+  }).toBe(true);
+  // Reset returns every channel to the full window (no stored range).
+  await bar.getByRole("button", { name: "reset", exact: true }).click();
+  await expect.poll(async () => Object.keys(await disp()).length).toBe(0);
+  // Global DC offset writes all 16 channels.
+  await bar.locator(".cg-group").nth(1).locator(".cg-num").fill("0.1");
+  await bar.getByRole("button", { name: "set all", exact: true }).click();
+  const want = Math.round(32768 * (1 - 0.1));
+  await expect.poll(async () => {
+    const c = await cfg(page);
+    return c.channels.every((ch: { dc_offset: number }) => ch.dc_offset === want);
+  }).toBe(true);
+});
+
 test("clicking a Y label edits the display range, and it persists", async ({ page }) => {
   const tile = page.locator(".tile").first();
   await tile.locator("button.ax.y.max").click();

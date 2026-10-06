@@ -22,8 +22,8 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
-import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, trAbsThresholdV,
-         trThresholdDacForAbs, windowVolts } from "./volts";
+import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, dacToVolts, trAbsThresholdV,
+         trThresholdDacForAbs, voltsToDac, windowVolts } from "./volts";
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -50,6 +50,11 @@ export function App() {
   // Per-channel waveform display ranges (volts). Persisted server-side so a
   // daq restart or a different browser comes back to the same view.
   const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
+  // Global channel controls: set the display window and the DC offset for all
+  // 16 channels at once - handy when every channel sees a similar signal.
+  const [allYMin, setAllYMin] = useState("");
+  const [allYMax, setAllYMax] = useState("");
+  const [allOffset, setAllOffset] = useState("");
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
   // into a density picture. "scope": the newest single trace alone, fed by
   // free-running software triggers. Persisted with the display state.
@@ -241,6 +246,28 @@ export function App() {
       else next[t] = range;
     }
     applyYRanges(next);
+  };
+
+  // ---- global (all-channel) controls ----
+  const applyGlobalRange = () => {
+    const lo = Number(allYMin), hi = Number(allYMax);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) {
+      push("warn", "Enter a valid window", ["min must be below max"]);
+      return;
+    }
+    changeYRange(0, [lo, hi], true);
+  };
+  const resetGlobalRange = () => {
+    changeYRange(0, null, true);   // every channel back to the full window
+    setAllYMin(""); setAllYMax("");
+  };
+  const applyGlobalOffset = () => {
+    if (!config || !catalog) return;
+    const v = Number(allOffset);
+    if (!Number.isFinite(v)) return;
+    const dac = voltsToDac(v, catalog.geometry);
+    pushConfig({ ...config,
+      channels: config.channels.map((c) => ({ ...c, dc_offset: dac })) });
   };
 
   const catalogRef = useRef<Catalog | null>(null);
@@ -721,6 +748,37 @@ export function App() {
               <span className="lg clip" title="The average touches an ADC rail - part of the signal is outside the window">clip</span>
               <span className="lg off">bank off</span>
             </div>
+          </div>
+          <div className="chan-global"
+            title="Apply to all 16 channels at once - handy when every channel sees a similar signal">
+            <span className="cg-label">All channels</span>
+            <span className="cg-group" title="Display window (volts) for every channel's plot">
+              window
+              <input type="number" step={0.01} className="cg-num" placeholder="-0.5"
+                value={allYMin} onChange={(e) => setAllYMin(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalRange(); }} />
+              to
+              <input type="number" step={0.01} className="cg-num" placeholder="+0.5"
+                value={allYMax} onChange={(e) => setAllYMax(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalRange(); }} />
+              V
+              <button onClick={applyGlobalRange}>set</button>
+              <button onClick={resetGlobalRange}
+                title="Reset every channel's plot to the full window">reset</button>
+            </span>
+            <span className="cg-group"
+              title="Write this DC offset (baseline position, volts) to all 16 channels">
+              DC offset
+              <input type="number" step={0.005} className="cg-num"
+                placeholder={dacToVolts(config.channels[0].dc_offset, catalog.geometry).toFixed(3)}
+                value={allOffset} disabled={!connected || lockOn}
+                onChange={(e) => setAllOffset(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalOffset(); }} />
+              V
+              <button onClick={applyGlobalOffset} disabled={!connected || lockOn}
+                title={lockOn ? "Settings are locked - unlock to write offsets"
+                              : "Set this DC offset on all 16 channels"}>set all</button>
+            </span>
           </div>
           <ChannelGrid catalog={catalog} config={config} tele={tele}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}

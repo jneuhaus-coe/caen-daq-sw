@@ -575,6 +575,22 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 /* the raw TR threshold's live "vs offset" depth readout */
 .tr-rel-note { font-size: 10.5px; white-space: nowrap; margin-left: 6px; }
 
+/* global all-channel controls: window range + DC offset, for similar signals */
+.chan-global {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 6px 10px; margin: 2px 0 8px; font-size: 11.5px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; background: #0d1117;
+}
+.cg-label { font-weight: 650; color: var(--text); }
+.cg-group { display: inline-flex; align-items: center; gap: 5px; }
+.cg-num {
+  width: 62px; font: inherit; font-size: 11.5px; padding: 2px 5px;
+  font-variant-numeric: tabular-nums;
+  background: #0d1117; color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.cg-group button { font-size: 11px; padding: 2px 9px; cursor: pointer; }
+
 /* the trigger-model explainer: the fact that the 16 channels can't trigger */
 .trig-guide {
   border: 1px solid var(--border); border-radius: 6px;
