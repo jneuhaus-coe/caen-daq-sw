@@ -1,6 +1,6 @@
 import type { Catalog, SettingDef } from "../types";
 import { BlurInput } from "./BlurInput";
-import { defDacToVolts, defVoltsToDac } from "../volts";
+import { defDacToVolts, defFieldVolts, defVoltsToDac } from "../volts";
 import { StepControl } from "./StepControl";
 
 interface Props {
@@ -70,7 +70,7 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
           type="number" step={def.lsb_v != null ? 0.001 : 0.005}
           min={lo} max={hi} selectOnFocus
           disabled={disabled}
-          value={defDacToVolts(def, Number(value ?? mid), geom).toFixed(3)}
+          value={defFieldVolts(def, Number(value ?? mid), geom)}
           onCommit={(v) => onChange(defVoltsToDac(def,
             clamp(num(v, defDacToVolts(def, Number(value ?? mid), geom)), lo, hi), geom))}
         />

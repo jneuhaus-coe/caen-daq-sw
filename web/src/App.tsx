@@ -22,7 +22,7 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
-import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, dacToVolts, trAbsThresholdV,
+import { TR_OFF_MID_DAC, dacToVolts, fmtDacVolts, trAbsThresholdV,
          trThresholdDacForAbs, voltsToDac, windowVolts } from "./volts";
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
@@ -92,14 +92,6 @@ export function App() {
   // timestamp off) records INTO it - runs of an unchanged setup stay in one
   // campaign folder instead of scattering one directory per run.
   const [runDirs, setRunDirs] = useState<string[]>([]);
-  // The TR0 baseline marker's memory: the last MEASURED baseline and the
-  // offset DAC it was measured under. The measured and bench-predicted
-  // baselines disagree by ~200 mV on this unit, so falling back to
-  // prediction whenever the 1 s averaging window drained made the marker
-  // jump on every trigger pause. Hold the measurement instead, shifted by
-  // the predicted DELTA when the offset moves - deltas are robust even
-  // where the absolute calibration is not.
-  const trBaseMem = useRef<{ counts: number; dac: number } | null>(null);
   // Bumped to wipe every channel's persistence pile: on recording start and
   // on calibration start, so each pile tells one coherent story - a
   // calibration's profile stays on screen for review until the next thing
@@ -797,28 +789,10 @@ export function App() {
             const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
             const tr = trCh != null ? tele!.channels[String(trCh)] : null;
             if (!config.fast_trigger_digitizing || !tr) return null;
-            const trGroup = config.groups[trCh! - 16];
-            // Baseline: the held measurement (see trBaseMem), predictively
-            // shifted if the offset moved since; bench prediction only
-            // before anything was ever measured.
-            if (tr.baseline != null) {
-              trBaseMem.current = { counts: tr.baseline,
-                                    dac: trGroup.fast_trigger_dc_offset };
-            }
-            const mem = trBaseMem.current;
-            const baseCounts = mem
-              ? mem.counts + TR_OFF_SLOPE_COUNTS
-                  * (trGroup.fast_trigger_dc_offset - mem.dac)
-              : 2048 + (trGroup.fast_trigger_dc_offset - 32768) * TR_OFF_SLOPE_COUNTS;
-            // Trigger: baseline marker plus the manual-arithmetic threshold
-            // (volts vs the TR signal's zero, UM4270 9.8.3) - exact with the
-            // TR offset at midscale, approximate elsewhere.
-            const baseV = windowVolts(baseCounts, catalog.geometry);
-            const markers = [
-              { v: baseV, label: "baseline", color: "#4ac776" },
-              { v: baseV + trAbsThresholdV(trGroup.fast_trigger_threshold),
-                label: "trigger", color: "#f85149" },
-            ];
+            // No baseline/trigger lines until the threshold and offset DACs
+            // map to volts through a documented CAEN relationship, on the
+            // same axis as the trace. A line drawn from a guess is worse
+            // than none.
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -827,7 +801,6 @@ export function App() {
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}
                   color="#e3b341" height={110}
-                  markers={markers}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
                   mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
@@ -842,16 +815,20 @@ export function App() {
               const [g0, g1] = config.groups;
               const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
                 .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
-              const absV = trAbsThresholdV(g0.fast_trigger_threshold);
               const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
               return (
                 <>
                   <div className="setting-row"
-                    title={"Trigger level in the manual's arithmetic (UM4270 9.8.3): volts relative to the TR signal's 0-Volt, valid with the TR DC offset at midscale (0x8000). A -140 mV falling trigger is simply -0.140 here. CAEN states no simple formula exists at other offsets - keep the offset at midscale.\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold <span className="muted">vs TR zero</span></label>
+                    title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (V1742 manual rev 6 sec 5.15, in docs/): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. A -140 mV falling trigger is simply -0.140 here. CAEN states no simple formula exists at other offsets - keep the offset at midscale.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
+                    <label>TR threshold <span className="muted">at input</span></label>
                     <span className="field">
-                      <BlurInput type="number" step={0.005} min={-1.986} max={2.979}
-                        selectOnFocus value={absV.toFixed(3)}
+                      {/* min sets the arrow keys' step base, so it must sit on
+                          the step grid: -1.986 made them walk -0.001, 0.004,
+                          0.009... DAC 0..65535 spans -1.9859..+2.9789 V. */}
+                      <BlurInput type="number" step={0.001} min={-1.985} max={2.978}
+                        selectOnFocus
+                        value={fmtDacVolts(g0.fast_trigger_threshold,
+                                           trAbsThresholdV, trThresholdDacForAbs)}
                         disabled={isLocked("fast_trigger_threshold")}
                         onCommit={(v) => {
                           updateTrBoth("fast_trigger_threshold",
@@ -865,7 +842,7 @@ export function App() {
                         onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
                     ) : null}
                     {!offMid ? (
-                      <span className="muted tr-rel-note" title="UM4270 9.8.3: the threshold volts are only calibrated with the TR DC offset at midscale (0x8000); CAEN provides no formula for other offsets.">
+                      <span className="muted tr-rel-note" title="V1742 manual rev 6 sec 5.15: the threshold volts are only calibrated with the TR DC offset at midscale (0x8000); CAEN provides no formula for other offsets.">
                         ⚠ offset not at midscale
                       </span>
                     ) : null}
@@ -890,7 +867,7 @@ export function App() {
                   <p className="muted">
                     One input, split to both banks; this panel writes both
                     together. Threshold volts are calibrated only with the
-                    offset at midscale (UM4270 9.8.3).
+                    offset at midscale (V1742 manual rev 6 sec 5.15, in docs/).
                   </p>
                 </>
               );
@@ -924,8 +901,8 @@ export function App() {
                 TR0: match the <b>edge</b> to your pulse (rising = positive-going),
                 keep the <b>TR DC offset at midscale</b> (its threshold is only
                 calibrated there), and set the <b>threshold</b> just above baseline
-                noise. TR0 halves its input (÷2), so a 30 mV pulse is ~15 mV at
-                the comparator.
+                noise. The threshold is in volts at the TR0 input: a 30 mV pulse
+                is 30 mV here.
               </p>
             </div>
             <SettingsList

@@ -176,7 +176,9 @@ BANK_SETTINGS = [
              "Disabling a bank you are not using cuts readout time and file "
              "size."},
     # The TR threshold speaks the MANUAL's arithmetic (UM4270 rev 12, sec
-    # 9.8.3): the comparator DAC moves 13.2 counts per connector-mV, with
+    # 9.8.3; the same worked examples are in the V1742 manual rev 6 sec
+    # 5.15, docs/V1742_User_Manual_rev6.pdf): the comparator DAC moves 13.2
+    # counts per mV at the TR0 input, with
     # DAC 0x6666 = 26214 at the signal's 0-Volt WHEN the TR DC offset sits
     # at midscale (0x8000) - CAEN's worked NIM example, 26214 - 400*13.2 =
     # 20934, is the value that worked here on day one. The manual states no
@@ -186,12 +188,13 @@ BANK_SETTINGS = [
     {"key": "fast_trigger_threshold", "label": "TR threshold", "type": "volts",
      "lsb_v": 7.5758e-5, "zero_dac": 26214,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerThreshold",
-     "help": "TR0 FAST-TRIGGER level. TR0 halves its input (divide-by-2), so a "
-             "+30 mV pulse is ~15 mV here - set the threshold just above the "
-             "baseline noise, on the correct edge (rising for positive pulses). "
+     "help": "TR0 FAST-TRIGGER level, in volts at the TR0 input: a +30 mV "
+             "pulse is +30 mV here (CAEN's NIM example triggers a 0 to -800 mV "
+             "signal at -400 mV). Set it just above the baseline noise, on the correct edge (rising for positive pulses). "
              "ONLY meaningful with the TR DC offset at midscale.\n\n"
-             "Trigger level in volts relative to the TR signal's 0-Volt "
-             "(UM4270 9.8.3) - a -140 mV falling trigger is -0.140 here. "
+             "Trigger level in volts at the TR0 input, relative to its "
+             "ground (CAEN V1742 manual rev 6 sec 5.15) - a -140 mV falling "
+             "trigger is -0.140 here. "
              "Valid with the TR DC offset at midscale (0x8000 = 0 V), where "
              "CAEN's calibration applies; the manual provides no formula "
              "for other offsets.\n\n"

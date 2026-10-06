@@ -46,10 +46,12 @@ test("unit settings split: campaign on Experiment, trigger tuning on Live", asyn
 
 test("TR threshold is shown in TR-calibrated volts", async ({ page }) => {
   // Fake board default threshold 20000 through the MANUAL's arithmetic
-  // (UM4270 9.8.3): (20000 - 26214) / 13.2 mV = -471 mV vs the TR zero.
+  // (UM4270 9.8.3): (20000 - 26214) / 13.2 mV = -470.76 mV at the TR0 input.
+  // Shown to as many digits as name the exact word: "-0.471" (the old
+  // fixed mV rounding) reads back as DAC 19997, not the 20000 it holds.
   const row = page.locator(".setting-row", { hasText: "TR threshold" }).first();
   const input = row.locator('input[type="number"]');
-  await expect(input).toHaveValue("-0.471");
+  await expect(input).toHaveValue("-0.47076");
   // The change toast must quote the SAME calibration as the field - it once
   // translated the DAC word back through the channel model and announced a
   // nonsense positive voltage for a negative threshold.
@@ -350,16 +352,8 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   // Trigger settings panel is a different heading).
   const trCard = page.locator(".card", { has: page.locator("h2", { hasText: "fast trigger" }) });
   await expect(trCard).toBeVisible({ timeout: 10_000 });
-  // The labelled trigger line: red-dominant pixels drawn across the plot.
-  await expect.poll(async () => trCard.evaluate((card) => {
-    const cv = card.querySelector("canvas") as HTMLCanvasElement;
-    const d = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height).data;
-    let red = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i + 3] > 100 && d[i] > 180 && d[i + 1] < 130) red++;
-    }
-    return red;
-  }), { timeout: 10_000 }).toBeGreaterThan(50);
+  // No trigger-line check: the line is withheld until the threshold DAC maps
+  // to the trace's axis through a documented CAEN relationship.
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 

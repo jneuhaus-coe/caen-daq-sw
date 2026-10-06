@@ -127,7 +127,16 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   not a per-group digital self-trigger, so treat those two as absent.
 
 - **TR0 threshold truth (UM4270 rev 12 sec 9.8.3, plus a day of beam
-  measurements, 2026-08-28).** The TR0 input is attenuated x2 into a fast
+  measurements, 2026-08-28).** UM4270 sits behind CAEN's login, but its
+  worked examples also appear in `docs/V1742_User_Manual_rev6.pdf` sec 5.15
+  (Rev.1 mezzanine, offset 0x8000: bipolar 0x6666 = 0 V, NIM 0x51C6 =
+  -400 mV, 0..-400 mV 0x5C16, 0..-200 mV 0x613E - all 13.2 steps per mV
+  AT THE INPUT, so the threshold field is input volts and the x2 matters
+  only for the digitized trace). Its off-midscale rows (ECL 0x55A0, TTL
+  0xA800 vs "positive 0-2 V" 0x91A7) do not fit one line. The family
+  datasheet (`docs/DS3159_742_Digitizer_Family_r2.pdf`) gives the channel
+  DC offset range as +/-1 V, agreeing with the measured sweep; UM5698's
+  "DAC range ~5% larger than ADC range" is family-generic text. The TR0 input is attenuated x2 into a fast
   comparator (0-2.5 V dynamic). CAEN's arithmetic - threshold DAC moves
   13.2 counts per connector-mV, signal 0-Volt at DAC 0x6666 = 26214 - is
   valid ONLY with the TR DC offset at midscale 0x8000; the manual states
@@ -148,6 +157,14 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   offset-vs-threshold tension is a passive splitter: MCP -> TR0 (trigger
   only, midscale offset, manual arithmetic) + a spare signal channel
   (3, 8-11 are empty) for full-fidelity pulse digitization.
+
+- **Never derive a reference level from the signal being measured.** The
+  TR0 trigger line once rode the live median of the trace (jittering with
+  the input), and a later attempt baked a median of whatever was plugged in
+  into a constant as "0 V". Both are wrong: volts come from the ADC code
+  and the registers through CAEN's documented relationship, nothing else.
+  Volts fields print the shortest text that maps back to the exact DAC
+  word (`fmtDacVolts`), never a fixed `toFixed(3)`.
 
 - **Link selection is DAQ_LINK** (environment, read at every open): a comma
   list tried in order - `usb` (default when unset), `a4818:<pid>` (the A4818

@@ -24,23 +24,10 @@ export function countsPerLsb(g: Geom) {
   return -(g.dc_offset_range_v / (g.dc_offset_max + 1)) * ((g.adc_max + 1) / g.input_range_vpp);
 }
 
-/** TR path constants (RADiCAL bench calibration; provisional until the
- *  comparator-domain experiment refines them). Both in window ADC counts. */
-export const TR_OFF_SLOPE_COUNTS = -0.19;              // per offset-DAC LSB
-export const TR_THR_ZERO_DAC = 25448;
-export const TR_THR_COUNTS_PER_LSB = 0.0329 * 4.096;   // mV/LSB -> counts/LSB
-
-export function trBaselineCounts(offDac: number): number {
-  return 2048 + (offDac - 32768) * TR_OFF_SLOPE_COUNTS;
-}
-
-export function trThresholdCounts(thrDac: number): number {
-  return 2048 + (thrDac - TR_THR_ZERO_DAC) * TR_THR_COUNTS_PER_LSB;
-}
-
-/** The MANUAL's threshold arithmetic (UM4270 rev 12, sec 9.8.3-9.8.4): the
+/** The MANUAL's threshold arithmetic (UM4270 rev 12 sec 9.8.3; the same
+ *  worked examples are in the V1742 manual rev 6 sec 5.15, in docs/): the
  *  TR0 comparator spans 0-2.5 V behind a x2 input attenuator; its DAC moves
- *  13.2 counts per connector-mV, and DAC 0x6666 = 26214 is the signal's
+ *  13.2 counts per mV AT THE INPUT (the x2 is already folded in), and DAC 0x6666 = 26214 is the signal's
  *  0-Volt WHEN THE TR DC OFFSET SITS AT MIDSCALE (0x8000). CAEN's worked
  *  example: a -400 mV NIM trigger is 26214 - 400*13.2 = 20934 - the value
  *  that worked here on day one. The manual states outright that no simple
@@ -57,6 +44,20 @@ export function trAbsThresholdV(thrDac: number): number {
 export function trThresholdDacForAbs(absV: number): number {
   const dac = Math.round(TR_THR_MID_DAC + (absV * 1000) / TR_THR_MV_PER_LSB);
   return Math.min(0xFFFF, Math.max(0, dac));
+}
+
+/** Shortest decimal text for a DAC-backed volts value that still maps back
+ *  to the exact DAC word. A fixed toFixed(3) rounded to the mV, so the field
+ *  quoted a value the register did not hold - and committing that text
+ *  would have moved the register. */
+export function fmtDacVolts(dac: number, toV: (d: number) => number,
+                            toDac: (v: number) => number): string {
+  const v = toV(dac);
+  for (let d = 3; d <= 8; d++) {
+    const s = v.toFixed(d);
+    if (toDac(Number(s)) === dac) return s;
+  }
+  return String(v);
 }
 
 /** Where 0 V lands in ADC counts for a given DC offset. */
@@ -101,6 +102,14 @@ export function defVoltsToDac(
     return Math.min(0xFFFF, Math.max(0, Math.round(def.zero_dac + v / def.lsb_v)));
   }
   return voltsToDac(v, g);
+}
+
+/** A volts-typed setting's DAC word as exact field text (see fmtDacVolts). */
+export function defFieldVolts(
+  def: { lsb_v?: number; zero_dac?: number }, dac: number, g: Geom,
+): string {
+  return fmtDacVolts(dac, (d) => defDacToVolts(def, d, g),
+                     (v) => defVoltsToDac(def, v, g));
 }
 
 /** Signed volts, e.g. "+0.500 V". */

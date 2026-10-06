@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { BoardConfig, Catalog, Telemetry } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
-import { countsPerLsb, dacToVolts, voltsToDac, zeroCounts } from "../volts";
+import { countsPerLsb, dacToVolts, fmtDacVolts, voltsToDac, zeroCounts } from "../volts";
 
 interface Props {
   catalog: Catalog;
@@ -149,7 +149,9 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                           <BlurInput
                             type="number" step={0.005}
                             min={-vLimit} max={vLimit}
-                            value={shownV.toFixed(3)}
+                            value={pv != null ? pv.toFixed(3)
+                              : fmtDacVolts(dac, (d) => dacToVolts(d, g),
+                                            (v) => voltsToDac(v, g))}
                             selectOnFocus
                             onCommit={(v) => {
                               const clamped = Math.min(vLimit, Math.max(-vLimit, Number(v || 0)));
