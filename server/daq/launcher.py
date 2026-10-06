@@ -12,7 +12,9 @@ import sys
 import time
 from typing import Optional
 
-from . import runtime
+from . import logsetup, runtime
+
+log = logsetup.get("daq")
 
 # Chromium's --app gives a window with no tab strip or address bar, which is what
 # makes this feel like an application rather than a web page. Falling back to the
@@ -189,3 +191,109 @@ def wait_for_server(port: int, timeout: float = 30.0, stop=None) -> Optional[dic
             return status
         time.sleep(0.25)
     return None
+
+
+def _request_shutdown(port: int) -> Optional[int]:
+    """POST /api/shutdown. Returns the HTTP status, or None if nothing answered.
+
+    The endpoint closes the digitizer before exiting - the step a kill skips,
+    and skipping it is what leaves the CAEN link wedged for the next open.
+    """
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown",
+                                     method="POST", data=b"")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return None
+
+
+def stop_server(live: dict, timeout: float = 20.0) -> bool:
+    """Stop the server `runtime.find_server()` found, and confirm it is gone.
+
+    Asks it to shut down gracefully first; a server too old to have the
+    endpoint is signalled instead. Refuses - returning False with the reason
+    logged - when a run is recording, or when the pid cannot be confirmed as
+    the server's own. Never kills on a hunch.
+    """
+    port = live["port"]
+    pid = live.get("pid")
+    if not pid:
+        log.error("The server on port %s did not record its pid; stop it yourself.", port)
+        return False
+    pid = int(pid)
+
+    # Cross-check the two independent claims about who is on that port: the
+    # runtime file, and the server's own answer. The file outlives crashes and
+    # pids get recycled, so when they disagree the pid in the file may belong to
+    # something else entirely - and on a host with a port forward the server
+    # that answered is not even on this machine.
+    recorded, reported = live.get("recorded_pid"), live["status"].get("pid")
+    if reported is not None and recorded is not None and int(recorded) != int(reported):
+        log.error("The runtime record names pid %s, but the server answering on "
+                  "port %s says it is pid %s.", recorded, port, reported)
+        log.error("That record is stale, or the port reaches a server on another "
+                  "machine. Refusing to stop either.")
+        log.error("Stop that server where it runs, or delete %s", runtime.runtime_path())
+        return False
+
+    with logsetup.step(log, f"Stopping the server (pid {pid} on port {port})") as stopping:
+        answer = _request_shutdown(port)
+        if answer == 409:
+            # The server checks for itself, so a recording that started after
+            # we looked is still safe.
+            stopping.done("Refused: a run started recording just now")
+            return False
+        if answer != 200:
+            # Older than the endpoint. On Windows os.kill is TerminateProcess,
+            # which gives the server no chance to tidy up after itself.
+            log.debug("graceful shutdown unavailable (%s); signalling pid %s", answer, pid)
+            try:
+                os.kill(pid, 15)
+            except OSError as e:
+                stopping.done(f"Could not signal pid {pid}: {e}")
+                return False
+
+        deadline = time.time() + timeout
+        while time.time() < deadline and runtime.process_alive(pid):
+            time.sleep(0.25)
+        if runtime.process_alive(pid):
+            stopping.done(f"Still running {timeout:.0f}s later")
+            explain_unkillable(pid)
+            return False
+        runtime.clear()              # a killed server cannot clear its own record
+
+        # The process is gone; the port should be too. If it is not, say so
+        # instead of leaving the next start to fail with a bare bind error.
+        if not runtime.port_is_free("127.0.0.1", port):
+            owner = runtime.port_owner(port)
+            stopping.done(f"Stopped, but port {port} is still held by "
+                          f"{owner or 'something unidentified'}")
+            return False
+        stopping.done("Stopped")
+    return True
+
+
+def explain_unkillable(pid: int) -> None:
+    """A process that survives a kill is not refusing to stop - it cannot.
+
+    On Windows the kill is TerminateProcess, which does not wait for consent:
+    the process only lingers when a thread is blocked in an uninterruptible
+    kernel call, and here that is almost always the CAEN USB driver
+    (CAENUSBdrv.sys) wedged inside OpenDigitizer. Seen live on serial 53364:
+    the open hung in the driver, every kill "succeeded", and the process stayed
+    until the unit was power-cycled. Without naming the remedy the operator is
+    left kill-looping a process that can never exit on its own.
+    """
+    log.error("pid %s did not exit after being asked to stop.", pid)
+    if os.name == "nt":
+        log.error("a process that survives a kill on Windows is stuck in a kernel")
+        log.error("driver call - usually the CAEN USB driver wedged mid-open.")
+        log.error("power-cycle (or unplug and replug) the digitizer to release it;")
+        log.error("if the process still does not exit, reboot the machine.")

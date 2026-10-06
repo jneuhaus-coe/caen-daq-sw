@@ -7,6 +7,11 @@
 # Environment:
 #   $env:DAQ_VERSION = 'v0.2.0'   install that tagged release instead of the newest
 #   $env:DAQ_VERSION = 'source'   build from the tip of main instead of a release (needs git)
+#
+# Set by `daq update`, which runs this script in its own window to do its installing:
+#   $env:DAQ_WHEEL     install this wheel URL; the release was already looked up
+#   $env:DAQ_WAIT_PID  wait for this process (daq update itself) to exit first
+#   $env:DAQ_RELAUNCH  after a good install, run `daq` with these arguments
 
 #Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
@@ -93,6 +98,21 @@ function Get-DaqProcesses {
 # fails if the server is still up. Refuse rather than kill blind when a run is
 # recording, or when the server is somewhere we cannot ask.
 $restartHint = $false
+
+# `daq update` starts this script and then exits, and the files it was running
+# from are exactly what uv has to replace - so wait for it, and for the daq.exe
+# launcher that started it, to be gone before looking for a server.
+if ($env:DAQ_WAIT_PID) {
+    $waitPid = 0
+    if ([int]::TryParse($env:DAQ_WAIT_PID, [ref]$waitPid)) {
+        Say 'Waiting for daq update to hand over'
+        try { Wait-Process -Id $waitPid -Timeout 30 -ErrorAction Stop } catch { }
+    }
+    foreach ($i in 1..30) {
+        if (-not (Get-DaqProcesses -Roots $searchRoots)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+}
 
 # Where the running server records its pid and port. Reading it beats guessing:
 # the server may be on any port, and on a host with a port-forward a probe of the
@@ -197,7 +217,7 @@ if ($Version -eq 'source') {
     Say 'Building from the tip of main'
     $Spec = $GitSpec
 } else {
-    $wheel = Resolve-Wheel
+    $wheel = if ($env:DAQ_WHEEL) { $env:DAQ_WHEEL } else { Resolve-Wheel }
     if ($wheel) {
         Say "Release: $(Split-Path $wheel -Leaf)"
         $Spec = "$Pkg @ $wheel"
@@ -382,4 +402,14 @@ if ($missing) {
 if (-not $onPath) {
     Write-Host ''
     Warn "Open a new terminal to get 'daq' on PATH."
+}
+
+if ($env:DAQ_RELAUNCH) {
+    # `daq update` stopped the server to install over it; bring it back the way
+    # it was running. The launcher detaches the server into the tray and raises
+    # the DAQ window, which then offers to reload onto the new version.
+    Write-Host ''
+    Say 'Starting the DAQ again'
+    $relaunchArgs = @($env:DAQ_RELAUNCH -split ' ' | Where-Object { $_ })
+    & $daqBin @relaunchArgs
 }

@@ -42,7 +42,7 @@ def url_for(host: str, port: int) -> str:
     return f"http://{shown}:{port}/"
 
 
-def write(host: str, port: int) -> None:
+def write(host: str, port: int, mode: str = "serve", no_open: bool = False) -> None:
     os.makedirs(state_dir(), exist_ok=True)
     record = {
         "app": APP_ID,
@@ -53,6 +53,9 @@ def write(host: str, port: int) -> None:
         "url": url_for(host, port),
         "started": time.time(),
         "executable": sys.executable,
+        # How it was started, so `daq update` can bring it back the same way.
+        "mode": mode,
+        "no_open": no_open,
     }
     tmp = runtime_path() + ".tmp"
     with open(tmp, "w") as f:

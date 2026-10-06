@@ -141,8 +141,14 @@ def _install_shutdown_handler(server) -> None:
             pass                     # not the main thread, or unsupported here
 
 
-def _serve(args, with_tray: bool) -> int:
-    """Run the server. Blocks until it is shut down."""
+def _serve(args, with_tray: bool, mode: str) -> int:
+    """Run the server. Blocks until it is shut down.
+
+    `mode` records who started it - "tray" (the detached Windows server),
+    "launcher" (`daq` in the foreground) or "serve" (an explicit `daq --serve`,
+    which may be a service) - so `daq update` knows whether restarting it after
+    an update is its job.
+    """
     log.info("Starting dt5742b-daq %s (pid %d) on %s:%s...",
              __version__, os.getpid(), args.host, args.port)
     log.debug("python %s from %s", sys.version.split()[0], sys.executable)
@@ -177,7 +183,7 @@ def _serve(args, with_tray: bool) -> int:
     server = _ThreadedServer(config) if with_tray else uvicorn.Server(config)
 
     try:
-        runtime.write(args.host, args.port)
+        runtime.write(args.host, args.port, mode=mode, no_open=args.no_open)
         log.debug("runtime record written to %s", runtime.runtime_path())
     except OSError as e:
         # Only `daq`, `daq stop` and `daq status` need this file. Losing it
@@ -285,7 +291,7 @@ def _launch(args) -> int:
     _check_bindable(args.host, args.port)
     threading.Thread(target=_open_when_ready, args=(args.port, url),
                      name="open-ui", daemon=True).start()
-    return _serve(args, with_tray=False)
+    return _serve(args, with_tray=False, mode="launcher")
 
 
 def _open_when_ready(port: int, url: str) -> None:
@@ -342,81 +348,7 @@ def _stop(_args) -> int:
         _err(f'a run is recording: "{status.get("run_id")}". '
              "Stop the recording first, or use the tray.")
         return 1
-
-    port = live["port"]
-    pid = live.get("pid")
-    if not pid:
-        _err("the running server did not record its pid; stop it yourself.")
-        return 1
-    pid = int(pid)
-
-    # Cross-check the two independent claims about who is on that port: the
-    # runtime file, and the server's own answer. The file outlives crashes and
-    # pids get recycled, so when they disagree the pid in the file may belong to
-    # something else entirely - and on a host with a port forward the server
-    # that answered is not even on this machine.
-    recorded, reported = live.get("recorded_pid"), live["status"].get("pid")
-    if reported is None:
-        _say(f"the server on port {port} does not report its pid (it predates "
-             f"this command); trusting the runtime record.")
-    elif recorded is not None and int(recorded) != int(reported):
-        _err(f"the runtime record names pid {recorded}, but the server answering "
-             f"on port {port} says it is pid {reported}.")
-        _err("that record is stale, or the port reaches a server on another "
-             "machine. Refusing to signal either pid.")
-        _err("stop that server where it runs, or delete " + runtime.runtime_path())
-        return 1
-
-    try:
-        os.kill(pid, 15)
-    except OSError as e:
-        _err(f"could not stop pid {pid}: {e}")
-        return 1
-
-    # Confirm rather than assume. On Windows os.kill is TerminateProcess, which
-    # is immediate but gives the server no chance to tidy up after itself — so
-    # clearing the runtime record is this command's job, not the server's.
-    deadline = time.time() + 15
-    while time.time() < deadline and runtime.process_alive(pid):
-        time.sleep(0.25)
-    if runtime.process_alive(pid):
-        _explain_unkillable(pid)
-        return 1
-
-    runtime.clear()
-
-    # The process is gone; the port should be too. If it is not, say so plainly
-    # instead of leaving the next `daq` to fail with an unexplained bind error.
-    if not runtime.port_is_free("127.0.0.1", port):
-        _say(f"stopped pid {pid}, but port {port} is still in use.")
-        owner = runtime.port_owner(port)
-        if owner:
-            _err(f"port {port} is held by {owner}.")
-        else:
-            _err(f"could not identify what is holding port {port}.")
-        return 1
-
-    _say(f"stopped the server on port {port}.")
-    return 0
-
-
-def _explain_unkillable(pid: int) -> None:
-    """A process that survives a kill is not refusing to stop - it cannot.
-
-    On Windows the kill above is TerminateProcess, which does not wait for
-    consent: the process only lingers when a thread is blocked in an
-    uninterruptible kernel call, and here that is almost always the CAEN USB
-    driver (CAENUSBdrv.sys) wedged inside OpenDigitizer. Seen live on serial
-    53364: the open hung in the driver, every kill "succeeded", and the process
-    stayed until the unit was power-cycled. Without naming the remedy the
-    operator is left kill-looping a process that can never exit on its own.
-    """
-    _err(f"pid {pid} is still running 15s after being asked to stop.")
-    if os.name == "nt":
-        _err("a process that survives a kill on Windows is stuck in a kernel")
-        _err("driver call - usually the CAEN USB driver wedged mid-open.")
-        _err("power-cycle (or unplug and replug) the digitizer to release it;")
-        _err("if the process still does not exit, reboot the machine.")
+    return 0 if launcher.stop_server(live) else 1
 
 
 def _status(_args) -> int:
@@ -452,8 +384,12 @@ def main():
         prog="daq",
         description="DT5742B DAQ. With no arguments, opens the UI — attaching to "
                     "a server that is already running, or starting one.")
-    p.add_argument("command", nargs="?", choices=["stop", "status"],
-                   help="stop or inspect the running server")
+    p.add_argument("command", nargs="?", choices=["stop", "status", "update"],
+                   help="stop or inspect the running server, or update to the "
+                        "newest release (stops and restarts the server; refuses "
+                        "while a run is recording)")
+    p.add_argument("--check", action="store_true",
+                   help="with 'update': only say whether a newer release exists")
     p.add_argument("--version", action="version", version=f"dt5742b-daq {__version__}")
     p.add_argument("--host", default="127.0.0.1",
                    help="address to serve on (default: %(default)s; "
@@ -487,11 +423,15 @@ def main():
         return _stop(args)
     if args.command == "status":
         return _status(args)
+    if args.command == "update":
+        from . import update
+        return update.run(check_only=args.check)
     if args.open:
         launcher.open_ui(args.open)
         return 0
     if args.serve:
-        return _serve(args, with_tray=args.tray)
+        return _serve(args, with_tray=args.tray,
+                      mode="tray" if args.tray else "serve")
     return _launch(args)
 
 

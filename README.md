@@ -125,9 +125,10 @@ To have it start on boot, use Task Scheduler ("At startup", "Run whether user is
 logged on or not") — it needs nothing extra installed. [NSSM](https://nssm.cc/)
 works too; point it at that same `daq.exe` with arguments `--serve --host 0.0.0.0`.
 
-If you register it either way, **stop it before updating**. Windows will not let
-a running `daq.exe` be replaced, so the installer stops with an error rather than
-half-updating.
+If you register it either way, `daq update` stops it to update it but leaves
+starting it again to the scheduler or service. If the service restarts it on
+its own mid-update, the update stops with an error rather than half-updating —
+Windows will not let a running `daq.exe` be replaced.
 
 **Linux** — as a user service:
 
@@ -176,8 +177,26 @@ back, and it does not resume on its own.
 
 # Updating
 
-Run install command — it will stop the server first, then replace the installed
-version.
+```bash
+daq update
+```
+
+It checks for a newer release and says so either way. When there is one, it
+stops the server, installs the update and starts the DAQ again, just as it was
+running. Use `daq update --check` to only look.
+
+It refuses while a run is recording, and **your recorded runs are untouched** —
+they live in your data directory, not anywhere the update writes. On Windows the
+install finishes in its own window, which closes itself when done.
+
+An open DAQ window then shows **Update ready** with a **Reload** button (held
+back until any recording ends). Reloading keeps everything you had typed.
+
+A server you run as a service (`daq --serve`: systemd, NSSM, Task Scheduler) is
+updated but not restarted — start it again the way you normally do.
+
+Before `daq update` existed — or if it cannot run — the install one-liner does
+the same job; it stops the server first and refuses while a run is recording:
 
 ```powershell
 irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 | iex
@@ -186,12 +205,6 @@ irm https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.ps1 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jneuhaus-coe/caen-daq-sw/main/install.sh | bash
 ```
-
-It will refuse while a run is recording. **Your recorded runs are
-untouched** — they live in your data directory, not anywhere the
-installer writes.
-
-Afterwards, **hard-refresh the browser** (Ctrl-Shift-R) so it picks up the new UI.
 
 ---
 
