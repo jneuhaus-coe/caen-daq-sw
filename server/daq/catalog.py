@@ -116,11 +116,14 @@ UNIT_SETTINGS = [
              "reference in the data.\n\n"
              "Costs conversion time: dead time per event rises from 110 us "
              "to 181 us."},
-    {"key": "io_level", "label": "Front-panel level (GPO, TRG-IN)", "type": "enum",
+    {"key": "io_level", "required": True,
+     "label": "TRG-IN / GPO level", "type": "enum",
      "choices": [{"value": "nim", "label": "NIM"}, {"value": "ttl", "label": "TTL"}],
      "caen": "CAEN_DGTZ_SetIOLevel",
      "help": "Electrical standard of the front-panel LEMO connectors - the "
-             "GPO/TRG-OUT output and the TRG-IN input switch together.\n\n"
+             "TRG-IN input and the GPO/TRG-OUT output switch together. It "
+             "MUST match your external trigger signal or TRG-IN will never "
+             "fire: a TTL pulse into a NIM-configured input is invisible.\n\n"
              "NIM - negative logic, the usual choice with NIM crates and PMTs\n"
              "TTL - positive logic\n\n"
              "Match what the cabling expects, especially before trusting the "
@@ -172,28 +175,42 @@ BANK_SETTINGS = [
              "is no per-channel enable.\n\n"
              "Disabling a bank you are not using cuts readout time and file "
              "size."},
-    # The TR input has its own DAC calibrations, distinct from the channels'.
-    # lsb_v/zero_dac drive the UI's volts conversion; the numbers are the
-    # measured ones from the group's original DAQ (Dec21_RADiCAL daq.cc):
-    # threshold mV ~ (DAC - 25448) * 0.0329, offset mV ~ -(DAC - 33540) * 0.0466.
+    # The TR threshold speaks the MANUAL's arithmetic (UM4270 rev 12, sec
+    # 9.8.3): the comparator DAC moves 13.2 counts per connector-mV, with
+    # DAC 0x6666 = 26214 at the signal's 0-Volt WHEN the TR DC offset sits
+    # at midscale (0x8000) - CAEN's worked NIM example, 26214 - 400*13.2 =
+    # 20934, is the value that worked here on day one. The manual states no
+    # simple formula exists for other offset values, so the offset belongs
+    # at midscale; the RADiCAL bench numbers (0.0329 mV/LSB) were wrong by
+    # ~2.3x and cost a day of threshold archaeology.
     {"key": "fast_trigger_threshold", "label": "TR threshold", "type": "volts",
-     "lsb_v": 3.29e-5, "zero_dac": 25448,
+     "lsb_v": 7.5758e-5, "zero_dac": 26214,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerThreshold",
-     "help": "Level the TR input must cross to fire the fast trigger.\n\n"
+     "help": "TR0 FAST-TRIGGER level. TR0 halves its input (divide-by-2), so a "
+             "+30 mV pulse is ~15 mV here - set the threshold just above the "
+             "baseline noise, on the correct edge (rising for positive pulses). "
+             "ONLY meaningful with the TR DC offset at midscale.\n\n"
+             "Trigger level in volts relative to the TR signal's 0-Volt "
+             "(UM4270 9.8.3) - a -140 mV falling trigger is -0.140 here. "
+             "Valid with the TR DC offset at midscale (0x8000 = 0 V), where "
+             "CAEN's calibration applies; the manual provides no formula "
+             "for other offsets.\n\n"
              "Set it well inside your pulse amplitude but clear of the "
              "baseline noise.\n\n"
              "On the DT5742B both banks configure the same TR0 input - keep "
-             "them equal. Volts here use the TR path's measured calibration "
-             "(0.0329 mV per DAC step, zero at 25448)."},
+             "them equal."},
     {"key": "fast_trigger_dc_offset", "label": "TR DC offset", "type": "volts",
-     "lsb_v": -4.66e-5, "zero_dac": 33540,
+     "lsb_v": -4.66e-5, "zero_dac": 32768,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerDCOffset",
-     "help": "Shifts the TR input's own baseline so the threshold has room "
-             "to sit.\n\n"
-             "Leave it near midscale for NIM and other negative pulses; "
-             "raise it for positive signals. Volts use the TR path's "
-             "measured calibration (-0.0466 mV per DAC step, zero at "
-             "33540)."},
+     "help": "Positions the TR0 baseline (its 0-Volt). UM4270 9.8.3: DAC "
+             "0x8000 = 32768 puts the baseline at MIDSCALE (0 V), which is "
+             "also the only offset where the threshold's volts are "
+             "calibrated - so keep it here unless you must fit an asymmetric "
+             "pulse.\n\n"
+             "0 V = baseline centred; a small negative value drops the "
+             "baseline to make room for a positive pulse above it. Volts use "
+             "the measured slope (-0.0466 mV per DAC step) anchored at the "
+             "manual's midscale zero."},
 ]
 
 CHANNEL_SETTINGS = [

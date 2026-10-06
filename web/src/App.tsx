@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, openTelemetry } from "./api";
-import type { DisplayPrefs } from "./api";
+import type { Condition, DisplayPrefs, WaveMode } from "./api";
+import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
@@ -21,8 +22,16 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
-import { TR_OFF_SLOPE_COUNTS, TR_THR_COUNTS_PER_LSB, trRelThresholdV,
-         trThresholdDacFor, windowVolts } from "./volts";
+import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, dacToVolts, trAbsThresholdV,
+         trThresholdDacForAbs, voltsToDac, windowVolts } from "./volts";
+
+// Settings the operator tunes WHILE WATCHING the live plots - trigger and
+// timing. Everything else in the unit catalog is campaign-tier: set once,
+// then protected on the Experiment view where a mid-run hand cannot brush it.
+const LIVE_UNIT_KEYS = new Set([
+  "post_trigger", "trigger_edge", "external_trigger", "fast_trigger",
+  "software_trigger", "fast_trigger_digitizing", "io_level",
+]);
 
 export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -41,12 +50,48 @@ export function App() {
   // Per-channel waveform display ranges (volts). Persisted server-side so a
   // daq restart or a different browser comes back to the same view.
   const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
+  // Global channel controls: set the display window and the DC offset for all
+  // 16 channels at once - handy when every channel sees a similar signal.
+  const [allYMin, setAllYMin] = useState("");
+  const [allYMax, setAllYMax] = useState("");
+  const [allOffset, setAllOffset] = useState("");
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
-  // into a density picture. Persisted with the rest of the display state.
-  const [waveMode, setWaveMode] = useState<"avg" | "overlay">("avg");
+  // into a density picture. "scope": the newest single trace alone, fed by
+  // free-running software triggers. Persisted with the display state.
+  const [waveMode, setWaveMode] = useState<WaveMode>("avg");
+  // Scope mode's software-trigger rate; committed via /api/scope.
+  const [scopeHz, setScopeHz] = useState("2");
+  // The scope's channel-trigger: "" = show every event; a channel number =
+  // only events where that trace crosses the level refresh the display.
+  const [scopeTrigCh, setScopeTrigCh] = useState("");
+  const [scopeTrigMv, setScopeTrigMv] = useState("20");
+  const [scopeTrigEdge, setScopeTrigEdge] = useState<"rising" | "falling">("falling");
   const [testN, setTestN] = useState("100");
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = useState("");
+  // The run-notes dialog: Record opens it, and the note it collects lands in
+  // run_metadata.json - what was tested, beam energy, the context no
+  // register readback can supply. Cleared after each run starts: a note
+  // describes ONE run, and a stale one silently attached to the next run
+  // would be worse than none.
+  const [recDialog, setRecDialog] = useState(false);
+  const [recNote, setRecNote] = useState("");
+  // The conditions snapshot shown in the confirm-setup dialog, fetched fresh
+  // each time it opens so it reflects the server's truth, not tab state.
+  const [recCond, setRecCond] = useState<Condition[]>([]);
+  // Live = watch and operate; Experiment = campaign setup, conditions, and
+  // everything you would hate to change by accident mid-campaign.
+  const [view, setView] = useState<"live" | "experiment">("live");
+  // The settings lock: lock everything with one button, unlock individual
+  // settings one at a time - deliberate exceptions, wholesale protection.
+  const [lockOn, setLockOn] = useState(false);
+  const [lockOpen, setLockOpen] = useState<Set<string>>(new Set());
+  const lockRef = useRef({ on: false, open: [] as string[] });
+  lockRef.current = { on: lockOn, open: [...lockOpen] };
+  // Existing run folders feed the run-name dropdown: picking one (with the
+  // timestamp off) records INTO it - runs of an unchanged setup stay in one
+  // campaign folder instead of scattering one directory per run.
+  const [runDirs, setRunDirs] = useState<string[]>([]);
   // The TR0 baseline marker's memory: the last MEASURED baseline and the
   // offset DAC it was measured under. The measured and bench-predicted
   // baselines disagree by ~200 mV on this unit, so falling back to
@@ -64,6 +109,11 @@ export function App() {
   const displayTimer = useRef<number | undefined>(undefined);
   // The config the unit last confirmed - what a change gets measured against.
   const confirmed = useRef<BoardConfig | null>(null);
+  // The server's config revision this tab is based on. Sent with every push
+  // so a tab holding history is refused instead of silently reverting the
+  // unit; when the status poll shows the revision moved (another window, a
+  // session apply, a reconnect), the tab refetches rather than goes stale.
+  const cfgRev = useRef(0);
   const { toasts, push, dismiss } = useToasts();
 
   const loadOnce = useCallback(async () => {
@@ -72,6 +122,7 @@ export function App() {
       const [cat, cfg, st] = await Promise.all([api.catalog(), api.getConfig(), api.status()]);
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
+      cfgRev.current = st.config_rev ?? 0;
     } catch (e) {
       // Leaving this to console.error left the page reading "Loading..." for
       // ever, with nothing on screen to say the server had not answered.
@@ -80,11 +131,24 @@ export function App() {
     // Display prefs restore on their own - they never touch the hardware.
     api.getDisplay().then((d) => {
       setYRanges(fromPrefs(d));
-      setWaveMode(d.wave_mode === "overlay" ? "overlay" : "avg");
+      // The display mode restores; the scope's trigger firing does NOT start
+      // on page load - status.scope_hz says whether a scope is already live.
+      setWaveMode(asWaveMode(d.wave_mode));
+      setLockOn(!!d.lock_on);
+      setLockOpen(new Set(Array.isArray(d.lock_open) ? d.lock_open : []));
     }).catch(() => {});
   }, []);
 
   useEffect(() => { loadOnce(); }, [loadOnce]);
+
+  // Keep the run-name dropdown in step with what is on disk; runsKey bumps
+  // whenever a recording starts or stops.
+  useEffect(() => {
+    api.runs().then((r) => setRunDirs(r.runs.map((x) => x.id))).catch(() => {});
+  }, [runsKey]);
+
+  const asWaveMode = (v: DisplayPrefs["wave_mode"]): WaveMode =>
+    v === "overlay" || v === "scope" ? v : "avg";
 
   const fromPrefs = (d: DisplayPrefs): Record<number, [number, number]> => {
     const out: Record<number, [number, number]> = {};
@@ -101,13 +165,37 @@ export function App() {
   };
 
   const saveDisplay = (ranges: Record<number, [number, number]>,
-                       mode: "avg" | "overlay") => {
+                       mode: WaveMode) => {
     window.clearTimeout(displayTimer.current);
     displayTimer.current = window.setTimeout(() => {
       const y_ranges: Record<string, [number, number]> = {};
       for (const [k, v] of Object.entries(ranges)) y_ranges[k] = v;
-      api.setDisplay({ y_ranges, wave_mode: mode }).catch(() => {});
+      api.setDisplay({ y_ranges, wave_mode: mode,
+                       lock_on: lockRef.current.on,
+                       lock_open: lockRef.current.open }).catch(() => {});
     }, 400);
+  };
+
+  // The lock: keyed by setting ("post_trigger"), channel ("ch:5"), or
+  // activity ("calibration"). Locking all clears every exception - the
+  // whole point is that unlocks are deliberate, one at a time.
+  const isLocked = (key: string) => lockOn && !lockOpen.has(key);
+  const unlockOne = (key: string) => {
+    setLockOpen((prev) => {
+      const next = new Set(prev).add(key);
+      lockRef.current = { on: lockOn, open: [...next] };
+      saveDisplay(yRanges, waveMode);
+      return next;
+    });
+  };
+  const toggleLockAll = () => {
+    if (lockOn && !window.confirm(
+        "Unlock ALL settings? Individual unlocks are usually safer.")) return;
+    const on = !lockOn;
+    setLockOn(on);
+    setLockOpen(new Set());
+    lockRef.current = { on, open: [] };
+    saveDisplay(yRanges, waveMode);
   };
 
   const applyYRanges = (next: Record<number, [number, number]>) => {
@@ -115,9 +203,38 @@ export function App() {
     saveDisplay(next, waveMode);
   };
 
-  const changeWaveMode = (mode: "avg" | "overlay") => {
+  const changeWaveMode = (mode: WaveMode) => {
+    // Entering scope starts the free-running software triggers; leaving it
+    // stops them - the display mode and the trigger source are one gesture,
+    // so a scope never silently fires with nobody watching it.
+    if (mode === "scope" && waveMode !== "scope") {
+      applyScope(scopeHz, scopeTrigCh, scopeTrigMv, scopeTrigEdge);
+    } else if (mode !== "scope" && waveMode === "scope") {
+      api.scope(false).then((r) => setStatus(r.status)).catch(() => {});
+    }
     setWaveMode(mode);
     saveDisplay(yRanges, mode);
+  };
+
+  /** Push the whole scope state - rate and channel-trigger - in one call, so
+   *  the server never holds a mix of old and new pieces. */
+  const applyScope = async (hzRaw: string, trigCh: string, trigMv: string,
+                            edge: "rising" | "falling") => {
+    const hz = Math.min(20, Math.max(0.1, Number(hzRaw) || 2));
+    setScopeHz(String(hz));
+    const trigger = trigCh === "" ? null : {
+      channel: Number(trigCh),
+      level_mv: Math.min(500, Math.max(1, Number(trigMv) || 20)),
+      edge,
+    };
+    try {
+      const r = await api.scope(true, hz, trigger);
+      setStatus(r.status);
+      if (!r.ok) push("err", "Could not start the scope", [r.error ?? ""]);
+    } catch (e) {
+      push("err", "Could not start the scope",
+           [e instanceof Error ? e.message : String(e)]);
+    }
   };
 
   const changeYRange = (ch: number, range: [number, number] | null, all: boolean) => {
@@ -129,6 +246,28 @@ export function App() {
       else next[t] = range;
     }
     applyYRanges(next);
+  };
+
+  // ---- global (all-channel) controls ----
+  const applyGlobalRange = () => {
+    const lo = Number(allYMin), hi = Number(allYMax);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) {
+      push("warn", "Enter a valid window", ["min must be below max"]);
+      return;
+    }
+    changeYRange(0, [lo, hi], true);
+  };
+  const resetGlobalRange = () => {
+    changeYRange(0, null, true);   // every channel back to the full window
+    setAllYMin(""); setAllYMax("");
+  };
+  const applyGlobalOffset = () => {
+    if (!config || !catalog) return;
+    const v = Number(allOffset);
+    if (!Number.isFinite(v)) return;
+    const dac = voltsToDac(v, catalog.geometry);
+    pushConfig({ ...config,
+      channels: config.channels.map((c) => ({ ...c, dc_offset: dac })) });
   };
 
   const catalogRef = useRef<Catalog | null>(null);
@@ -143,7 +282,17 @@ export function App() {
     const tick = async () => {
       try {
         const st = await api.status();
-        if (!cancelled) { setStatus(st); setServerUp(true); }
+        if (cancelled) return;
+        setStatus(st); setServerUp(true);
+        // The config moved underneath this tab - another window, a session
+        // apply, a server restart. Refetch instead of quietly going stale:
+        // a stale tab once pushed its whole old snapshot and reverted every
+        // offset and name on the unit.
+        if (st.config_rev != null && st.config_rev !== cfgRev.current) {
+          cfgRev.current = st.config_rev;
+          const cfg = await api.getConfig();
+          if (!cancelled) { setConfig(cfg); confirmed.current = cfg; }
+        }
       } catch {
         if (!cancelled) setServerUp(false);
       }
@@ -159,9 +308,17 @@ export function App() {
     saveTimer.current = window.setTimeout(() => {
       // Whatever the board reports wins - a rejected write must not leave the
       // UI showing a value the hardware never took.
-      api.setConfig(next)
+      api.setConfig(next, cfgRev.current)
         .then((r) => {
+          if (r.config_rev != null) cfgRev.current = r.config_rev;
           setConfig(r.config);
+          if (r.stale) {
+            // This tab's config predates the server's state; the write was
+            // refused and the fields now show the current truth.
+            confirmed.current = r.config;
+            push("warn", "Settings changed elsewhere", r.errors ?? []);
+            return;
+          }
           const prev = confirmed.current ?? r.config;
           const lines = catalogRef.current
             ? describeChanges(prev, r.config, next, catalogRef.current) : [];
@@ -190,26 +347,12 @@ export function App() {
   // registers, but there is no sensible reason for them to differ, so the
   // TR0 panel writes every bank at once. Divergence (an old config, a raw
   // register poke) is surfaced below the panel, never silently masked.
+  // RAW threshold semantics (operator's choice, 2026-08-28): threshold and
+  // offset are independent absolute levels on the same volt scale, and the
+  // trigger's effective depth is their difference - shown live in the card's
+  // "vs offset" readout, never silently compensated.
   const updateTrBoth = (key: string, value: any) => {
     if (!config) return;
-    if (key === "fast_trigger_dc_offset") {
-      // The comparator lives in the window frame, so moving the offset moves
-      // the baseline RELATIVE to a fixed threshold. Operators think
-      // baseline-relative ("trigger at -100 mV"), so the threshold DAC
-      // follows the offset by the predicted baseline shift - the margin is
-      // preserved, and calibration can never strand the trigger.
-      const old = config.groups[0].fast_trigger_dc_offset;
-      const dThr = Math.round(
-        TR_OFF_SLOPE_COUNTS * (value - old) / TR_THR_COUNTS_PER_LSB);
-      const groups = config.groups.map((gc) => ({
-        ...gc,
-        fast_trigger_dc_offset: value,
-        fast_trigger_threshold: Math.min(0xFFFF, Math.max(0,
-          gc.fast_trigger_threshold + dThr)),
-      }));
-      pushConfig({ ...config, groups });
-      return;
-    }
     pushConfig({ ...config, groups: config.groups.map((gc) => ({ ...gc, [key]: value })) });
   };
   const updateChannel = (ch: number, patch: Partial<BoardConfig["channels"][number]>) => {
@@ -257,18 +400,33 @@ export function App() {
       failed("Could not fire test triggers")(e);
     }
   };
+  // Opening the record dialog fetches the conditions fresh, so the
+  // confirm-setup review shows the server's truth at this moment.
+  const openRecDialog = () => {
+    api.conditions().then((r) => setRecCond(r.items)).catch(() => setRecCond([]));
+    setRecDialog(true);
+  };
+
+  // Timestamp OFF and the name matches a folder on disk: this recording
+  // joins that folder (run_<N>.root added alongside) instead of failing on
+  // the clash or minting yet another directory.
+  const intoExisting = !stampRun && runDirs.includes(runName.trim());
+
   const startRec = async () => {
+    setRecDialog(false);
     try {
       const n = runNo.trim() === "" ? null : Number(runNo);
       const m = recMax.trim() === "" ? null : Number(recMax);
       const r = await api.recStart(runName, stampRun,
                                    Number.isFinite(n as number) ? n : null,
-                                   Number.isFinite(m as number) ? m : null);
+                                   Number.isFinite(m as number) ? m : null,
+                                   recNote.trim(), intoExisting);
       setStatus(r.status);
       if (!r.ok) push("err", "Could not start recording", [r.error ?? "no reason given"]);
       else {
         push("ok", "Recording", [`${r.run}`]);
         setRunNo("");            // the next number is inferred again
+        setRecNote("");          // a note describes one run, never the next
         setRunsKey((k) => k + 1);
       }
     } catch (e) {
@@ -333,6 +491,22 @@ export function App() {
     <div className="app">
       <header>
         <h1>DT5742B DAQ</h1>
+        <nav className="view-tabs" role="tablist" aria-label="View">
+          <button role="tab" aria-selected={view === "live"}
+            className={view === "live" ? "on" : ""}
+            onClick={() => setView("live")}>Live</button>
+          <button role="tab" aria-selected={view === "experiment"}
+            className={view === "experiment" ? "on" : ""}
+            title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
+            onClick={() => setView("experiment")}>Experiment</button>
+        </nav>
+        <button className={"lock-all" + (lockOn ? " on" : "")}
+          title={lockOn
+            ? "Settings are LOCKED. Unlock individual settings with their own lock icons; click here to unlock everything."
+            : "Lock every hardware setting against accidental edits. Unlock them one at a time afterwards."}
+          onClick={toggleLockAll}>
+          {lockOn ? "🔒 LOCKED" : "🔓 LOCK"}
+        </button>
         <ConnectionBadge status={status} serverUp={serverUp}
           busy={reconnecting} onReconnect={reconnect} />
         {/* Acquisition lives beside the connection state, away from the
@@ -372,9 +546,13 @@ export function App() {
               <>
                 <label className="rec-label" htmlFor="runname">Run name</label>
                 <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
-                  disabled={!connected}
+                  disabled={!connected} list="run-dirs"
+                  title="Pick an existing folder (with the timestamp off) to add this run to it, or type a new name for a new folder"
                   onChange={(e) => setRunName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                  onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
+                <datalist id="run-dirs">
+                  {runDirs.map((d) => <option key={d} value={d} />)}
+                </datalist>
                 <label className="rec-label" htmlFor="runno"
                   title="The analysis-facing run number (run_N.root). Prefilled with one past the highest number in the data directory; type to override.">
                   Run #
@@ -383,7 +561,7 @@ export function App() {
                   placeholder={String(status?.next_run_number ?? "")}
                   value={runNo} disabled={!connected}
                   onChange={(e) => setRunNo(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                  onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
                 <label className="rec-label" htmlFor="recmax"
                   title="Stop the recording automatically after this many events. Blank = record until stopped. Acquisition keeps running either way.">
                   for
@@ -391,14 +569,15 @@ export function App() {
                 <input id="recmax" className="rec-input rec-no" type="number" min={1}
                   placeholder="&#8734; ev" value={recMax} disabled={!connected}
                   onChange={(e) => setRecMax(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") startRec(); }} />
+                  onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
                 <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
                   <input type="checkbox" checked={stampRun} disabled={!connected}
                     onChange={(e) => setStampRun(e.target.checked)} />
                   Include timestamp
                 </label>
-                <button className="record" onClick={startRec} disabled={!connected}
-                  title="Start writing this run to disk">
+                <button className="record" onClick={openRecDialog}
+                  disabled={!connected}
+                  title="Start writing this run to disk (asks for a run note first)">
                   <span className="rec-dot" />Record
                 </button>
               </>
@@ -412,11 +591,89 @@ export function App() {
       <div className="body">
         <fieldset className="hw-lock" disabled={!connected}
           title={connected ? undefined : "No unit connected"}>
+        {view === "experiment" ? (
+          <main className="experiment">
+            <div className="exp-grid">
+              <div className="exp-col">
+                <div className="card">
+                  <h2>Campaign Settings <span className="sub">set once, then lock</span></h2>
+                  <SettingsList
+                    defs={catalog.unit.filter((d) => !LIVE_UNIT_KEYS.has(d.key))}
+                    geom={catalog.geometry}
+                    get={(k) => (config as any)[k]} onChange={updateBoard}
+                    locked={isLocked} onUnlock={unlockOne} />
+                </div>
+                <Collapsible title="Bank Settings" defaultOpen>
+                  <BankPanel catalog={catalog} config={config}
+                    onGroupChange={updateGroup}
+                    locked={isLocked} onUnlock={unlockOne} />
+                </Collapsible>
+              </div>
+              <div className="exp-col">
+                <ConditionsPanel onError={(t, l) => push("err", t, l)} />
+                <SessionsPanel
+                  recording={recording}
+                  onSaved={(name) => push("ok", `Session "${name}" saved`)}
+                  onError={(title, lines) => push("err", title, lines)}
+                  onApplied={(cfg, display, errors, isConn, name) => {
+                    setConfig(cfg); confirmed.current = cfg;
+                    setYRanges(fromPrefs(display));
+                    setWaveMode(asWaveMode(display.wave_mode));
+                    if (!isConn) {
+                      push("warn", `Session "${name}": display restored`,
+                           ["No unit connected - hardware settings were not written."]);
+                    } else if (errors.length) {
+                      push("err", `Session "${name}" applied with errors`, errors);
+                    } else {
+                      push("ok", `Session "${name}" applied and read back from unit`);
+                    }
+                  }} />
+                <ConfigPanel
+                  onReset={async () => {
+                    try {
+                      const r = await api.resetDefault();
+                      setConfig(r.config); confirmed.current = r.config;
+                      if (r.connected === false) {
+                        push("warn", "No unit connected", ["Nothing was sent."]);
+                      } else if (r.errors?.length) {
+                        push("err", "Unit rejected part of the reset", r.errors);
+                      } else {
+                        push("ok", "Defaults applied and read back from unit");
+                      }
+                    } catch (e) {
+                      failed("Could not reset the settings")(e);
+                    }
+                  }}
+                  onLoaded={({ config: cfg, notes, errors, restart, connected: up, running: isRunning }) => {
+                    setConfig(cfg); confirmed.current = cfg;
+                    if (!up) {
+                      push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
+                    } else if (errors.length) {
+                      push("err", "Unit rejected a setting from the file",
+                           [...errors, ...notes]);
+                    } else {
+                      push(notes.length ? "warn" : "ok",
+                           "Config loaded and read back from unit", notes);
+                    }
+                    if (restart.length && isRunning) {
+                      const what = restart.join(", ");
+                      if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
+                        api.stop().then(() => api.start()).then(setStatus)
+                          .catch(failed("Could not re-arm the unit"));
+                      }
+                    }
+                  }} />
+              </div>
+            </div>
+          </main>
+        ) : (
         <main>
           <div className="grid-head">
             <h2>Channels <span className="sub">
               {waveMode === "avg"
                 ? `all 16 · avg ${tele?.avg_window_s ?? 1}s window · click a title to rename`
+                : waveMode === "scope"
+                ? `all 16 · newest single trace, full resolution · click a title to rename`
                 : `all 16 · last ${PERSIST_TRACES} events, density-shaded · click a title to rename`}
             </span></h2>
             <div className="wave-mode" role="group" aria-label="Waveform display mode">
@@ -426,6 +683,64 @@ export function App() {
               <button className={waveMode === "overlay" ? "on" : ""}
                 title={`The last ${PERSIST_TRACES} single events stacked, brightness = how often a path is taken`}
                 onClick={() => changeWaveMode("overlay")}>Overlay</button>
+              <button className={waveMode === "scope" ? "on" : ""}
+                disabled={!connected}
+                title="One full-resolution trace at a time, fed by free-running software triggers - for studying the noise on a line"
+                onClick={() => changeWaveMode("scope")}>Scope</button>
+              {waveMode === "scope" ? (
+                <>
+                  <label className="scope-rate" title="Software-trigger rate, 0.1-20 Hz">
+                    <input type="number" min={0.1} max={20} step={0.1} value={scopeHz}
+                      onChange={(e) => setScopeHz(e.target.value)}
+                      onBlur={(e) => applyScope(e.target.value, scopeTrigCh, scopeTrigMv, scopeTrigEdge)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter")
+                          applyScope((e.target as HTMLInputElement).value,
+                                     scopeTrigCh, scopeTrigMv, scopeTrigEdge);
+                      }} />
+                    Hz
+                  </label>
+                  <span className="scope-trig"
+                    title="Software display trigger: only events where this channel crosses the level (vs its own baseline) refresh the traces. The x742 has no hardware channel trigger, so this samples the line at the scope rate - features present in most windows show; rare pulses still need the signal on TR0.">
+                    trig
+                    <select value={scopeTrigCh}
+                      onChange={(e) => {
+                        setScopeTrigCh(e.target.value);
+                        applyScope(scopeHz, e.target.value, scopeTrigMv, scopeTrigEdge);
+                      }}>
+                      <option value="">any</option>
+                      {Array.from({ length: catalog.geometry.num_channels }, (_, i) => (
+                        <option key={i} value={i}>CH {i}</option>
+                      ))}
+                      <option value={16}>TR0</option>
+                    </select>
+                    {scopeTrigCh !== "" ? (
+                      <>
+                        <input type="number" min={1} max={500} value={scopeTrigMv}
+                          onChange={(e) => setScopeTrigMv(e.target.value)}
+                          onBlur={(e) => applyScope(scopeHz, scopeTrigCh, e.target.value, scopeTrigEdge)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              applyScope(scopeHz, scopeTrigCh,
+                                         (e.target as HTMLInputElement).value, scopeTrigEdge);
+                          }} />
+                        mV
+                        <button
+                          title={scopeTrigEdge === "falling"
+                            ? "Triggering on a dip below baseline - click for rising"
+                            : "Triggering on a rise above baseline - click for falling"}
+                          onClick={() => {
+                            const next = scopeTrigEdge === "falling" ? "rising" : "falling";
+                            setScopeTrigEdge(next);
+                            applyScope(scopeHz, scopeTrigCh, scopeTrigMv, next);
+                          }}>
+                          {scopeTrigEdge === "falling" ? "↘" : "↗"}
+                        </button>
+                      </>
+                    ) : null}
+                  </span>
+                </>
+              ) : null}
             </div>
             <div className="legend">
               <span className="lg live" title="Showing at least its noise floor - a quiet channel seeing only dark counts is live, not dead">live</span>
@@ -434,13 +749,47 @@ export function App() {
               <span className="lg off">bank off</span>
             </div>
           </div>
+          <div className="chan-global"
+            title="Apply to all 16 channels at once - handy when every channel sees a similar signal">
+            <span className="cg-label">All channels</span>
+            <span className="cg-group" title="Display window (volts) for every channel's plot">
+              window
+              <input type="number" step={0.01} className="cg-num" placeholder="-0.5"
+                value={allYMin} onChange={(e) => setAllYMin(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalRange(); }} />
+              to
+              <input type="number" step={0.01} className="cg-num" placeholder="+0.5"
+                value={allYMax} onChange={(e) => setAllYMax(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalRange(); }} />
+              V
+              <button onClick={applyGlobalRange}>set</button>
+              <button onClick={resetGlobalRange}
+                title="Reset every channel's plot to the full window">reset</button>
+            </span>
+            <span className="cg-group"
+              title="Write this DC offset (baseline position, volts) to all 16 channels">
+              DC offset
+              <input type="number" step={0.005} className="cg-num"
+                placeholder={dacToVolts(config.channels[0].dc_offset, catalog.geometry).toFixed(3)}
+                value={allOffset} disabled={!connected || lockOn}
+                onChange={(e) => setAllOffset(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalOffset(); }} />
+              V
+              <button onClick={applyGlobalOffset} disabled={!connected || lockOn}
+                title={lockOn ? "Settings are locked - unlock to write offsets"
+                              : "Set this DC offset on all 16 channels"}>set all</button>
+            </span>
+          </div>
           <ChannelGrid catalog={catalog} config={config} tele={tele}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
-            clearEpoch={wipeEpoch} />
+            clearEpoch={wipeEpoch}
+            locked={isLocked} onUnlock={unlockOne} />
         </main>
+        )}
 
+        {view === "live" ? (
         <aside>
           {(() => {
             // The digitized TR0 trace, when TR digitizing is on: the same
@@ -461,16 +810,13 @@ export function App() {
               ? mem.counts + TR_OFF_SLOPE_COUNTS
                   * (trGroup.fast_trigger_dc_offset - mem.dac)
               : 2048 + (trGroup.fast_trigger_dc_offset - 32768) * TR_OFF_SLOPE_COUNTS;
-            // Trigger: the comparator lives in the WINDOW frame - deduced
-            // from the observed fact that moving the TR offset changes the
-            // trigger margin - so its line is a function of the threshold
-            // DAC alone (RADiCAL cal: 0.0329 mV/LSB, zero at 25448),
-            // independent of the offset. Constants provisional until the
-            // comparator-domain experiment refines them.
+            // Trigger: baseline marker plus the manual-arithmetic threshold
+            // (volts vs the TR signal's zero, UM4270 9.8.3) - exact with the
+            // TR offset at midscale, approximate elsewhere.
+            const baseV = windowVolts(baseCounts, catalog.geometry);
             const markers = [
-              { v: windowVolts(baseCounts, catalog.geometry),
-                label: "baseline", color: "#4ac776" },
-              { v: (trGroup.fast_trigger_threshold - 25448) * 0.0329 / 1000,
+              { v: baseV, label: "baseline", color: "#4ac776" },
+              { v: baseV + trAbsThresholdV(trGroup.fast_trigger_threshold),
                 label: "trigger", color: "#f85149" },
             ];
             return (
@@ -489,26 +835,6 @@ export function App() {
               </div>
             );
           })()}
-          <div className="card">
-            <h2>Trigger rate</h2>
-            <RateStrip tele={tele} />
-            <div className="test-trigger"
-              title="Software triggers - the bench source when nothing external can trigger the board. Starts acquisition if it is not running.">
-              <button onClick={fireTest} disabled={!connected}>Fire</button>
-              <input type="number" min={1} value={testN}
-                disabled={!connected}
-                onChange={(e) => setTestN(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") fireTest(); }} />
-              <span className="muted">test triggers @ 10 Hz</span>
-              {status?.sw_triggers_pending ? (
-                <span className="pending mono">{status.sw_triggers_pending} left</span>
-              ) : null}
-            </div>
-          </div>
-          <Collapsible title="Unit Settings" defaultOpen>
-            <SettingsList defs={catalog.unit} geom={catalog.geometry}
-              get={(k) => (config as any)[k]} onChange={updateBoard} />
-          </Collapsible>
           <Collapsible title="TR0 Trigger" defaultOpen>
             {(() => {
               const offDefs = catalog.bank.filter((d) =>
@@ -516,28 +842,37 @@ export function App() {
               const [g0, g1] = config.groups;
               const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
                 .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
-              const relV = trRelThresholdV(
-                g0.fast_trigger_threshold, g0.fast_trigger_dc_offset,
-                catalog.geometry);
+              const absV = trAbsThresholdV(g0.fast_trigger_threshold);
+              const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
               return (
                 <>
                   <div className="setting-row"
-                    title={"Trigger level RELATIVE to the baseline - the way pulses are thought about (an MCP pulse of -100 mV wants a threshold around -50 to -80 mV). Kept relative automatically: moving the TR DC offset re-computes the absolute threshold so the margin never changes underneath you.\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold <span className="muted">vs baseline</span></label>
+                    title={"Trigger level in the manual's arithmetic (UM4270 9.8.3): volts relative to the TR signal's 0-Volt, valid with the TR DC offset at midscale (0x8000). A -140 mV falling trigger is simply -0.140 here. CAEN states no simple formula exists at other offsets - keep the offset at midscale.\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
+                    <label>TR threshold <span className="muted">vs TR zero</span></label>
                     <span className="field">
-                      <BlurInput type="number" step={0.005} min={-0.5} max={0.5}
-                        selectOnFocus value={relV.toFixed(3)}
+                      <BlurInput type="number" step={0.005} min={-1.986} max={2.979}
+                        selectOnFocus value={absV.toFixed(3)}
+                        disabled={isLocked("fast_trigger_threshold")}
                         onCommit={(v) => {
-                          const rel = Math.min(0.5, Math.max(-0.5, Number(v) || 0));
                           updateTrBoth("fast_trigger_threshold",
-                            trThresholdDacFor(rel, g0.fast_trigger_dc_offset,
-                                              catalog.geometry));
+                            trThresholdDacForAbs(Number(v) || 0));
                         }} />
                       <span className="unit">V</span>
                     </span>
+                    {isLocked("fast_trigger_threshold") ? (
+                      <button className="lock-chip"
+                        title="Locked. Click to unlock just the TR threshold."
+                        onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
+                    ) : null}
+                    {!offMid ? (
+                      <span className="muted tr-rel-note" title="UM4270 9.8.3: the threshold volts are only calibrated with the TR DC offset at midscale (0x8000); CAEN provides no formula for other offsets.">
+                        ⚠ offset not at midscale
+                      </span>
+                    ) : null}
                   </div>
                   <SettingsList defs={offDefs} geom={catalog.geometry}
-                    get={(k) => (g0 as any)[k]} onChange={updateTrBoth} />
+                    get={(k) => (g0 as any)[k]} onChange={updateTrBoth}
+                    locked={isLocked} onUnlock={unlockOne} />
                   {diverged ? (
                     <div className="tr-diverged">
                       The two banks' TR0 registers differ (bank 1 has its own
@@ -554,18 +889,59 @@ export function App() {
                   ) : null}
                   <p className="muted">
                     One input, split to both banks; this panel writes both
-                    together. The threshold is relative to the baseline and
-                    follows the offset automatically.
+                    together. Threshold volts are calibrated only with the
+                    offset at midscale (UM4270 9.8.3).
                   </p>
                 </>
               );
             })()}
           </Collapsible>
-          <Collapsible title="Bank Settings" defaultOpen>
-            <BankPanel catalog={catalog} config={config} onGroupChange={updateGroup} />
+          <div className="card">
+            <h2>Trigger rate</h2>
+            <RateStrip tele={tele} />
+            <div className="test-trigger"
+              title="Software triggers - the bench source when nothing external can trigger the board. Starts acquisition if it is not running.">
+              <button onClick={fireTest} disabled={!connected}>Fire</button>
+              <input type="number" min={1} value={testN}
+                disabled={!connected}
+                onChange={(e) => setTestN(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") fireTest(); }} />
+              <span className="muted">test triggers @ 10 Hz</span>
+              {status?.sw_triggers_pending ? (
+                <span className="pending mono">{status.sw_triggers_pending} left</span>
+              ) : null}
+            </div>
+          </div>
+          <Collapsible title="Trigger &amp; Timing" defaultOpen>
+            <div className="trig-guide">
+              <p><b>The board fires when ANY enabled source crosses its
+                level</b> (logical OR of the sources below).</p>
+              <p className="trig-warn">The 16 signal channels <b>cannot</b>
+                trigger the board. To trigger on your signal, feed a copy into
+                <b> TR0</b> (analog, has a threshold) or <b>TRG-IN</b> (a NIM/TTL
+                logic pulse).</p>
+              <p className="muted">
+                TR0: match the <b>edge</b> to your pulse (rising = positive-going),
+                keep the <b>TR DC offset at midscale</b> (its threshold is only
+                calibrated there), and set the <b>threshold</b> just above baseline
+                noise. TR0 halves its input (÷2), so a 30 mV pulse is ~15 mV at
+                the comparator.
+              </p>
+            </div>
+            <SettingsList
+              defs={catalog.unit.filter((d) => LIVE_UNIT_KEYS.has(d.key))}
+              geom={catalog.geometry}
+              get={(k) => (config as any)[k]} onChange={updateBoard}
+              locked={isLocked} onUnlock={unlockOne} />
+            <p className="muted">
+              Sampling, output format and the other campaign-tier settings
+              live on the Experiment tab.
+            </p>
           </Collapsible>
           <CalibrationPanel
             connected={connected} recording={recording}
+            locked={isLocked("calibration")}
+            onUnlock={() => unlockOne("calibration")}
             onStarted={() => setWipeEpoch((e) => e + 1)}
             onError={(title, lines) => push("err", title, lines)}
             onFinished={async (st) => {
@@ -585,61 +961,6 @@ export function App() {
                 push("ok", `Calibration done - ${st.report.length} channels ok`);
               }
             }} />
-          <SessionsPanel
-            recording={recording}
-            onSaved={(name) => push("ok", `Session "${name}" saved`)}
-            onError={(title, lines) => push("err", title, lines)}
-            onApplied={(cfg, display, errors, connected, name) => {
-              setConfig(cfg); confirmed.current = cfg;
-              setYRanges(fromPrefs(display));
-              setWaveMode(display.wave_mode === "overlay" ? "overlay" : "avg");
-              if (!connected) {
-                push("warn", `Session "${name}": display restored`,
-                     ["No unit connected - hardware settings were not written."]);
-              } else if (errors.length) {
-                push("err", `Session "${name}" applied with errors`, errors);
-              } else {
-                push("ok", `Session "${name}" applied and read back from unit`);
-              }
-            }} />
-          <ConfigPanel
-            onReset={async () => {
-              try {
-                const r = await api.resetDefault();
-                setConfig(r.config); confirmed.current = r.config;
-                if (r.connected === false) {
-                  push("warn", "No unit connected", ["Nothing was sent."]);
-                } else if (r.errors?.length) {
-                  push("err", "Unit rejected part of the reset", r.errors);
-                } else {
-                  push("ok", "Defaults applied and read back from unit");
-                }
-              } catch (e) {
-                failed("Could not reset the settings")(e);
-              }
-            }}
-            onLoaded={({ config: cfg, notes, errors, restart, connected: up, running }) => {
-              // Adopt what the unit reported even when it refused something:
-              // that IS its state now, and showing the old values instead would
-              // be the one thing this app must never do.
-              setConfig(cfg); confirmed.current = cfg;
-              if (!up) {
-                push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
-              } else if (errors.length) {
-                push("err", "Unit rejected a setting from the file",
-                     [...errors, ...notes]);
-              } else {
-                push(notes.length ? "warn" : "ok",
-                     "Config loaded and read back from unit", notes);
-              }
-              if (restart.length && running) {
-                const what = restart.join(", ");
-                if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
-                  api.stop().then(() => api.start()).then(setStatus)
-                    .catch(failed("Could not re-arm the unit"));
-                }
-              }
-            }} />
           {status?.errors?.length ? (
             <div className="card errors">
               <h2>Errors</h2>
@@ -648,9 +969,72 @@ export function App() {
           ) : null}
           <RunsPanel status={status} refreshKey={runsKey} />
         </aside>
+        ) : null}
         </fieldset>
       </div>
       <Toasts toasts={toasts} onDismiss={dismiss} />
+      {recDialog ? (
+        <div className="modal-backdrop" onClick={() => setRecDialog(false)}>
+          <div className="modal rec-modal" onClick={(e) => e.stopPropagation()}
+            role="dialog" aria-label="Run notes">
+            <h3>
+              Run {runNo.trim() || status?.next_run_number || "?"}
+              {runName.trim() ? ` · ${runName.trim()}` : ""}
+              {recMax.trim() ? ` · ${recMax.trim()} events` : ""}
+            </h3>
+            <p className={"rec-dest " + (intoExisting ? "into" : "")}>
+              {intoExisting
+                ? `Adds run_${runNo.trim() || status?.next_run_number}.root to the existing folder`
+                : "Creates a new run folder"}
+            </p>
+            {/* Confirm-setup digest: the server's truth at this moment - the
+                last look before these become this run's permanent record. */}
+            <div className="rec-digest">
+              <div className="rec-digest-row mono">
+                {catalog.unit.find((d) => d.key === "drs4_frequency")
+                  ?.choices?.find((c) => c.value === config.drs4_frequency)?.label
+                  ?? config.drs4_frequency}
+                {" · "}{config.output_format.toUpperCase()}
+                {" · "}corr {config.correction_level}
+                {" · "}post {config.post_trigger}%
+                {" · "}TR thr {config.groups[0].fast_trigger_threshold}
+                {" / off "}{config.groups[0].fast_trigger_dc_offset}
+              </div>
+              {recCond.filter((c) => c.key.trim()).length ? (
+                <div className="rec-digest-cond">
+                  {recCond.filter((c) => c.key.trim()).map((c, i) => (
+                    <span className="cond-pill mono" key={i}>
+                      {c.key} = {c.value}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted">
+                  No experiment conditions set - add beam energy, bias, and
+                  friends on the Experiment tab; they snapshot into every run.
+                </p>
+              )}
+            </div>
+            <textarea autoFocus rows={4} maxLength={2000} value={recNote}
+              placeholder="What is this run? Tested device, beam energy, HV, conditions..."
+              onChange={(e) => setRecNote(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) startRec();
+                if (e.key === "Escape") setRecDialog(false);
+              }} />
+            <p className="muted">
+              Saved as "note" in run_metadata.json and shown in the run list.
+              Ctrl+Enter records.
+            </p>
+            <div className="modal-btns">
+              <button onClick={() => setRecDialog(false)}>Cancel</button>
+              <button className="record" onClick={startRec}>
+                <span className="rec-dot" />Record
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {tour ? <Tour steps={QUICK_USE} onClose={() => setTour(false)} /> : null}
     </div>
   );

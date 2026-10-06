@@ -126,6 +126,39 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   Verified on serial 53364. The 742 triggers on TR0/TR1 or the external input,
   not a per-group digital self-trigger, so treat those two as absent.
 
+- **TR0 threshold truth (UM4270 rev 12 sec 9.8.3, plus a day of beam
+  measurements, 2026-08-28).** The TR0 input is attenuated x2 into a fast
+  comparator (0-2.5 V dynamic). CAEN's arithmetic - threshold DAC moves
+  13.2 counts per connector-mV, signal 0-Volt at DAC 0x6666 = 26214 - is
+  valid ONLY with the TR DC offset at midscale 0x8000; the manual states
+  outright that no formula exists at other offsets, and it means it: with
+  the offset at DAC 25815 (+0.36 V readout baseline, needed so the full
+  MCP pulse digitizes unclipped), measured trigger turn-ons vs threshold
+  DAC came out NON-MONOTONIC (33731 -> ~250 mV, 34567 -> 164 mV, 37983 ->
+  ~220 mV, 46054+ -> no triggers at all). Off-midscale the threshold is
+  tuned EMPIRICALLY: adjust until counts, then measure the actual cut as
+  the turn-on edge of the recorded MCP pulse-depth spectrum (each run's
+  metadata carries the trigger settings for exactly this). Known-good
+  anchors: canonical NIM row (offset 32768 / threshold 20934 / falling) =
+  CAEN's own -400 mV example, triggers reliably; and the beam-tuned point
+  offset 25815 / threshold 34567 / falling = measured 164 mV cut with the
+  spectrum bulk retained. The RADiCAL bench constant (0.0329 mV/LSB, zero
+  25448) and every extrapolated "measured slope" from sparse edges FAILED
+  on this unit - do not resurrect them. The permanent fix for the
+  offset-vs-threshold tension is a passive splitter: MCP -> TR0 (trigger
+  only, midscale offset, manual arithmetic) + a spare signal channel
+  (3, 8-11 are empty) for full-fidelity pulse digitization.
+
+- **Link selection is DAQ_LINK** (environment, read at every open): a comma
+  list tried in order - `usb` (default when unset), `a4818:<pid>` (the A4818
+  USB 3.0 -> CONET optical adapter; the PID is the number printed on its
+  label, also its USB serial), `optical[:num]` (A2818/A3818 PCIe). Set it
+  persistently with `setx DAQ_LINK "a4818:<pid>,usb"` and restart daq - the
+  optical link (~80 MB/s) is the only path past USB 2.0's ~1 kHz event
+  ceiling toward the board's ~3 kHz. Needs CAENDigitizer >= 2.17 (this box:
+  2.18.0) and the A4818 driver. An entry that cannot work (a4818 without a
+  PID, junk) is skipped with a log line, never fatal.
+
 ## Board prerequisites
 
 The app needs only that `libCAENDigitizer` can open the unit. Prerequisites:
@@ -504,12 +537,26 @@ downloaded or deleted.
   sign are measured; the intercept rests on the nominal spec).
 - WaveDump writer layout follows the docs but is **not byte-verified** against a
   real dump — check against one sample `.dat` before trusting downstream.
-- **TR traces are decoded and written** (channel index 8 per group -> absolute
-  16+group, the ROOT layout's channel[16]/[17]). Verified on serial 53364:
-  both groups digitize the same TR0 input, agreeing to ~10 counts - the
-  DT5742B is 16+1, one shared TR0. The WaveDump-format writers still drop TR
-  (they open files only for channels 0-15); ROOT is the format that carries
-  it.
+- **TR traces are decoded and written**, and the ROOT file uses maketree's
+  INTERLEAVED slot order - verified against the actual converter source
+  (tb_fnal_radical drs2root/maketree.cc line `totalIndex = realGroup*9 + i`):
+  `channel[18]` slot = group*9 + ch_in_group, with the group's TR0 copy at
+  in-group index 8 -> slots 8 and 17 are the TR/MCP copies, group 1's
+  signal channels sit at 9-16. Amplitudes follow maketree too:
+  window-referenced mV = 1000*(counts/4095 - 0.5). Do NOT "simplify" to
+  16-signal-then-2-TR - an early writer did, and an analysis reading slot 8
+  as the MCP would have gotten a signal channel (run_1.root of 2026-08-26
+  is the one file in that old layout, in raw counts). The decoder still
+  numbers signal channels 0-15 and TR copies 16/17 internally;
+  RootWriter.root_slot() is the single meeting point of the two
+  numberings, and each run's metadata records the mapping per channel
+  (root_slot) plus a root_channel_layout description. Verified on serial
+  53364: both groups digitize the same TR0 input, agreeing to ~10 counts -
+  the DT5742B is 16+1, one shared TR0. The 2023 CERN campaign instead fed
+  two physical MCPs into SIGNAL channels ch7 of each group (slots 7 and
+  16, jwwetzel/RADiCAL ChannelConfig.h kMCP1/kMCP2) - a different cabling,
+  same file convention. The WaveDump-format writers still drop TR (files
+  only for channels 0-15); ROOT is the format that carries it.
 - The UI has been used in a real browser and iterated on there; the remaining
   unknown is how it behaves with live data in it, not whether it renders.
 

@@ -324,7 +324,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
   font-size: 11.5px;
 }
 .test-trigger input {
-  width: 58px; padding: 2px 6px; font: inherit;
+  width: 84px; padding: 2px 6px; font: inherit;
   font-variant-numeric: tabular-nums;
   background: #0d1117; color: var(--text);
   border: 1px solid var(--border); border-radius: 5px;
@@ -338,12 +338,27 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
   background: #161b22; color: var(--muted);
   border: 1px solid var(--border);
 }
-.wave-mode button:first-child { border-radius: 5px 0 0 5px; }
-.wave-mode button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+.wave-mode button:first-of-type { border-radius: 5px 0 0 5px; }
+.wave-mode button + button { margin-left: -1px; }
+.wave-mode button:last-of-type { border-radius: 0 5px 5px 0; }
 .wave-mode button.on {
   background: #1f2a3a; color: var(--text); border-color: #3b5a86;
   position: relative; z-index: 1;
 }
+/* Scope mode's trigger-rate field, riding along with the mode toggle. */
+.scope-rate {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 8px; font-size: 11px; color: var(--muted);
+}
+.scope-rate input { width: 52px; font-size: 11px; padding: 2px 4px; }
+/* The scope's software channel-trigger: channel, level, edge. */
+.scope-trig {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 10px; font-size: 11px; color: var(--muted);
+}
+.scope-trig select { font-size: 11px; padding: 2px 4px; }
+.scope-trig input { width: 44px; font-size: 11px; padding: 2px 4px; }
+.scope-trig button { font-size: 12px; padding: 1px 7px; cursor: pointer; }
 
 /* collapsible */
 .collapse-head { display: flex; align-items: center; gap: 7px; user-select: none; }
@@ -494,11 +509,20 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 .rec-stamp { display: inline-flex; align-items: center; gap: 4px;
              font-size: 11px; color: var(--muted); cursor: pointer; }
 .rec-input {
-  width: 120px; padding: 4px 8px; border-radius: 6px;
+  width: 180px; padding: 4px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: #0d1117; color: var(--text);
   font: inherit; font-size: 12px;
 }
-.rec-input.rec-no { width: 58px; font-variant-numeric: tabular-nums; }
+/* A count field must show EVERY digit - "20000" clipped to "2000" is the
+   worst possible lie for a run bound. The spin buttons are useless for run
+   counts and stole the width that clipped the digit, so they are gone, and
+   the field fits seven digits with room to spare. */
+.rec-input.rec-no { width: 96px; font-variant-numeric: tabular-nums; }
+.rec-input.rec-no::-webkit-outer-spin-button,
+.rec-input.rec-no::-webkit-inner-spin-button,
+.test-trigger input::-webkit-outer-spin-button,
+.test-trigger input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.rec-input.rec-no, .test-trigger input { -moz-appearance: textfield; appearance: textfield; }
 .rec-dot {
   width: 9px; height: 9px; border-radius: 50%; background: var(--red);
   display: inline-block; flex: none;
@@ -540,6 +564,132 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   border: 1px solid #6b2226; background: #1b0f11; color: var(--text);
 }
 .run-confirm code { background: #1b0f11; padding: 0 4px; border-radius: 3px; }
+
+/* the run's record-time note, one line with the full text on hover */
+.run-note {
+  display: block; font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* the raw TR threshold's live "vs offset" depth readout */
+.tr-rel-note { font-size: 10.5px; white-space: nowrap; margin-left: 6px; }
+
+/* global all-channel controls: window range + DC offset, for similar signals */
+.chan-global {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 6px 10px; margin: 2px 0 8px; font-size: 11.5px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; background: #0d1117;
+}
+.cg-label { font-weight: 650; color: var(--text); }
+.cg-group { display: inline-flex; align-items: center; gap: 5px; }
+.cg-num {
+  width: 62px; font: inherit; font-size: 11.5px; padding: 2px 5px;
+  font-variant-numeric: tabular-nums;
+  background: #0d1117; color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.cg-group button { font-size: 11px; padding: 2px 9px; cursor: pointer; }
+
+/* the trigger-model explainer: the fact that the 16 channels can't trigger */
+.trig-guide {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 10px; background: #0d1117;
+  font-size: 11.5px; line-height: 1.4;
+}
+.trig-guide p { margin: 0 0 6px; }
+.trig-guide p:last-child { margin-bottom: 0; }
+.trig-warn { color: var(--orange, #d29922); }
+
+/* Live | Experiment: the two worlds - operating vs campaign setup */
+.view-tabs { display: inline-flex; margin-left: 14px; }
+.view-tabs button {
+  font-size: 12.5px; padding: 4px 14px; cursor: pointer;
+  background: #12151b; color: var(--muted); border: 1px solid var(--border);
+}
+.view-tabs button:first-child { border-radius: 6px 0 0 6px; }
+.view-tabs button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.view-tabs button.on {
+  background: #1f2a3a; color: var(--text); border-color: #3b5a86;
+  position: relative; z-index: 1; font-weight: 650;
+}
+
+/* the settings lock: one big switch, per-setting exceptions */
+.lock-all {
+  margin-left: 10px; font-size: 12px; padding: 4px 12px; cursor: pointer;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: #12151b; color: var(--muted);
+}
+.lock-all.on { background: #3a2a12; color: #e3b341; border-color: #7a5a1e; }
+.lock-chip {
+  background: none; border: none; cursor: pointer; padding: 0 4px;
+  font-size: 13px; line-height: 1; opacity: .85;
+}
+.lock-chip:hover { opacity: 1; background: none; border: none; }
+.tile { position: relative; }
+.tile-lock { position: absolute; right: 6px; bottom: 34px; z-index: 2; }
+.tile-dc.locked input { pointer-events: none; opacity: .45; }
+
+/* experiment view layout */
+main.experiment { overflow-y: auto; }
+.exp-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  align-items: start; max-width: 1200px;
+}
+@media (max-width: 1000px) { .exp-grid { grid-template-columns: 1fr; } }
+.exp-col { display: flex; flex-direction: column; gap: 14px; }
+
+/* the operator's key=value experiment facts */
+.cond-list { display: flex; flex-direction: column; gap: 6px; }
+.cond-row { display: flex; align-items: center; gap: 6px; }
+.cond-row input {
+  font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 5px;
+  border: 1px solid var(--border); background: #0d1117; color: var(--text);
+}
+.cond-key { width: 170px; }
+.cond-val { flex: 1; }
+.cond-eq { color: var(--muted); }
+.cond-add {
+  align-self: flex-start; margin-top: 4px; font-size: 12px;
+  padding: 3px 10px; cursor: pointer;
+}
+
+/* confirm-setup digest inside the record dialog */
+.rec-digest {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin: 0 0 10px; background: #0d1117;
+}
+.rec-digest-row { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.rec-digest-cond { display: flex; flex-wrap: wrap; gap: 5px; }
+.cond-pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #1f2a3a; color: var(--text); border: 1px solid #3b5a86;
+}
+
+/* run-notes dialog: the pause between Record and recording, where the
+   operator writes down what this run IS - the one fact no readback holds. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(4, 6, 10, .62);
+  display: flex; align-items: flex-start; justify-content: center;
+}
+.modal {
+  margin-top: 14vh; width: min(440px, calc(100vw - 40px));
+  background: var(--panel, #161b22); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+.modal h3 { margin: 0 0 10px; font-size: 14px; }
+.rec-modal textarea {
+  width: 100%; resize: vertical; font: inherit; font-size: 12.5px;
+  background: #0d1117; color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px;
+}
+.rec-modal .muted { font-size: 11px; margin: 6px 0 10px; }
+/* Where this recording will land - a new folder, or joining a campaign. */
+.rec-dest { font-size: 11px; color: var(--muted); margin: -4px 0 8px; }
+.rec-dest.into { color: var(--orange, #d29922); }
+.modal-btns { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* guided tour: dim everything, cut a hole over the thing being explained */
 .tour { position: fixed; inset: 0; z-index: 100; }

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 
 from fastapi import (BackgroundTasks, FastAPI, HTTPException, Request, Response,
@@ -21,6 +22,7 @@ from .catalog import catalog
 from . import configfile
 from . import runs
 from . import sessions
+from . import runtime
 from . import constants as C
 
 log = logsetup.get("daq.api")
@@ -56,15 +58,31 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.post("/api/config")
     def set_config(payload: dict):
+        # The client says which revision its config is based on. A mismatch
+        # means the server's state moved underneath it (another window, a
+        # session apply, a reconnect) - and because the UI pushes the WHOLE
+        # config, accepting the write would revert every setting to that
+        # tab's stale snapshot. That happened for real: a tab holding
+        # pre-restart defaults wiped 16 calibrated offsets with one click.
+        base_rev = payload.pop("base_rev", None)
         try:
             wanted = BoardConfig.from_dict(payload)
         except (TypeError, ValueError) as e:
             raise HTTPException(400, f"not a usable config: {e}")
+        if base_rev is not None and int(base_rev) != engine.config_rev():
+            return {"ok": False, "stale": True,
+                    "config": engine.get_config().to_dict(),
+                    "config_rev": engine.config_rev(),
+                    "errors": ["the settings changed elsewhere since this "
+                               "page loaded them - showing the current state; "
+                               "re-apply your change"],
+                    "connected": engine.status()["opened"]}
         # The errors come back from the call itself. Diffing engine.status()
         # before and after cannot work: that list is a capped ring, so once it
         # is full the diff is empty and a refused write reports success.
         cfg, errors = engine.set_config(wanted)
         return {"ok": not errors, "config": cfg.to_dict(), "errors": errors,
+                "config_rev": engine.config_rev(),
                 "connected": engine.status()["opened"]}
 
     @app.get("/api/config/file")
@@ -121,6 +139,20 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         sessions.set_display(payload or {})
         return {"ok": True}
 
+    @app.get("/api/conditions")
+    def get_conditions():
+        """The operator's key=value experiment facts (beam energy, SiPM bias,
+        capillary map...). The DAQ carries them and snapshots them into every
+        run's metadata; it never interprets them."""
+        return {"items": sessions.get_conditions()}
+
+    @app.put("/api/conditions")
+    def put_conditions(payload: dict):
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise HTTPException(400, "expected {\"items\": [{key, value}, ...]}")
+        return {"ok": True, "items": sessions.set_conditions(items)}
+
     @app.get("/api/sessions")
     def list_sessions():
         return {"sessions": sessions.listing()}
@@ -148,6 +180,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
             cfg, errs = engine.set_config(BoardConfig.from_dict(s["config"]))
             if isinstance(s.get("display"), dict):
                 sessions.set_display(s["display"])
+            if isinstance(s.get("conditions"), list):
+                sessions.set_conditions(s["conditions"])
             st = engine.status()
             applying.done("Applied with errors" if errs else
                           ("Applied and read back" if st["opened"]
@@ -180,8 +214,12 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
             me = None
         if me is not None and me < 1:
             me = None
+        # The operator's note about this specific run - free text, capped so a
+        # pasted logbook cannot balloon the sidecar.
+        note = str(p.get("note") or "").strip()[:2000]
         r = engine.start_recording((p.get("name") or "").strip(),
-                                   bool(p.get("timestamp", True)), rn, me)
+                                   bool(p.get("timestamp", True)), rn, me, note,
+                                   into_existing=bool(p.get("into_existing")))
         return {**r, "status": engine.status()}
 
     @app.post("/api/rec/stop")
@@ -277,10 +315,48 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
                                           float(p.get("rate_hz", 10.0)))
         return {**r, "status": engine.status()}
 
+    @app.post("/api/scope")
+    def scope(payload: dict | None = None):
+        """Scope mode: free-running software triggers at a steady rate, with
+        full-resolution single traces in telemetry - for studying the noise
+        on a line. {"on": true, "rate_hz": 2} or {"on": false}. An optional
+        "trigger": {"channel": 5, "level_mv": 20, "edge": "falling"} makes
+        only events where that channel crosses the level (vs its own
+        baseline) refresh the display - a software display trigger; the x742
+        has no hardware channel trigger."""
+        p = payload or {}
+        rate = float(p.get("rate_hz", 2.0)) if p.get("on") else None
+        r = engine.set_scope(rate, p.get("trigger"))
+        return {**r, "status": engine.status()}
+
     @app.post("/api/acq/stop")
     def stop():
         engine.stop()
         return engine.status()
+
+    @app.post("/api/shutdown")
+    def shutdown(force: bool = False):
+        """Graceful stop for the deploy flow: close the digitizer - the step a
+        hard kill (TerminateProcess) skips, and skipping it is what wedges the
+        CAEN link - then clear the runtime record and exit. Refused while
+        recording unless forced, so a deploy can never truncate a run."""
+        if engine.status()["recording"] and not force:
+            raise HTTPException(409, "a run is recording - stop it first")
+        log.info("Graceful shutdown requested: closing the digitizer cleanly")
+        try:
+            engine.close()            # CAEN_DGTZ_CloseDigitizer - the clean close
+        except Exception as e:
+            log.error("shutdown: closing the digitizer failed: %s", e)
+        try:
+            runtime.clear()
+        except Exception:
+            pass
+
+        def _exit():
+            time.sleep(0.4)           # let the HTTP response flush first
+            os._exit(0)
+        threading.Thread(target=_exit, daemon=True).start()
+        return {"ok": True, "message": "digitizer closed; server exiting"}
 
     @app.websocket("/ws/telemetry")
     async def telemetry(ws: WebSocket):

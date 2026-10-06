@@ -306,15 +306,21 @@ def test_amplitude_corrections_and_true_times():
 
 def test_root_writer_matches_the_radical_layout():
     """waveforms.root must read back with the structure the group's testbeam
-    analysis expects (tb_fnal_radical drs2root): TTree 'pulse' with event/I,
-    channel[18][1024]/F and times[2][1024]/F - and the sample values intact."""
+    analysis expects (tb_fnal_radical drs2root/maketree.cc): TTree 'pulse',
+    channel[18][1024]/F in maketree's INTERLEAVED slot order (group*9 + ch,
+    TR/MCP copies at slots 8 and 17) and its mV amplitude convention. An
+    earlier writer put the TR copies at 16/17 - an analysis reading slot 8
+    as the MCP would have gotten a signal channel instead."""
     import uproot
     from daq.writer import make_writer
     from daq.backend.base import Event
     from daq.config import default_config
 
+    mv = lambda counts: (counts / 4095.0 - 0.5) * 1000.0
     cfg = default_config()
     cfg.output_format = "root"
+    for g in cfg.groups:
+        g.enabled = True          # both banks: the slot map spans all 18
     with tempfile.TemporaryDirectory() as d:
         w = make_writer(d, "root-test", cfg.output_format)
         w.open(cfg)
@@ -323,6 +329,9 @@ def test_root_writer_matches_the_radical_layout():
             samples = {ch: np.full(C.RECORD_LENGTH, 100.0 * i + ch,
                                    dtype=np.float32)
                        for ch in cfg.enabled_channels()}
+            if i == 2:                       # the decoder's TR copies, 16/17
+                samples[16] = np.full(C.RECORD_LENGTH, 60.0, dtype=np.float32)
+                samples[17] = np.full(C.RECORD_LENGTH, 61.0, dtype=np.float32)
             w.write(Event(index=i, timestamp_s=0.0, trigger_time_tag=7 * i,
                           samples=samples, trigger_cells={0: 100 + i},
                           times_ns={0: true_t} if i == 2 else None))
@@ -335,8 +344,15 @@ def test_root_writer_matches_the_radical_layout():
             assert a["event"].tolist() == [0, 1, 2]
             assert a["channel"].shape == (3, 18, C.RECORD_LENGTH)
             assert a["times"].shape == (3, 2, C.RECORD_LENGTH)
-            assert a["channel"][2][5][0] == 205.0        # event 2, ch 5
-            assert a["channel"][0][17].max() == 0.0      # TR trace: zero for now
+            # Group 0 signal channels land at slots 0-7 unchanged...
+            assert abs(a["channel"][2][5][0] - mv(205.0)) < 1e-3
+            # ...group 1's shift by one: decoder ch 8 is slot 9...
+            assert abs(a["channel"][1][9][0] - mv(108.0)) < 1e-3
+            assert abs(a["channel"][1][16][0] - mv(115.0)) < 1e-3
+            # ...and the TR/MCP copies sit at maketree's slots 8 and 17.
+            assert abs(a["channel"][2][8][0] - mv(60.0)) < 1e-3
+            assert abs(a["channel"][2][17][0] - mv(61.0)) < 1e-3
+            assert a["channel"][0][8].max() == 0.0    # no TR in that event
             # 5 GS/s: 0.2 ns per sample, so sample 10 sits at 2 ns.
             assert abs(a["times"][0][0][10] - 2.0) < 1e-6
             assert a["tc"][1][0] == 101                  # trigger cell recorded
@@ -344,6 +360,11 @@ def test_root_writer_matches_the_radical_layout():
             # group 1 keeps the uniform default.
             assert abs(a["times"][2][0][10] - 2.1) < 1e-5
             assert abs(a["times"][2][1][10] - 2.0) < 1e-6
+
+        meta = json.load(open(os.path.join(d, "run_metadata.json")))
+        # The per-run record of the mapping, so no analysis ever guesses.
+        assert meta["channels"]["8"]["root_slot"] == 9
+        assert "slot = group*9" in meta["root_channel_layout"]
 
         meta = json.load(open(os.path.join(d, "run_metadata.json")))
         assert meta["events"] == 3 and meta["output_format"] == "root"
@@ -375,6 +396,218 @@ def test_fake_backend_behaves_like_a_board():
         # Single-event vpp is the DEAD discriminator: the fake's noise floor
         # plus its pulse must comfortably exceed a live channel's threshold.
         assert ch0["last_vpp"] > 100
+    finally:
+        eng.close()
+
+
+def test_every_catalog_choice_survives_config_validation():
+    """The catalog is what the UI offers; __post_init__ is what the config
+    keeps. A choice the validator's allow-list does not know is coerced to a
+    fallback with no error anywhere, so in the UI the selection just reverts.
+    That happened for real: a merge brought the validation layer in without
+    "root" and "timing", and ROOT output and the timing correction switched
+    themselves off silently."""
+    from daq.catalog import UNIT_SETTINGS
+    base = default_config().to_dict()
+    for s in UNIT_SETTINGS:
+        key = s.get("key")
+        if not s.get("choices") or key not in base:
+            continue
+        for choice in s["choices"]:
+            value = choice["value"]
+            got = getattr(BoardConfig.from_dict({**base, key: value}), key)
+            assert got == value, (
+                f"{key}={value!r} was coerced to {got!r}: the config "
+                f"allow-list lags the catalog")
+
+
+def test_stale_config_push_is_refused_and_returns_the_truth():
+    """A tab pushing a whole config based on an older revision must be
+    refused: accepting one once reverted every calibrated offset and name
+    to the tab's stale pre-restart snapshot. The refusal returns the
+    current config and revision so the tab catches up instead."""
+    from fastapi.testclient import TestClient
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        c = TestClient(create_app(eng))
+        cfg = c.get("/api/config").json()
+        rev = c.get("/api/status").json()["config_rev"]
+        # A current-revision push lands and bumps the revision.
+        cfg["channels"][0]["dc_offset"] = 40123
+        r = c.post("/api/config", json={**cfg, "base_rev": rev}).json()
+        assert r["ok"] and r["config"]["channels"][0]["dc_offset"] == 40123
+        assert r["config_rev"] == rev + 1
+        # The same, now stale, revision is refused and nothing changes.
+        cfg["channels"][0]["dc_offset"] = 30001
+        r2 = c.post("/api/config", json={**cfg, "base_rev": rev}).json()
+        assert r2.get("stale") is True and not r2["ok"]
+        assert r2["config"]["channels"][0]["dc_offset"] == 40123
+        # A push naming no base (scripts, curl) still works as before.
+        r3 = c.post("/api/config", json=cfg).json()
+        assert r3["ok"] and r3["config"]["channels"][0]["dc_offset"] == 30001
+    finally:
+        eng.close()
+
+
+def test_link_specs_parse_from_the_environment():
+    """DAQ_LINK picks the wire: plain USB when unset (the old behavior,
+    exactly), or an ordered fallback list like "a4818:25001,usb" for the
+    optical adapter with USB as the safety net. Malformed entries are
+    skipped with a log line, never fatal - a typo must not strand the DAQ."""
+    from daq.backend.caen import _link_specs, ConnectionType_USB, ConnectionType_A4818
+    old = os.environ.pop("DAQ_LINK", None)
+    try:
+        assert _link_specs() == [(ConnectionType_USB, 0, "usb")]
+        os.environ["DAQ_LINK"] = "a4818:25001, usb"
+        assert _link_specs() == [(ConnectionType_A4818, 25001, "a4818:25001"),
+                                 (ConnectionType_USB, 0, "usb")]
+        # a4818 without its PID, junk entries, junk numbers: skipped, and the
+        # list never comes back empty.
+        os.environ["DAQ_LINK"] = "a4818, wombat, optical:x"
+        assert _link_specs() == [(ConnectionType_USB, 0, "usb")]
+    finally:
+        if old is None:
+            os.environ.pop("DAQ_LINK", None)
+        else:
+            os.environ["DAQ_LINK"] = old
+
+
+def test_connection_sounds_never_raise():
+    """The chirps are a courtesy. No audio device, no sound files, not on
+    Windows - none of it may ever raise into the readout path."""
+    from daq import sounds
+    sounds.play("connected")
+    sounds.play("disconnected")
+    sounds.play("no-such-event")
+
+
+def test_conditions_round_trip_and_snapshot_into_runs():
+    """The operator's key=value experiment facts: stored ordered, empty keys
+    dropped, and snapshotted BY VALUE into each run's metadata - so editing
+    them later never rewrites what was true for an already-taken run."""
+    from daq import sessions
+    from daq.writer import write_run_metadata
+    with tempfile.TemporaryDirectory() as d:
+        orig = sessions._conditions_path
+        sessions._conditions_path = lambda: os.path.join(d, "conditions.json")
+        try:
+            saved = sessions.set_conditions([
+                {"key": "Capillary 1", "value": "DSB1 1911"},
+                {"key": "XCET 40", "value": "40 bar"},
+                {"key": "  ", "value": "dropped - blank key"},
+            ])
+            assert [c["key"] for c in saved] == ["Capillary 1", "XCET 40"]
+            assert sessions.get_conditions() == saved
+            write_run_metadata(d, default_config(), "beam", 9, "n", saved)
+            with open(os.path.join(d, "run_metadata.json")) as f:
+                meta = json.load(f)
+            assert meta["experiment"][0]["value"] == "DSB1 1911"
+            assert meta["runs"]["9"]["experiment"][1]["key"] == "XCET 40"
+        finally:
+            sessions._conditions_path = orig
+
+
+def test_run_note_lands_in_the_metadata_sidecar():
+    """The record dialog's note - what was tested, beam energy - is stored
+    verbatim in run_metadata.json, where the listing and the analysis read
+    it. The one fact about a run no register readback can supply."""
+    from daq.writer import write_run_metadata, stamp_run_end
+    with tempfile.TemporaryDirectory() as d:
+        write_run_metadata(d, default_config(), "beam", 7, "LuAG, 3 GeV e-")
+        with open(os.path.join(d, "run_metadata.json")) as f:
+            meta = json.load(f)
+        assert meta["note"] == "LuAG, 3 GeV e-"
+        assert meta["run_number"] == 7
+        # Trigger provenance rides with every run - reconstructing which
+        # threshold selected a run's events from session history is misery.
+        assert meta["trigger"]["groups"][0]["fast_trigger_threshold"] == 20000
+        # A campaign folder: a second recording into the same directory keeps
+        # BOTH runs' notes and event counts, while the top level tracks the
+        # latest - which is also what single-run folders always showed.
+        write_run_metadata(d, default_config(), "beam", 8, "same setup, 5 GeV")
+        stamp_run_end(d, 250, 8)
+        with open(os.path.join(d, "run_metadata.json")) as f:
+            meta = json.load(f)
+        assert meta["runs"]["7"]["note"] == "LuAG, 3 GeV e-"
+        assert meta["runs"]["8"]["note"] == "same setup, 5 GeV"
+        assert meta["runs"]["8"]["events"] == 250
+        assert meta["note"] == "same setup, 5 GeV" and meta["events"] == 250
+
+
+def test_scope_mode_free_runs_and_ships_full_resolution_traces():
+    """Scope mode fires software triggers on its own pace and telemetry ships
+    the single trace at FULL resolution - the block-mean decimation that keeps
+    the wire light would average away the noise a scope exists to show."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        r = eng.set_scope(10.0)
+        assert r["ok"] and r["scope_hz"] == 10.0
+        assert eng.status()["scope_hz"] == 10.0
+        seen0 = eng.status()["events_seen"]
+        deadline = time.time() + 3
+        full = None
+        while time.time() < deadline:
+            e = eng.telemetry()["channels"].get("0", {})
+            if e.get("last") and len(e["last"]) == C.RECORD_LENGTH:
+                full = e["last"]
+                break
+            time.sleep(0.05)
+        assert full is not None, "no full-resolution trace arrived"
+        assert eng.status()["events_seen"] > seen0     # the scope fed itself
+        r = eng.set_scope(None)
+        assert r["ok"] and eng.status()["scope_hz"] is None
+        # Off again: the wire returns to the light decimated form.
+        deadline = time.time() + 2
+        n = None
+        while time.time() < deadline:
+            e = eng.telemetry()["channels"].get("0", {})
+            if e.get("last") and len(e["last"]) == C.OVERVIEW_POINTS:
+                n = len(e["last"])
+                break
+            time.sleep(0.05)
+        assert n == C.OVERVIEW_POINTS
+    finally:
+        eng.close()
+
+
+def test_scope_channel_trigger_gates_the_single_trace_display():
+    """The scope's software channel-trigger: with a condition the fake's
+    pulse cannot meet (rising, on a negative pulse) the single-trace display
+    holds while events keep flowing; with one it meets easily, the display
+    refreshes again. Events are never dropped - only the display is gated."""
+    from daq.backend.base import make_backend
+    eng = AcquisitionEngine(lambda: make_backend("fake"))
+    try:
+        assert eng.probe() is True
+        assert eng.set_scope(20.0)["ok"]
+        deadline = time.time() + 3
+        while time.time() < deadline \
+                and not eng.telemetry()["channels"].get("0", {}).get("last_index"):
+            time.sleep(0.05)
+        # Rising condition on the fake's NEGATIVE ~195 mV pulse: nothing passes.
+        r = eng.set_scope(20.0, {"channel": 0, "level_mv": 100, "edge": "rising"})
+        assert r["ok"] and r["scope_trigger"] == {"channel": 0, "level_mv": 100.0,
+                                                 "edge": "rising"}
+        time.sleep(0.3)                          # in-flight events drain
+        held = eng.telemetry()["channels"]["0"]["last_index"]
+        seen = eng.status()["events_seen"]
+        time.sleep(0.7)
+        assert eng.status()["events_seen"] > seen              # still acquiring
+        assert eng.telemetry()["channels"]["0"]["last_index"] == held  # display held
+        # Falling at 50 mV, well under the pulse: the display refreshes.
+        assert eng.set_scope(20.0, {"channel": 0, "level_mv": 50,
+                                    "edge": "falling"})["ok"]
+        deadline = time.time() + 3
+        while time.time() < deadline \
+                and eng.telemetry()["channels"]["0"]["last_index"] == held:
+            time.sleep(0.05)
+        assert eng.telemetry()["channels"]["0"]["last_index"] > held
+        # A malformed spec falls back to trigger-on-anything, never an error.
+        assert eng.set_scope(20.0, {"channel": "junk"})["scope_trigger"] is None
     finally:
         eng.close()
 

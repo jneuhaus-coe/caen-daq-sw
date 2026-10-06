@@ -7,7 +7,7 @@ Binary = optional 6x uint32 header then samples. For the 742, corrected samples
 are floats.
 
 NOTE (validation pending): byte-exactness vs a real WaveDump dump has not been
-checked against hardware output yet — a sample .dat from the board will let us
+checked against hardware output yet - a sample .dat from the board will let us
 confirm/lock the layout. The structure below follows WaveDump.c/WriteOutputFiles.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ import time
 import numpy as np
 
 from .backend.base import Event
+from . import constants as C
 from . import logsetup
 
 log = logsetup.get("daq.writer")
@@ -36,29 +37,72 @@ class Writer(abc.ABC):
 
 
 def write_run_metadata(directory: str, cfg, run_name: str,
-                       run_number: int | None = None) -> None:
+                       run_number: int | None = None,
+                       note: str = "",
+                       experiment: list | None = None) -> None:
     """Channel names and settings go in a sidecar next to the data, whatever
     the format - the data files' own layouts are fixed by compatibility.
-    Names are stored bare, without the UI's "CH n - " prefix."""
+    Names are stored bare, without the UI's "CH n - " prefix. The note is the
+    operator's own words from record time - what was tested, beam energy -
+    the context no register readback can supply.
+
+    A CAMPAIGN folder holds several run_<N>.root files, so the sidecar keeps
+    a per-run entry under "runs" (note, started, events) while the top-level
+    fields always describe the LATEST recording - which is what the listing
+    shows, and exactly right for the single-run folders too."""
+    path = os.path.join(directory, "run_metadata.json")
+    try:
+        with open(path) as f:
+            existing = json.load(f)
+        per_run = existing.get("runs") if isinstance(existing, dict) else None
+        per_run = dict(per_run) if isinstance(per_run, dict) else {}
+    except (OSError, ValueError):
+        per_run = {}
+    if run_number is not None:
+        per_run[str(run_number)] = {"note": note, "started": time.time(),
+                                    "experiment": experiment or []}
     meta = {
+        "runs": per_run,
+        # The operator's key=value experiment facts, snapshotted BY VALUE at
+        # record time - editing the conditions later never rewrites what was
+        # true for this run. The DAQ carries these; it never interprets them.
+        "experiment": experiment or [],
         "run_name": run_name,
         "run_number": run_number,
+        "note": note,
         "started": time.time(),
+        # Where each channel lands in the ROOT file's channel[18] array -
+        # maketree's interleaved order, TR/MCP copies at slots 8 and 17.
+        # Recorded per run so an analysis never has to guess the mapping.
+        "root_channel_layout": "slot = group*9 + ch_in_group; slots 8 and 17 "
+                               "are the TR0 (MCP) copies; amplitudes in mV = "
+                               "1000*(counts/4095 - 0.5)",
         "channels": {
             str(ch): {"name": cfg.channels[ch].name,
-                      "dc_offset": cfg.channels[ch].dc_offset}
+                      "dc_offset": cfg.channels[ch].dc_offset,
+                      "root_slot": (ch // 8) * 9 + (ch % 8)}
             for ch in cfg.enabled_channels()
         },
         "drs4_frequency": cfg.drs4_frequency,
         "record_length": cfg.record_length,
         "post_trigger": cfg.post_trigger,
         "output_format": cfg.output_format,
+        # The trigger provenance: which comparator settings selected these
+        # events. Reconstructing a day's threshold scans from session
+        # history once, painfully, is why this is recorded per run.
+        "trigger": {
+            "edge": cfg.trigger_edge,
+            "groups": [{"fast_trigger_threshold": g.fast_trigger_threshold,
+                        "fast_trigger_dc_offset": g.fast_trigger_dc_offset}
+                       for g in cfg.groups],
+        },
     }
     with open(os.path.join(directory, "run_metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 
-def stamp_run_end(directory: str, events: int) -> None:
+def stamp_run_end(directory: str, events: int,
+                  run_number: int | None = None) -> None:
     """Final event count into the sidecar, so a listing can show it without
     opening every data file. Losing it only costs the listing an event count,
     so it must never take a close down - but it is worth a line in the log,
@@ -69,6 +113,9 @@ def stamp_run_end(directory: str, events: int) -> None:
             meta = json.load(f)
         meta["events"] = events
         meta["ended"] = time.time()
+        entry = (meta.get("runs") or {}).get(str(run_number))
+        if entry is not None:            # the campaign folder's per-run record
+            entry["events"] = events
         with open(path, "w") as f:
             json.dump(meta, f, indent=2)
     except (OSError, ValueError) as e:
@@ -83,7 +130,10 @@ class NullWriter(Writer):
 
 class WaveDumpWriter(Writer):
     def __init__(self, directory: str, run_name: str = "",
-                 run_number: int | None = None):
+                 run_number: int | None = None, note: str = "",
+                 experiment: list | None = None):
+        self._note = note
+        self._experiment = experiment
         self._files = {}
         self._cfg = None
         self._ascii = True
@@ -104,7 +154,8 @@ class WaveDumpWriter(Writer):
             for ch in cfg.enabled_channels():
                 path = os.path.join(self._dir, f"wave_{ch}.{ext}")
                 self._files[ch] = open(path, mode)
-            write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
+            write_run_metadata(self._dir, cfg, self._run_name, self._run_number,
+                               self._note, self._experiment)
             self._cfg = cfg         # last: close() takes this as "there is a run"
         except OSError:
             # Do not leave half a run open: the caller discards the directory,
@@ -160,7 +211,7 @@ class WaveDumpWriter(Writer):
                           "last events may be missing: %s", ch, e)
         self._files = {}
         if self._cfg is not None:
-            stamp_run_end(self._dir, self._events)
+            stamp_run_end(self._dir, self._events, self._run_number)
 
 
 class RootWriter(Writer):
@@ -172,18 +223,28 @@ class RootWriter(Writer):
     drop straight into that analysis:
 
       event/I               event number
-      channel[18][1024]/F   16 signal channels + the two TR traces
+      channel[18][1024]/F   slot = group*9 + ch, amplitudes in mV (below)
       times[2][1024]/F      per-group sample times, ns
       tc[2]/s               per-group DRS4 start cell (trigger cell)
+
+    The channel slots are maketree's INTERLEAVED 9-per-group order
+    (`totalIndex = realGroup*9 + i`, i = 0..8 with the TR copy at 8):
+
+      0-7   group 0 signal channels          9-16  group 1 signal channels
+      8     group 0's TR0 copy (the MCP)     17    group 1's TR0 copy
+
+    NOT 16 signal channels then two TR traces - an earlier version wrote
+    that, and it would have sent an analysis reading slot 8 as the MCP to a
+    signal channel instead. Amplitudes are maketree's convention too:
+    window-referenced mV, 1000*(counts/4095 - 0.5), so -500..+500 mV with
+    the window centre at 0.
 
     In "timing" correction mode the times branch carries each event's TRUE
     non-uniform axis, exactly as maketree produces - full timing precision,
     no converter. In "auto" mode times are uniform steps, which is what the
     library's resampling time correction leaves behind. tc is recorded in
-    every mode so the two paths can be cross-checked. One honest deviation:
-    TR traces (indices 16, 17) are zero until TR decoding lands - the
-    decoder skips them, see CLAUDE.md. trigger_time_tag rides along as an
-    extra branch.
+    every mode so the two paths can be cross-checked. trigger_time_tag
+    rides along as an extra branch.
 
     Events are buffered and written in batches so baskets stay a sane size;
     a stream of one-event extends would bloat the file and the read path.
@@ -192,10 +253,13 @@ class RootWriter(Writer):
     N_CHANNELS_OUT = 18            # matches maketree's channel[18][1024]
 
     def __init__(self, directory: str, run_name: str = "",
-                 run_number: int | None = None):
+                 run_number: int | None = None, note: str = "",
+                 experiment: list | None = None):
         self._dir = directory
         self._run_name = run_name
         self._run_number = run_number
+        self._note = note
+        self._experiment = experiment
         self._file = None
         self._tree = None
         self._cfg = None
@@ -214,7 +278,13 @@ class RootWriter(Writer):
         # (test-beam convention), inferred or set at record time.
         fname = (f"run_{self._run_number}.root" if self._run_number
                  else "waveforms.root")
-        self._file = uproot.recreate(os.path.join(self._dir, fname))
+        # ZSTD(1), NOT the default zlib: measured on this machine, zlib costs
+        # 3.96 ms/event (a 253 Hz recording ceiling - the whole pipeline's
+        # bottleneck) while ZSTD(1) costs 0.17 ms at a similar ratio, faster
+        # even than writing uncompressed because less hits the disk. Beam
+        # time is the expensive resource here, never bytes.
+        self._file = uproot.recreate(os.path.join(self._dir, fname),
+                                     compression=uproot.ZSTD(1))
         self._tree = self._file.mktree(
             "pulse",
             {"event": np.int32, "trigger_time_tag": np.uint32,
@@ -224,14 +294,33 @@ class RootWriter(Writer):
             title="Digitized waveforms")
         dt = C.sample_period_ns(cfg.drs4_frequency)
         self._times = np.tile(np.arange(n, dtype=np.float32) * dt, (2, 1))
-        write_run_metadata(self._dir, cfg, self._run_name, self._run_number)
+        write_run_metadata(self._dir, cfg, self._run_name, self._run_number,
+                           self._note, self._experiment)
+
+    @staticmethod
+    def root_slot(ch: int) -> int:
+        """maketree's flat slot for the decoder's channel numbering.
+
+        The decoder counts signal channels 0-15 and the TR copies 16/17;
+        maketree interleaves per group with the TR copy at in-group index 8.
+        This is the one place the two numberings meet - everything else in
+        the app speaks decoder numbers."""
+        if ch >= C.NUM_CHANNELS:               # decoder TR indices 16/17
+            return (ch - C.NUM_CHANNELS) * 9 + 8
+        return (ch // 8) * 9 + (ch % 8)
+
+    @staticmethod
+    def to_mv(wave) -> np.ndarray:
+        """maketree's amplitude convention: window-referenced millivolts."""
+        return ((np.asarray(wave, dtype=np.float32) / 4095.0) - 0.5) * 1000.0
 
     def write(self, ev: Event) -> None:
         n = self._cfg.record_length
         chans = np.zeros((self.N_CHANNELS_OUT, n), dtype=np.float32)
         for ch, wave in ev.samples.items():
-            if 0 <= ch < self.N_CHANNELS_OUT:
-                chans[ch, :len(wave)] = wave
+            slot = self.root_slot(ch)
+            if 0 <= slot < self.N_CHANNELS_OUT:
+                chans[slot, :len(wave)] = self.to_mv(wave)
         # True per-event times when the correction mode produced them
         # ("timing"); the uniform axis otherwise.
         times = self._times
@@ -273,12 +362,13 @@ class RootWriter(Writer):
                 self._file.close()
                 self._file = None
         if self._cfg is not None:
-            stamp_run_end(self._dir, self._events)
+            stamp_run_end(self._dir, self._events, self._run_number)
 
 
 def make_writer(directory: str, run_name: str = "",
                 output_format: str = "ascii",
-                run_number: int | None = None) -> Writer:
+                run_number: int | None = None, note: str = "",
+                experiment: list | None = None) -> Writer:
     if (output_format or "").lower() == "root":
-        return RootWriter(directory, run_name, run_number)
-    return WaveDumpWriter(directory, run_name, run_number)
+        return RootWriter(directory, run_name, run_number, note, experiment)
+    return WaveDumpWriter(directory, run_name, run_number, note, experiment)

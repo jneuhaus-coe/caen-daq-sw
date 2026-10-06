@@ -4,6 +4,7 @@ averaged waveforms for all enabled channels + a rolling trigger-rate window)."""
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -16,6 +17,7 @@ from .writer import make_writer
 from . import runs
 from . import constants as C
 from . import logsetup
+from . import sounds
 
 
 log = logsetup.get("daq.acq")
@@ -66,6 +68,17 @@ class AcquisitionEngine:
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
         self._cfg = default_config()   # only a seed; the board wins once open
+        # Bumped on every adopted config (open, write, session). A browser
+        # tab compares it against the one it fetched under: a tab pushing a
+        # WHOLE config it loaded before a restart once silently reverted
+        # every offset and name to defaults - the classic stale-document
+        # overwrite. The rev turns that into a refusal plus a refresh.
+        # SEEDED from the clock, not zero: a counter restarting at 0 let a
+        # tab from a PREVIOUS server process collide with the new process's
+        # small revision numbers and push a stale config straight through
+        # the guard - seen live, minutes after the guard shipped. Seconds
+        # granularity keeps the seed strictly increasing across restarts.
+        self._cfg_rev = int(time.time())
         self._avg = RollingAverage()
         self._rate = TriggerRateMeter()
         # Latest single event per channel, as (event_index, wave). Telemetry
@@ -100,6 +113,19 @@ class AcquisitionEngine:
         self._sw_pending = 0
         self._sw_interval_s = 0.0
         self._sw_next_fire = 0.0
+        # Scope mode: free-running software triggers at a steady pace, with
+        # full-resolution single traces in telemetry (see telemetry()). The
+        # line-noise debugging tool - one trace, replaced by the next.
+        self._scope_hz: float | None = None
+        self._scope_next_fire = 0.0
+        # Optional software channel-trigger for the scope: only events where
+        # this channel's trace crosses a level (relative to its own median
+        # baseline) refresh the single-trace display. {"channel", "level_mv",
+        # "edge"} or None for every event. The x742 cannot hardware-trigger
+        # on a signal channel - every channel-trigger call answers -17 - so
+        # this is a display trigger over the randomly-sampled windows, not an
+        # acquisition trigger; rare pulses still need the signal on TR0.
+        self._scope_trigger: dict | None = None
         # Per-event stats tap for the calibrator: set for the duration of one
         # measurement, fed by the readout loop, then cleared.
         self._stats_col: _StatsCollector | None = None
@@ -127,13 +153,20 @@ class AcquisitionEngine:
                     self._record_error(f"read settings: {e}")
                 reading.done(f"{len(errs)} settings could not be read" if errs
                              else "All settings read")
-            with self._lock:
-                self._cfg = cfg
+            self._adopt_cfg(cfg)
             # Last, not first: while this is False every other path treats the
             # unit as absent and keeps off the wire, so nothing talks to a board
             # that is still being set up.
-            self._opened = True
+            self._mark_opened(True)
             return self._board_info
+
+    def _mark_opened(self, opened: bool) -> None:
+        """The one gate for connection-state flips, so the audible chirps
+        track every REAL transition and never fire twice for one event."""
+        was = self._opened
+        self._opened = opened
+        if opened != was:
+            sounds.play("connected" if opened else "disconnected")
 
     def get_config(self) -> BoardConfig:
         """A COPY, deliberately: callers mutate what they get (the calibrator,
@@ -142,6 +175,17 @@ class AcquisitionEngine:
         itself and saw nothing to re-arm for."""
         with self._lock:
             return BoardConfig.from_dict(self._cfg.to_dict())
+
+    def _adopt_cfg(self, cfg: BoardConfig) -> None:
+        """Every accepted config lands here so the revision moves with it -
+        the counter a browser tab uses to notice it is holding history."""
+        with self._lock:
+            self._cfg = cfg
+            self._cfg_rev += 1
+
+    def config_rev(self) -> int:
+        with self._lock:
+            return self._cfg_rev
 
     def _dac_backed_changed(self, cfg: BoardConfig) -> bool:
         """Did this write touch a setting that lives on a mezzanine DAC?
@@ -209,8 +253,7 @@ class AcquisitionEngine:
                 self._record_error(e)
             writing.done(f"{len(errors)} settings refused or read back wrong"
                          if errors else "All settings accepted and read back")
-        with self._lock:
-            self._cfg = actual
+        self._adopt_cfg(actual)
         if rearm:
             self.start()               # the arm is what loads the DACs
         return actual, errors
@@ -250,8 +293,7 @@ class AcquisitionEngine:
                     self._record_error(e)
                 applying.done(f"{len(cfg_errs)} settings refused" if cfg_errs
                               else "All settings accepted")
-            with self._lock:
-                self._cfg = actual
+            self._adopt_cfg(actual)
             self._events_seen = 0      # Count reflects this acquisition run
             self._rate.reset()
             try:
@@ -334,13 +376,98 @@ class AcquisitionEngine:
         logsetup.did(log, f"Queueing {count} software triggers at {rate_hz:g} Hz", "Ok")
         return {"ok": True, "queued": count, "rate_hz": rate_hz}
 
-    def _fire_due_software_trigger(self):
-        """One trigger per loop pass, no sooner than the requested pace."""
+    @staticmethod
+    def _valid_scope_trigger(trigger) -> dict | None:
+        """The scope trigger spec, normalised, or None for trigger-on-anything.
+        A malformed spec becomes None rather than an error: the scope keeps
+        showing traces, which is what a scope is for."""
+        if not isinstance(trigger, dict):
+            return None
+        try:
+            ch = int(trigger["channel"])
+            level = float(trigger["level_mv"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not 0 <= ch < C.NUM_CHANNELS + C.NUM_GROUPS:   # 0-15 + TR copies
+            return None
+        edge = trigger.get("edge")
+        return {"channel": ch,
+                "level_mv": min(500.0, max(1.0, level)),
+                "edge": edge if edge in ("rising", "falling") else "falling"}
+
+    def set_scope(self, rate_hz: float | None, trigger: dict | None = None) -> dict:
+        """Scope mode on (at `rate_hz`) or off (None).
+
+        On: the readout loop free-runs software triggers at a steady pace and
+        telemetry ships each single trace at FULL resolution - the line-noise
+        debugging tool: one trace, replaced by the next, nothing averaged
+        away. The pace is deliberately capped low: full-resolution traces are
+        heavy on the wire, and a noise study needs eyes-on time per trace,
+        not throughput."""
+        if rate_hz is None:
+            with self._lock:
+                already_off = self._scope_hz is None
+                self._scope_hz = None
+                self._scope_trigger = None
+            if not already_off:
+                logsetup.did(log, "Leaving scope mode", "Ok")
+            return {"ok": True, "scope_hz": None, "scope_trigger": None}
+        if not self._running.is_set():
+            self.start()
+        if not self._running.is_set():           # start() refused: no unit
+            return {"ok": False, "error": "no unit connected"}
         with self._lock:
-            due = self._sw_pending > 0 and time.monotonic() >= self._sw_next_fire
+            mode = self._cfg.software_trigger
+        if mode == "disabled":
+            return {"ok": False, "error": "the software trigger is disabled "
+                                          "in the unit settings"}
+        rate_hz = min(max(float(rate_hz), 0.1), 20.0)
+        trig = self._valid_scope_trigger(trigger)
+        with self._lock:
+            self._scope_hz = rate_hz
+            self._scope_next_fire = 0.0          # first trace immediately
+            self._scope_trigger = trig
+        on = (f" (showing only events where CH {trig['channel']} crosses "
+              f"{trig['level_mv']:g} mV {trig['edge']})" if trig else "")
+        logsetup.did(log, f"Scope mode: software triggers at {rate_hz:g} Hz{on}",
+                     "Ok")
+        return {"ok": True, "scope_hz": rate_hz, "scope_trigger": trig}
+
+    def _scope_gate(self, ev) -> bool:
+        """Should this event refresh the single-trace display?
+
+        True always, except when the scope's channel-trigger is set: then only
+        events where that channel's trace crosses the level - measured against
+        the trace's own median baseline, so a DC-offset move never changes the
+        condition - hold the display, and everything else leaves the last
+        triggering trace on screen, the way a scope's display holds."""
+        with self._lock:
+            trig = self._scope_trigger if self._scope_hz is not None else None
+        if not trig:
+            return True
+        wave = ev.samples.get(trig["channel"])
+        if wave is None:
+            return True         # the judged channel is not in the event
+        base = float(np.median(wave))
+        level = trig["level_mv"] * (C.ADC_MAX + 1) / 1000.0
+        if trig["edge"] == "rising":
+            return float(wave.max()) - base >= level
+        return base - float(wave.min()) >= level
+
+    def _fire_due_software_trigger(self):
+        """One trigger per loop pass, no sooner than the requested pace.
+        Queued test triggers and the scope's free-running pace share this
+        single firing point, so only the readout thread ever touches the
+        handle."""
+        now = time.monotonic()
+        with self._lock:
+            due = self._sw_pending > 0 and now >= self._sw_next_fire
             if due:
                 self._sw_pending -= 1
-                self._sw_next_fire = time.monotonic() + self._sw_interval_s
+                self._sw_next_fire = now + self._sw_interval_s
+            elif self._scope_hz is not None and now >= self._scope_next_fire:
+                due = True
+                self._scope_next_fire = now + 1.0 / self._scope_hz
         if not due:
             return
         try:
@@ -348,6 +475,7 @@ class AcquisitionEngine:
         except Exception as e:
             with self._lock:
                 self._sw_pending = 0    # one report, not one per queued trigger
+                self._scope_hz = None
             self._record_error(f"software trigger: {e}")
 
     def stop(self):
@@ -386,7 +514,7 @@ class AcquisitionEngine:
                              level=logging.ERROR)
                 self._record_error(f"close: {e}")
             finally:
-                self._opened = False
+                self._mark_opened(False)
 
     # ---------- connection health ----------
     def probe(self) -> bool:
@@ -406,7 +534,7 @@ class AcquisitionEngine:
                 alive = False
             if alive:
                 return True
-            self._opened = False
+            self._mark_opened(False)
             self._board_info = BoardInfo()
             self._record_error("board stopped responding")
         self._try_open(force=False)
@@ -416,7 +544,7 @@ class AcquisitionEngine:
         """Explicit user-driven reconnect: drop what we have and open again now."""
         with logsetup.step(log, "Reconnecting to the unit") as reconnecting:
             self.stop()
-            self._opened = False
+            self._mark_opened(False)
             self._try_open(force=True)
             reconnecting.done("Reconnected" if self._opened else "No unit found")
         return self.status()
@@ -458,7 +586,9 @@ class AcquisitionEngine:
     # ---------- recording ----------
     def start_recording(self, name: str, timestamp: bool = True,
                         run_number: int | None = None,
-                        max_events: int | None = None) -> dict:
+                        max_events: int | None = None,
+                        note: str = "",
+                        into_existing: bool = False) -> dict:
         """Begin writing to a new run directory, starting acquisition if the
         operator has not already. Watching and recording are separate actions.
 
@@ -486,27 +616,59 @@ class AcquisitionEngine:
                 rec.done("Not started: acquisition would not start")
                 return {"ok": False,
                         "error": "acquisition would not start - see the errors below"}
-            try:
-                run_id, path = runs.create(name, timestamp)
-            except FileExistsError as e:
-                rec.done(f"Not started: a run named {e.args[0]!r} already exists")
-                return {"ok": False,
-                        "error": f"a run named {e.args[0]!r} already exists - "
-                                 f"rename it or switch the timestamp on"}
-            except OSError as e:
-                rec.done(f"Not started: could not create the run directory: {e}")
-                self._record_error(f"record: {e}")
-                return {"ok": False, "error": f"could not create the run directory: {e}"}
             with self._lock:
                 cfg = self._cfg
-            writer = make_writer(path, run_id, cfg.output_format, run_number)
+            if into_existing:
+                # A CAMPAIGN folder: the setup has not changed, so the new
+                # run_<N>.root joins the earlier ones instead of scattering
+                # one-directory-per-run. Only the numbered ROOT files can
+                # share a directory - the WaveDump layout's wave_<ch>
+                # filenames would overwrite the earlier run.
+                path = runs.path_of(name)
+                if path is None:
+                    rec.done(f"Not started: no run folder named {name!r}")
+                    return {"ok": False,
+                            "error": f"no run folder named {name!r}"}
+                if cfg.output_format != "root":
+                    rec.done("Not started: only ROOT runs can share a folder")
+                    return {"ok": False,
+                            "error": "only ROOT output can add runs to an "
+                                     "existing folder - WaveDump filenames "
+                                     "would overwrite the earlier run"}
+                if os.path.exists(os.path.join(path, f"run_{run_number}.root")):
+                    rec.done(f"Not started: run {run_number} is already there")
+                    return {"ok": False,
+                            "error": f"run_{run_number}.root already exists "
+                                     f"in {name!r} - pick another number"}
+                run_id = name
+            else:
+                try:
+                    run_id, path = runs.create(name, timestamp)
+                except FileExistsError as e:
+                    rec.done(f"Not started: a run named {e.args[0]!r} already exists")
+                    return {"ok": False,
+                            "error": f"a run named {e.args[0]!r} already exists - "
+                                     f"rename it, switch the timestamp on, or "
+                                     f"pick it from the list to add this run "
+                                     f"to that folder"}
+                except OSError as e:
+                    rec.done(f"Not started: could not create the run directory: {e}")
+                    self._record_error(f"record: {e}")
+                    return {"ok": False, "error": f"could not create the run directory: {e}"}
+            # The experiment conditions travel with the run, snapshotted BY
+            # VALUE the moment recording starts.
+            from . import sessions
+            writer = make_writer(path, run_id, cfg.output_format, run_number,
+                                 note, sessions.get_conditions())
             try:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)
             except Exception as e:
                 # The directory exists but holds nothing; leaving it behind puts
-                # an empty run in the listing that was never recorded.
-                runs.discard_empty(run_id)
+                # an empty run in the listing that was never recorded. NEVER
+                # when reusing a campaign folder - it holds earlier runs.
+                if not into_existing:
+                    runs.discard_empty(run_id)
                 rec.done(f"Not started: could not open the run files: {e}")
                 self._record_error(f"record: {e}")
                 return {"ok": False, "error": str(e)}
@@ -552,6 +714,10 @@ class AcquisitionEngine:
 
     def _read_loop(self):
         fails = 0
+        # DAQ_PROFILE=1: the engine's half of the per-event time ledger
+        # (display feed, stats tap, writer) - the backend logs its own half.
+        profile = os.environ.get("DAQ_PROFILE") == "1"
+        proc_s, proc_n = 0.0, 0
         while self._running.is_set():
             self._fire_due_software_trigger()
             try:
@@ -562,7 +728,7 @@ class AcquisitionEngine:
                 self._record_error(f"read: {e}")
                 if fails >= C.READ_FAIL_LIMIT:
                     self._record_error("board stopped responding - acquisition halted")
-                    self._opened = False
+                    self._mark_opened(False)
                     self._board_info = BoardInfo()
                     self._running.clear()
                     break
@@ -572,11 +738,14 @@ class AcquisitionEngine:
                 time.sleep(0.002)
                 continue
             t = time.monotonic()
+            tp = time.perf_counter() if profile else 0.0
             for ev in events:
                 self._events_seen += 1
+                refresh_last = self._scope_gate(ev)
                 for ch, wave in ev.samples.items():
                     self._avg.add(ch, wave, t)
-                    self._last[ch] = (ev.index, wave)
+                    if refresh_last:
+                        self._last[ch] = (ev.index, wave)
                 col = self._stats_col
                 if col is not None:
                     col.add(ev)
@@ -596,6 +765,14 @@ class AcquisitionEngine:
                             # keep acquiring, so the operator can keep watching.
                             self.stop_recording()
             self._rate.add(len(events))
+            if profile:
+                proc_s += time.perf_counter() - tp
+                proc_n += len(events)
+                if proc_n >= 500:
+                    log.info("profile: engine processing (avg+stats+write) "
+                             "%.2f ms/ev over %d events",
+                             proc_s / proc_n * 1000, proc_n)
+                    proc_s, proc_n = 0.0, 0
 
     def _end_recording_from_loop(self, why: str):
         """Close a recording from the readout thread and say why it stopped."""
@@ -622,6 +799,7 @@ class AcquisitionEngine:
     def telemetry(self, _channels=None) -> dict:
         with self._lock:
             cfg = self._cfg
+            scope = self._scope_hz is not None
         chans = cfg.enabled_channels()
         dt = C.sample_period_ns(cfg.drs4_frequency)
         # The digitized TR trace rides along as 16+group when enabled.
@@ -647,7 +825,11 @@ class AcquisitionEngine:
             if last is not None:
                 # One single-event trace per tick for the overlay display; the
                 # id lets the client add each event once, not once per render.
-                entry["last"] = decimate(last[1], C.OVERVIEW_POINTS)
+                # Scope mode ships the trace at FULL resolution: the block-mean
+                # decimation that keeps the wire light also averages away the
+                # very noise a scope exists to show.
+                entry["last"] = (last[1].astype(float).tolist() if scope
+                                 else decimate(last[1], C.OVERVIEW_POINTS))
                 entry["last_index"] = last[0]
                 # Peak-to-peak of the FULL single event, before decimation:
                 # the liveness discriminator. A live channel always shows its
@@ -684,6 +866,9 @@ class AcquisitionEngine:
             },
             "events_seen": self._events_seen,
             "sw_triggers_pending": self._sw_pending,
+            "scope_hz": self._scope_hz,
+            "scope_trigger": self._scope_trigger,
+            "config_rev": self._cfg_rev,
             "recording": self._writer is not None,
             "run_id": self._run_id,
             "run_started": self._run_started,
