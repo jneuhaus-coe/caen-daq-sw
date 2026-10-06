@@ -121,6 +121,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         lastId={on ? e?.last_index : undefined}
                         baselineGuide={on ? zeroCounts(shownDac, g) : undefined}
                         offsetDac={shownDac} offsetSlope={countsPerLsb(g)}
+                        vOffset={dacToVolts(shownDac, g)}
                         clearEpoch={clearEpoch} />
 
                       {(() => {

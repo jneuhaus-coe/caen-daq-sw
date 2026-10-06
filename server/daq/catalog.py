@@ -203,26 +203,29 @@ BANK_SETTINGS = [
              "On the DT5742B both banks configure the same TR0 input - keep "
              "them equal."},
     {"key": "fast_trigger_dc_offset", "label": "TR DC offset", "type": "volts",
-     "lsb_v": -4.66e-5, "zero_dac": 32768,
+     # Window centre in TR0 INPUT volts: UM4270 rev 13 Tab. 9.1's TTL row
+     # (0xA800 = 32768 + 10240 centres a 0..2 V signal) gives 1 V per 10240
+     # steps; a delta sweep on serial 53364 agreed to 1% (-0.198 window
+     # counts/step through the x2 attenuator). The manual's "factor of 16"
+     # sentence only places 32768 near ADC code 2048 - it is not the slope.
+     "lsb_v": 1 / 10240, "zero_dac": 32768,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerDCOffset",
-     "help": "Positions the TR0 baseline (its 0-Volt). UM4270 9.8.3: DAC "
-             "0x8000 = 32768 puts the baseline at MIDSCALE (0 V), which is "
-             "also the only offset where the threshold's volts are "
-             "calibrated - so keep it here unless you must fit an asymmetric "
-             "pulse.\n\n"
-             "0 V = baseline centred; a small negative value drops the "
-             "baseline to make room for a positive pulse above it. Volts use "
-             "the measured slope (-0.0466 mV per DAC step) anchored at the "
-             "manual's midscale zero."},
+     "help": "The TR0 input voltage at the CENTRE of its digitized window. "
+             "TR0 takes 2 Vpp (attenuated x2 into the 1 Vpp DRS4), so at "
+             "0 V the trace spans -1 V..+1 V; +1 V shifts it to 0..+2 V "
+             "(CAEN's TTL/positive example, 0xA800).\n\n"
+             "Keep it at 0 V (DAC 0x8000) when triggering on TR0: that is "
+             "the only offset where CAEN gives the threshold in volts "
+             "(UM4270 sec 9.8.3)."},
 ]
 
 CHANNEL_SETTINGS = [
     {"key": "dc_offset", "label": "DC offset", "type": "volts",
      "caen": "CAEN_DGTZ_SetChannelDCOffset",
-     "help": "Moves this channel's baseline within the 1 Vpp window so the "
-             "pulse fits without clipping.\n\n"
-             "The DAC covers +/-1 V - twice the window - so only about half "
-             "its travel keeps the channel in view."},
+     "help": "The input voltage at the CENTRE of this channel's 1 Vpp "
+             "window (UM4270 sec 9.1: the DAC shifts the window +/-1 V). "
+             "0 V = window -0.5..+0.5 V; +0.4 V = -0.1..+0.9 V, room for "
+             "positive pulses; -0.4 V = -0.9..+0.1 V for negative ones."},
 ]
 
 

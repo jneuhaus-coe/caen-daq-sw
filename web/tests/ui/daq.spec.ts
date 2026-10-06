@@ -100,8 +100,8 @@ test("a typed out-of-range value is clamped before it reaches the unit", async (
 });
 
 test("the baseline guide is drawn when idle and follows the offset", async ({ page }) => {
-  // Idle (no data): the ground marker shows where the offset will put the
-  // baseline, in the channel colour, at the window centre for a centred DAC.
+  // Idle (no data): the ground marker shows where 0 V at the input lands on
+  // the full-scale (code 0..4095) axis - the centre for a centred DAC.
   const rowOf = async () => page.evaluate(() => {
     const cv = document.querySelector(".tile canvas") as HTMLCanvasElement;
     const ctx = cv.getContext("2d")!;
@@ -122,12 +122,12 @@ test("the baseline guide is drawn when idle and follows the offset", async ({ pa
   expect(centred.lit).toBeGreaterThan(50);
   expect(Math.abs(centred.row - centred.height / 2)).toBeLessThan(centred.height * 0.1);
 
-  // Typing a new offset moves the guide (auto re-arm is not needed for the
-  // marker - it predicts).
+  // +0.2 V raises the window centre to +0.2 V at the input (UM4270 sec
+  // 9.1), so 0 V sits LOWER in the full-scale view.
   const field = page.locator(".tile-dc input[type=number]").first();
   await field.fill("0.2");
   await field.press("Enter");
-  await expect.poll(async () => (await rowOf()).row).toBeLessThan(centred.row - 10);
+  await expect.poll(async () => (await rowOf()).row).toBeGreaterThan(centred.row + 10);
   await field.fill("0");
   await field.press("Enter");
 });
@@ -137,7 +137,7 @@ test("the DC-offset slider commits one write on release", async ({ page }) => {
   const slider = page.locator(".dc-slider").first();
   await slider.focus();
   await slider.press("ArrowLeft");        // one 0.01 V step down; keyup commits
-  const want = Math.round(32768 * (1 - (-0.01)));   // voltsToDac(-0.01)
+  const want = Math.round(32768 * (1 + (-0.01)));   // voltsToDac(-0.01)
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
   expect(before).not.toBe(want);
   // The typed field agrees with what the unit reports.
@@ -148,7 +148,7 @@ test("typing a DC offset lands on the unit exactly", async ({ page }) => {
   const field = page.locator(".tile-dc input[type=number]").first();
   await field.fill("0.1");
   await field.press("Enter");
-  const want = Math.round(32768 * (1 - 0.1));       // voltsToDac(+0.1)
+  const want = Math.round(32768 * (1 + 0.1));       // voltsToDac(+0.1)
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
 });
 
@@ -169,7 +169,7 @@ test("global channel controls set window and DC offset on all 16 at once", async
   // Global DC offset writes all 16 channels.
   await bar.locator(".cg-group").nth(1).locator(".cg-num").fill("0.1");
   await bar.getByRole("button", { name: "set all", exact: true }).click();
-  const want = Math.round(32768 * (1 - 0.1));
+  const want = Math.round(32768 * (1 + 0.1));
   await expect.poll(async () => {
     const c = await cfg(page);
     return c.channels.every((ch: { dc_offset: number }) => ch.dc_offset === want);
@@ -183,9 +183,13 @@ test("clicking a Y label edits the display range, and it persists", async ({ pag
   await editor.fill("0.25");
   await editor.press("Enter");
   await expect(tile.locator("button.ax.y.max")).toHaveText("+0.250 V");
-  await expect
-    .poll(async () => (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"])
-    .toEqual([-0.5, 0.25]);   // window frame: min stays at the window bottom
+  // The min stays where full scale had it: ADC code 0 at ch0's offset,
+  // in input volts = window centre - 0.5 V.
+  const centre = ((await cfg(page)).channels[0].dc_offset - 32768) / 32768;
+  const stored = async () =>
+    (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"];
+  await expect.poll(async () => (await stored())?.[1]).toBe(0.25);
+  expect((await stored())[0]).toBeCloseTo(centre - 0.5, 6);
   // Survives a full reload: the display prefs live on the server.
   await page.reload();
   await expect(page.locator(".tile").first().locator("button.ax.y.max"))
@@ -194,10 +198,22 @@ test("clicking a Y label edits the display range, and it persists", async ({ pag
 
 test("the 'full' button resets a channel's range to the full window", async ({ page }) => {
   const tile = page.locator(".tile").first();
+  const field = tile.locator(".tile-dc input[type=number]");
+  await field.fill("0");
+  await field.press("Enter");
   await tile.locator("button.ax.y.max").click();
   await tile.locator(".yedit button", { hasText: "full" }).click();
-  // Window-referenced frame: full range IS the 1 Vpp window, +/-0.5 V.
+  // Full scale = ADC codes 0..4095 in input volts: at offset 0 the top is
+  // code 4095 = +0.49976 V.
   await expect(tile.locator("button.ax.y.max")).toHaveText("+0.500 V");
+  await expect(tile.locator("button.ax.y.min")).toHaveText("-0.500 V");
+  // The axis follows the offset register: +0.2 V moves the window up.
+  await field.fill("0.2");
+  await field.press("Enter");
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.700 V");
+  await expect(tile.locator("button.ax.y.min")).toHaveText("-0.300 V");
+  await field.fill("0");
+  await field.press("Enter");
 });
 
 test("sessions: save, perturb, apply restores the unit, delete", async ({ page }) => {
@@ -233,7 +249,7 @@ test("auto-baseline centers a mis-set channel from the UI", async ({ page }) => 
   await field.fill("-0.3");
   await field.press("Enter");
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset)
-    .toBeGreaterThan(40000);
+    .toBeLessThan(25000);
 
   await page.locator(".calib-btns button", { hasText: "Center baselines" }).click();
   await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
@@ -352,8 +368,28 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   // Trigger settings panel is a different heading).
   const trCard = page.locator(".card", { has: page.locator("h2", { hasText: "fast trigger" }) });
   await expect(trCard).toBeVisible({ timeout: 10_000 });
-  // No trigger-line check: the line is withheld until the threshold DAC maps
-  // to the trace's axis through a documented CAEN relationship.
+  const red = () => trCard.evaluate((card) => {
+    const cv = card.querySelector("canvas") as HTMLCanvasElement;
+    const d = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 100 && d[i] > 180 && d[i + 1] < 130) n++;
+    }
+    return n;
+  });
+  // The trigger line exists ONLY at TR offset 0x8000 (UM4270 sec 9.8.3).
+  const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
+  const off = offRow.locator('input[type="number"]');
+  await off.fill("0");
+  await off.press("Enter");
+  await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
+    .toBe(32768);
+  await expect.poll(red, { timeout: 10_000 }).toBeGreaterThan(50);
+  await off.fill("0.1");
+  await off.press("Enter");
+  await expect.poll(red, { timeout: 10_000 }).toBeLessThan(5);
+  await off.fill("0");
+  await off.press("Enter");
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 

@@ -22,8 +22,8 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
-import { TR_OFF_MID_DAC, dacToVolts, fmtDacVolts, trAbsThresholdV,
-         trThresholdDacForAbs, voltsToDac, windowVolts } from "./volts";
+import { TR_ATTEN, TR_OFF_MID_DAC, dacToVolts, fmtDacVolts, trAbsThresholdV,
+         trCountsPerLsb, trOffsetV, trThresholdDacForAbs, voltsToDac } from "./volts";
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -294,6 +294,19 @@ export function App() {
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
 
+  // Adopt a status answer from an action, and the config with it when the
+  // revision moved. Start/Stop re-adopt the board's config server-side; a
+  // write sent before the next status poll then carried the old revision
+  // and was refused as stale - the field silently snapped back.
+  const adoptStatus = async (st: Status) => {
+    setStatus(st);
+    if (st.config_rev != null && st.config_rev !== cfgRev.current) {
+      cfgRev.current = st.config_rev;
+      const cfg = await api.getConfig();
+      setConfig(cfg); confirmed.current = cfg;
+    }
+  };
+
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);                       // optimistic, for input responsiveness
     window.clearTimeout(saveTimer.current);
@@ -359,7 +372,7 @@ export function App() {
   const start = async () => {
     try {
       const st = await api.start();
-      setStatus(st);
+      await adoptStatus(st);
       // The server refuses rather than raising, so a 200 does not mean it
       // started. The reason is already in the errors panel; the toast points
       // at it instead of leaving the button looking inert.
@@ -374,7 +387,7 @@ export function App() {
   };
   const stop = async () => {
     try {
-      setStatus(await api.stop());
+      await adoptStatus(await api.stop());
     } catch (e) {
       failed("Could not stop acquisition")(e);
     }
@@ -385,7 +398,7 @@ export function App() {
     try {
       const n = Math.max(1, Math.round(Number(testN) || 100));
       const r = await api.trigger(n, 10);
-      setStatus(r.status);
+      await adoptStatus(r.status);
       if (!r.ok) push("err", "Could not fire test triggers", [r.error ?? ""]);
       else push("ok", `Firing ${r.queued} test triggers at 10 Hz`);
     } catch (e) {
@@ -759,7 +772,7 @@ export function App() {
                 title="Reset every channel's plot to the full window">reset</button>
             </span>
             <span className="cg-group"
-              title="Write this DC offset (baseline position, volts) to all 16 channels">
+              title="Write this DC offset (input volts at the window centre) to all 16 channels">
               DC offset
               <input type="number" step={0.005} className="cg-num"
                 placeholder={dacToVolts(config.channels[0].dc_offset, catalog.geometry).toFixed(3)}
@@ -789,10 +802,15 @@ export function App() {
             const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
             const tr = trCh != null ? tele!.channels[String(trCh)] : null;
             if (!config.fast_trigger_digitizing || !tr) return null;
-            // No baseline/trigger lines until the threshold and offset DACs
-            // map to volts through a documented CAEN relationship, on the
-            // same axis as the trace. A line drawn from a guess is worse
-            // than none.
+            // Trace in TR0 input volts (x2 attenuator, offset per Tab. 9.1).
+            // The trigger line is drawn ONLY at offset 0x8000, the one case
+            // UM4270 sec 9.8.3 gives the threshold in volts for; elsewhere
+            // CAEN states there is no formula, so there is no line.
+            const off = config.groups[trCh! - 16].fast_trigger_dc_offset;
+            const thr = config.groups[trCh! - 16].fast_trigger_threshold;
+            const markers = off === TR_OFF_MID_DAC
+              ? [{ v: trAbsThresholdV(thr), label: "trigger", color: "#f85149" }]
+              : [];
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -801,6 +819,8 @@ export function App() {
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}
                   color="#e3b341" height={110}
+                  markers={markers} vScale={TR_ATTEN} vOffset={trOffsetV(off)}
+                  offsetDac={off} offsetSlope={trCountsPerLsb(catalog.geometry)}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
                   mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
