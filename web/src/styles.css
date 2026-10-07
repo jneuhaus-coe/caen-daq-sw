@@ -148,7 +148,6 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 
 .tile-head .g { color: #6e7681; font-size: 10px; }
-.tile-foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* averaged-waveform chart + its axes.
    The y labels live in a left margin wide enough for the "0 V" zero line plus
@@ -592,14 +591,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .cg-group button { font-size: 11px; padding: 2px 9px; cursor: pointer; }
 
 /* the trigger-model explainer: the fact that the 16 channels can't trigger */
-.trig-guide {
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; margin-bottom: 10px; background: #0d1117;
-  font-size: 11.5px; line-height: 1.4;
-}
-.trig-guide p { margin: 0 0 6px; }
-.trig-guide p:last-child { margin-bottom: 0; }
-.trig-warn { color: var(--orange, #d29922); }
 
 /* Live | Experiment: the two worlds - operating vs campaign setup */
 .view-tabs { display: inline-flex; margin-left: 14px; }
@@ -749,3 +740,30 @@ main.experiment { overflow-y: auto; }
 }
 .zc-modal p, .zc-modal ol { font-size: 12.5px; line-height: 1.45; margin: 0 0 9px; }
 .zc-modal ol { padding-left: 20px; }
+
+/* Lockable setting, house style: a lock toggle LEFT of the label. Locked,
+   the control is greyed out but still shows the board's value; unlocked it
+   is an ordinary editable setting. */
+.setting-row.lockable { grid-template-columns: auto 1fr auto; }
+.lock-toggle {
+  background: none; border: none; cursor: pointer; padding: 0 2px;
+  font-size: 13px; line-height: 1; opacity: .85;
+}
+.lock-toggle:hover { opacity: 1; background: none; border: none; }
+.setting-row.lockable.locked label { color: var(--muted); }
+.setting-row.lockable.locked select,
+.setting-row.lockable.locked .field input { opacity: 0.55; }
+
+/* TR0 card: the settings sit right under the trace. */
+.tr0-settings { margin-top: 10px; }
+.tr-off { margin: 4px 0 0; }
+
+/* Trigger Settings: the help button sits where the prose used to. */
+.trig-help-btn { margin-bottom: 10px; font-size: 12px; }
+.trig-modal p, .trig-modal ul { font-size: 12.5px; line-height: 1.45; margin: 0 0 9px; }
+.trig-modal ul { padding-left: 20px; }
+
+/* Recorded runs: the list scrolls past five rows (cap measured in RunsPanel).
+   position: relative makes each row's offsetTop count from the list. */
+.runs { position: relative; }
+.runs.scrolls { overflow-y: auto; padding-right: 4px; }

@@ -8,6 +8,7 @@ import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
+import { SettingControl } from "./components/SettingControl";
 import { Collapsible } from "./components/Collapsible";
 import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
@@ -78,6 +79,10 @@ export function App() {
   const [scopeTrigMv, setScopeTrigMv] = useState("20");
   const [scopeTrigEdge, setScopeTrigEdge] = useState<"rising" | "falling">("falling");
   const [testN, setTestN] = useState("100");
+  // TR DC offset: a lockable setting in the house style (see CLAUDE.md, UI
+  // conventions) - locked by default, the lock icon toggles it.
+  const [trOffLocked, setTrOffLocked] = useState(true);
+  const [trigHelp, setTrigHelp] = useState(false);
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = useState("");
   // The run-notes dialog: Record opens it, and the note it collects lands in
@@ -566,7 +571,7 @@ export function App() {
           <button role="tab" aria-selected={view === "experiment"}
             className={view === "experiment" ? "on" : ""}
             title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
-            onClick={() => setView("experiment")}>Experiment</button>
+            onClick={() => setView("experiment")}>Experiment Settings</button>
         </nav>
         <button className={"lock-all" + (lockOn ? " on" : "")}
           title={lockOn
@@ -850,58 +855,74 @@ export function App() {
 
         {view === "live" ? (
         <aside>
+          <div className="card">
+            <h2>Trigger rate</h2>
+            <RateStrip tele={tele} />
+            <div className="test-trigger"
+              title="Software triggers - the bench source when nothing external can trigger the board. Starts acquisition if it is not running.">
+              <button onClick={fireTest} disabled={!connected}>Fire</button>
+              <input type="number" min={1} value={testN}
+                disabled={!connected}
+                onChange={(e) => setTestN(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") fireTest(); }} />
+              <span className="muted">test triggers @ 10 Hz</span>
+              {status?.sw_triggers_pending ? (
+                <span className="pending mono">{status.sw_triggers_pending} left</span>
+              ) : null}
+            </div>
+          </div>
           {(() => {
-            // The digitized TR0 trace, when TR digitizing is on: the same
-            // signal both groups see, shown once (group 0's copy, else 1's).
+            // TR0: the digitized trace (when TR digitizing is on - the same
+            // signal both groups see, shown once: group 0's copy, else 1's)
+            // with its two settings underneath. The trace is in TR0 input
+            // volts; the trigger line is drawn ONLY at offset 0x8000, the one
+            // case UM4270 sec 9.8.3 gives the threshold in volts for.
             const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
-            const tr = trCh != null ? tele!.channels[String(trCh)] : null;
-            if (!config.fast_trigger_digitizing || !tr) return null;
-            // Trace in TR0 input volts (x2 attenuator, offset per Tab. 9.1).
-            // The trigger line is drawn ONLY at offset 0x8000, the one case
-            // UM4270 sec 9.8.3 gives the threshold in volts for; elsewhere
-            // CAEN states there is no formula, so there is no line.
-            const off = config.groups[trCh! - 16].fast_trigger_dc_offset;
-            const trLine = zeroLine(trCh!, catalog.geometry, zc);
-            const thr = config.groups[trCh! - 16].fast_trigger_threshold;
+            const tr = config.fast_trigger_digitizing && trCh != null
+              ? tele!.channels[String(trCh)] : null;
+            const [g0, g1] = config.groups;
+            const gr = trCh != null ? trCh - 16 : 0;
+            const off = config.groups[gr].fast_trigger_dc_offset;
+            const trLine = zeroLine(16 + gr, catalog.geometry, zc);
+            const thr = config.groups[gr].fast_trigger_threshold;
             const markers = off === TR_OFF_MID_DAC
               ? [{ v: trAbsThresholdV(thr), label: "trigger", color: "#f85149" }]
               : [];
+            const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
+              .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
+            const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
+            // The TR offset field stays on CAEN's scale (Tab. 9.1), never the
+            // 0 V calibration: 0 is midscale 0x8000, where the threshold is
+            // defined.
+            const offDef = catalog.bank.find((d) => d.key === "fast_trigger_dc_offset")!;
+            const offLocked = trOffLocked || isLocked("fast_trigger_dc_offset");
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
-                <MiniWave wave={tr.wave}
-                  geom={catalog.geometry}
-                  windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
-                  postTriggerPct={config.post_trigger}
-                  color="#e3b341" height={110}
-                  markers={markers} vScale={trLine.vScale}
-                  zeroCode={zeroCodeAt(trLine, off, catalog.geometry)}
-                  offsetDac={off} offsetSlope={trLine.s} waveDac={tr.dac}
-                  yRange={yRanges[trCh!]}
-                  onYRange={(range, all) => changeYRange(trCh!, range, all)}
-                  mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
-                  clearEpoch={wipeEpoch} />
-              </div>
-            );
-          })()}
-          <Collapsible title="TR0 Trigger" defaultOpen>
-            {(() => {
-              // The TR offset field stays on CAEN's scale (Tab. 9.1), NOT the
-              // 0 V calibration: 0 is midscale 0x8000, the reference the
-              // threshold arithmetic is defined against. Through the
-              // calibration, "0" landed at 33576 and the threshold lost its
-              // meaning. The TR0 TRACE is still calibrated.
-              const offDefs = catalog.bank.filter((d) =>
-                d.key === "fast_trigger_dc_offset");
-              const [g0, g1] = config.groups;
-              const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
-                .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
-              const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
-              return (
-                <>
+                {tr ? (
+                  <MiniWave wave={tr.wave}
+                    geom={catalog.geometry}
+                    windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
+                    postTriggerPct={config.post_trigger}
+                    color="#e3b341" height={110}
+                    markers={markers} vScale={trLine.vScale}
+                    zeroCode={zeroCodeAt(trLine, off, catalog.geometry)}
+                    offsetDac={off} offsetSlope={trLine.s} waveDac={tr.dac}
+                    yRange={yRanges[trCh!]}
+                    onYRange={(range, all) => changeYRange(trCh!, range, all)}
+                    mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
+                    clearEpoch={wipeEpoch} />
+                ) : (
+                  <p className="muted tr-off">
+                    {config.fast_trigger_digitizing
+                      ? "Waiting for events."
+                      : "TR0 is not being digitized (Digitize TR traces, below)."}
+                  </p>
+                )}
+                <div className="settings-grid tr0-settings">
                   <div className="setting-row"
-                    title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (V1742 manual rev 6 sec 5.15, in docs/): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. A -140 mV falling trigger is simply -0.140 here. CAEN states no simple formula exists at other offsets - keep the offset at midscale.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold <span className="muted">at input</span></label>
+                    title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (UM4270 sec 9.8.3): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. CAEN gives no formula at other offsets - keep the offset at 0.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
+                    <label>TR threshold</label>
                     <span className="field">
                       {/* min sets the arrow keys' step base, so it must sit on
                           the step grid: -1.986 made them walk -0.001, 0.004,
@@ -923,79 +944,122 @@ export function App() {
                         onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
                     ) : null}
                     {!offMid ? (
-                      <span className="muted tr-rel-note" title="V1742 manual rev 6 sec 5.15: the threshold volts are only calibrated with the TR DC offset at midscale (0x8000); CAEN provides no formula for other offsets.">
-                        ⚠ offset not at midscale
+                      <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
+                        ⚠ offset not 0
                       </span>
                     ) : null}
                   </div>
-                  <SettingsList defs={offDefs} geom={catalog.geometry}
-                    get={(k) => (g0 as any)[k]} onChange={updateTrBoth}
-                    locked={isLocked} onUnlock={unlockOne} />
-                  {diverged ? (
-                    <div className="tr-diverged">
-                      The two banks' TR0 registers differ (bank 1 has its own
-                      values). Editing here writes both;{" "}
-                      <button onClick={() => {
-                        const groups = config.groups.map((gc) => ({
-                          ...gc,
-                          fast_trigger_threshold: g0.fast_trigger_threshold,
-                          fast_trigger_dc_offset: g0.fast_trigger_dc_offset,
-                        }));
-                        pushConfig({ ...config, groups });
-                      }}>sync bank 1 to bank 0</button>
-                    </div>
-                  ) : null}
-                  <p className="muted">
-                    One input, split to both banks; this panel writes both
-                    together. Threshold volts are calibrated only with the
-                    offset at midscale (V1742 manual rev 6 sec 5.15, in docs/).
-                  </p>
+                  <div className={"setting-row lockable" + (offLocked ? " locked" : "")}
+                    title={[offDef.help, offDef.caen].filter(Boolean).join("\n\n")}>
+                    <button className="lock-toggle"
+                      aria-label={offLocked ? "Unlock TR DC offset" : "Lock TR DC offset"}
+                      aria-pressed={offLocked}
+                      title={offLocked ? "Locked - click to edit the TR DC offset"
+                                       : "Unlocked - click to lock the TR DC offset"}
+                      onClick={() => {
+                        if (offLocked) {
+                          setTrOffLocked(false);
+                          if (isLocked("fast_trigger_dc_offset")) unlockOne("fast_trigger_dc_offset");
+                        } else {
+                          setTrOffLocked(true);
+                        }
+                      }}>{offLocked ? "🔒" : "🔓"}</button>
+                    <label>TR DC offset</label>
+                    <SettingControl def={offDef} value={g0.fast_trigger_dc_offset}
+                      geom={catalog.geometry} disabled={offLocked}
+                      onChange={(v) => updateTrBoth("fast_trigger_dc_offset", v)} />
+                  </div>
+                </div>
+                {diverged ? (
+                  <div className="tr-diverged">
+                    The two banks' TR0 registers differ. Editing here writes
+                    both;{" "}
+                    <button onClick={() => {
+                      const groups = config.groups.map((gc) => ({
+                        ...gc,
+                        fast_trigger_threshold: g0.fast_trigger_threshold,
+                        fast_trigger_dc_offset: g0.fast_trigger_dc_offset,
+                      }));
+                      pushConfig({ ...config, groups });
+                    }}>sync bank 1 to bank 0</button>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
+          <Collapsible title="Trigger Settings" defaultOpen>
+            {(() => {
+              // Explicit order and labels: timing first, then the trigger
+              // sources, each source's own option right under it and only
+              // while that source is enabled.
+              const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
+              const row = (k: string, label: string, lockable = true) => {
+                const d = def(k);
+                const locked = lockable && isLocked(k);
+                return (
+                  <div className="setting-row" key={k}
+                    title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
+                    <label>{label}</label>
+                    <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
+                      dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
+                      disabled={locked}
+                      onChange={(v) => updateBoard(k, v)} />
+                    {locked ? (
+                      <button className="lock-chip"
+                        title="Locked. Click to unlock just this setting."
+                        onClick={() => unlockOne(k)}>🔒</button>
+                    ) : null}
+                  </div>
+                );
+              };
+              return (
+                <>
+                  <button className="trig-help-btn" onClick={() => setTrigHelp(true)}>
+                    How triggers work
+                  </button>
+                  <div className="settings-grid">
+                    {row("post_trigger", "Post-trigger duration")}
+                    {row("trigger_edge", "Trigger edge")}
+                    <div className="settings-divider">Trigger Sources</div>
+                    {row("external_trigger", "TRG-IN")}
+                    {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
+                    {row("fast_trigger", "TR0")}
+                    {config.fast_trigger !== "disabled"
+                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
+                    {row("software_trigger", "Software trigger", false)}
+                  </div>
                 </>
               );
             })()}
           </Collapsible>
-          <div className="card">
-            <h2>Trigger rate</h2>
-            <RateStrip tele={tele} />
-            <div className="test-trigger"
-              title="Software triggers - the bench source when nothing external can trigger the board. Starts acquisition if it is not running.">
-              <button onClick={fireTest} disabled={!connected}>Fire</button>
-              <input type="number" min={1} value={testN}
-                disabled={!connected}
-                onChange={(e) => setTestN(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") fireTest(); }} />
-              <span className="muted">test triggers @ 10 Hz</span>
-              {status?.sw_triggers_pending ? (
-                <span className="pending mono">{status.sw_triggers_pending} left</span>
-              ) : null}
+          {trigHelp ? (
+            <div className="modal-backdrop" onClick={() => setTrigHelp(false)}>
+              <div className="modal trig-modal" role="dialog" aria-label="How triggers work"
+                onClick={(e) => e.stopPropagation()}>
+                <h3>How triggers work</h3>
+                <p>
+                  The board takes an event when <b>any</b> enabled source fires.
+                </p>
+                <p>
+                  The 16 signal channels <b>cannot</b> trigger. To trigger on a
+                  signal, send a copy of it to <b>TR0</b> (analog, with a
+                  threshold) or a logic pulse to <b>TRG-IN</b> (NIM or TTL).
+                </p>
+                <p>For TR0:</p>
+                <ul>
+                  <li>Set the <b>edge</b> to match the pulse: rising for
+                    positive-going.</li>
+                  <li>Keep the <b>TR DC offset at 0</b>. The threshold is only
+                    defined there.</li>
+                  <li>Set the <b>threshold</b> in volts at the TR0 input, just
+                    clear of the baseline noise.</li>
+                </ul>
+                <div className="modal-btns">
+                  <button className="primary" onClick={() => setTrigHelp(false)}>OK</button>
+                </div>
+              </div>
             </div>
-          </div>
-          <Collapsible title="Trigger &amp; Timing" defaultOpen>
-            <div className="trig-guide">
-              <p><b>The board fires when ANY enabled source crosses its
-                level</b> (logical OR of the sources below).</p>
-              <p className="trig-warn">The 16 signal channels <b>cannot</b>
-                trigger the board. To trigger on your signal, feed a copy into
-                <b> TR0</b> (analog, has a threshold) or <b>TRG-IN</b> (a NIM/TTL
-                logic pulse).</p>
-              <p className="muted">
-                TR0: match the <b>edge</b> to your pulse (rising = positive-going),
-                keep the <b>TR DC offset at midscale</b> (its threshold is only
-                calibrated there), and set the <b>threshold</b> just above baseline
-                noise. The threshold is in volts at the TR0 input: a 30 mV pulse
-                is 30 mV here.
-              </p>
-            </div>
-            <SettingsList
-              defs={catalog.unit.filter((d) => LIVE_UNIT_KEYS.has(d.key))}
-              geom={catalog.geometry}
-              get={(k) => (config as any)[k]} onChange={updateBoard}
-              locked={isLocked} onUnlock={unlockOne} />
-            <p className="muted">
-              Sampling, output format and the other campaign-tier settings
-              live on the Experiment tab.
-            </p>
-          </Collapsible>
+          ) : null}
           <CalibrationPanel zc={zc}
             connected={connected} recording={recording}
             locked={isLocked("calibration")}

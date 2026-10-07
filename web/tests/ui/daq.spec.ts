@@ -22,16 +22,28 @@ test("loads with the fake unit connected and all 16 channels", async ({ page }) 
   await page.locator(".bank-head", { hasText: "Bank 1" }).click();
   await expect(page.locator(".tile")).toHaveCount(16);
   await expect(page.locator(".pill.state")).toHaveText("idle");
-  // The event counter is always drawn (n=0 when idle), so tiles never
-  // resize when events start arriving.
-  await expect(page.locator(".tile-foot .n").first()).toHaveText(/^n=\d+$/);
+  // No per-tile event counter any more.
+  await expect(page.locator(".tile-foot")).toHaveCount(0);
 });
 
 test("unit settings split: campaign on Experiment, trigger tuning on Live", async ({ page }) => {
-  // Live keeps only what is tuned while watching the plots: Fast trigger is
-  // present, Sampling frequency is not (it moved to Experiment).
-  await expect(page.locator(".setting-row", { hasText: "Fast trigger" }).first())
-    .toBeVisible();
+  // Live keeps only what is tuned while watching the plots: the trigger
+  // sources are present, Sampling frequency is not (it moved to Experiment).
+  const trig = page.locator(".card", { has: page.locator("h2", { hasText: "Trigger Settings" }) });
+  const labels = await trig.locator(".setting-row > label").allTextContents();
+  // Timing first, then the sources; each source's option under it while
+  // that source is enabled.
+  expect(labels[0]).toBe("Post-trigger duration");
+  expect(labels[1]).toBe("Trigger edge");
+  expect(labels.slice(2)).toEqual(expect.arrayContaining(["TRG-IN", "TR0", "Software trigger"]));
+  expect(labels.indexOf("TRG-IN")).toBeLessThan(labels.indexOf("TR0"));
+  expect(labels.indexOf("TR0")).toBeLessThan(labels.indexOf("Software trigger"));
+  await expect(trig.locator(".settings-divider", { hasText: "Trigger Sources" })).toBeVisible();
+  // The prose moved behind a button.
+  await trig.getByRole("button", { name: "How triggers work" }).click();
+  const dlg = page.getByRole("dialog", { name: "How triggers work" });
+  await expect(dlg).toContainText("cannot");
+  await dlg.getByRole("button", { name: "OK" }).click();
   await expect(page.locator("main + aside .setting-row",
     { hasText: "Sampling frequency" })).toHaveCount(0);
   // Campaign settings, required first then the gated optionals, live on the
@@ -68,6 +80,10 @@ test("moving the TR offset leaves the raw threshold untouched", async ({ page })
 
   const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
   const input = offRow.locator('input[type="number"]');
+  // Locked by default (house style): greyed, showing the board value.
+  await expect(input).toBeDisabled();
+  await offRow.getByRole("button", { name: "Unlock TR DC offset" }).click();
+  await expect(input).toBeEnabled();
   await input.fill("0.1");
   await input.press("Enter");
   await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
@@ -405,6 +421,7 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   // The trigger line exists ONLY at TR offset 0x8000 (UM4270 sec 9.8.3).
   const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
   const off = offRow.locator('input[type="number"]');
+  await offRow.getByRole("button", { name: "Unlock TR DC offset" }).click();
   await off.fill("0");
   await off.press("Enter");
   await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)

@@ -540,6 +540,17 @@ Never let the UI show a setting the hardware did not confirm.
 - Human-facing controls use human units (DC offset is volts in the UI); the DAC
   word only exists on the wire.
 
+## UI conventions
+
+- **Lockable settings (the house style).** A lock icon button sits to the
+  LEFT of the setting's label and toggles it. Locked: the control is greyed
+  out but still shows the board's value - protection, not concealment.
+  Unlocked: an ordinary editable setting. CSS: `.setting-row.lockable`
+  (+ `.locked`), `.lock-toggle`. The TR DC offset (TR0 card) is the first
+  setting built this way and is **locked by default**. The older settings
+  still use the global "lock everything" mode with per-setting unlock chips
+  on the right; move them to this pattern only when asked.
+
 ## Watching vs recording
 
 They are separate actions and separate controls. **Start/Stop** acquires — live

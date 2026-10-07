@@ -173,12 +173,6 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         </span>
                       </div>
 
-                      <div className="tile-foot">
-                        {/* Always rendered, so the tile never resizes when
-                            events start arriving - an empty span has no
-                            height, and the grid used to jump. */}
-                        <span className="n">n={e?.count ?? 0}</span>
-                      </div>
                     </div>
                   );
                 })}

@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+
+/** Rows shown before the list scrolls. */
+const VISIBLE_RUNS = 5;
 import type { Status } from "../types";
 
 interface RunInfo {
@@ -15,6 +18,18 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [dir, setDir] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  // Past VISIBLE_RUNS the list scrolls. Rows differ in height (a note adds
+  // a line, the delete confirmation opens), so the cap is measured off the
+  // fifth row itself rather than guessed in pixels.
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const [maxH, setMaxH] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const ul = listRef.current;
+    const rows = ul ? (ul.children as HTMLCollectionOf<HTMLElement>) : null;
+    if (!ul || !rows || rows.length <= VISIBLE_RUNS) { setMaxH(undefined); return; }
+    const last = rows[VISIBLE_RUNS - 1];
+    setMaxH(last.offsetTop + last.offsetHeight);
+  });
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -62,7 +77,8 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
       {runs.length === 0 ? (
         <p className="muted">Nothing recorded yet.</p>
       ) : (
-        <ul className="runs">
+        <ul className={"runs" + (maxH ? " scrolls" : "")} ref={listRef}
+          style={maxH ? { maxHeight: maxH } : undefined}>
           {runs.map((r) => {
             const live = status?.run_id === r.id;
             return (
