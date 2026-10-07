@@ -30,25 +30,34 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   `x742/acquire/source/daq.cc`) is hard-coded, not config-driven — the
   "Configuration B" spreadsheet was values transcribed into the source by
   hand, and our legacy importer reads that sheet's key format. Facts mined
-  from it: measured TR0 calibrations for this setup (threshold
-  mV ~ (DAC - 25448) * 0.0329; TR DC offset mV ~ -(DAC - 33540) * 0.0466),
+  from it: TR0 fits for that setup (threshold mV ~ (DAC - 25448) * 0.0329
+  - WRONG, see TR0 below; TR DC offset mV ~ -(DAC - 33540) * 0.0466 - the
+  slope is right, 0.19 window counts/LSB as UM4270 Tab. 9.1 implies, but
+  the intercept is whatever their TR0 had plugged in, not a calibration),
   and its GPO-busy write `(3<<18)|(1<<16)` to 0x811C — the same field value
   `gpo_output = "busy"` writes, an independent confirmation. Do NOT copy its
   channel DC-offset block: it is commented out and shifts the channel-select
   field by 17 where 0x1n98 wants bits[19:16] (UM5698 sec 1.9) —
-  `SetChannelDCOffset` does this correctly. Its spreadsheet's mV labels are
-  measured, not nominal - see the baseline calibration below.
-- **Measured DC-offset baseline positions on serial 53364** (Configuration B
-  loaded, 30 software-triggered events, median of DRS4-corrected samples,
-  2026-08-25): DAC mid-scale 32768 puts the baseline at **+145 mV**, not 0 -
-  the intercept the nominal model lacks. DAC 47000 lands at -335 mV (the
-  sheet's "-350" is honest), slope ~33.7 uV/DAC LSB (2.21 V full span,
-  matching the 2.19 V sweep above). Consequence: **DAC 18536 ("+350 mV")
-  RAILS the baseline at ADC max** (+145 + 480 = +625 mV, past the +500 mV
-  window top) - every negative-pulse channel in Configuration B sits clipped
-  at 4095 with its true baseline invisible. A baseline at an actual +350 mV
-  on this unit is DAC ~26700. Rule of thumb: baseline_mV ~ +145 -
-  (DAC - 32768) * 0.0337.
+  `SetChannelDCOffset` does this correctly.
+- **Per-board 0 V calibration (`zerocal.py`, calibrator mode "zero").**
+  UM4270 only says DC offset 0x8000 lands "ideally around" code 2048.
+  Measured on serial 53364 with EVERY input unplugged/terminated
+  (2026-10-07): TR0 copies at ~2200/2190, signal channels ~2584-2631 -
+  74 and ~140 mV of display error; the DRS4 corrections move this <10
+  codes, so it is the board, not our decode. The TR0 comparator, swept
+  on the same terminated input, matched CAEN's 0x6666 = 0 V to within
+  2 mV - so without the zero file the trace and its trigger line
+  disagree. The file stores ONE point per input: the code a 0 V input
+  reads at its 0 V of offset (0x8F00 channels, 0x8000 TR0); the display
+  moves it with the NOMINAL slope - by decision, no fitted slope (the
+  board is ~10% steeper, so far from 0x8F00 that error grows). The UI's zero line
+  (`volts.zeroLine`) uses it for the PLOTS only - offset fields, sliders
+  and toasts stay nominal (0 V of offset = 0x8F00 channels, 0x8000 TR0),
+  or a fresh board's 0x8F00 reads as a few mV -
+  DISPLAY ONLY, recorded data untouched. It is measured ONLY with known
+  0 V inputs; an input that is not quiet blocks the save. Never derive
+  a zero from a connected signal (an earlier "+145 mV" figure was taken
+  that way and was right only by luck).
 - This board: serial **53364**, ROC 04.29 build 8716, AMC 01.06 build 6530 —
   standard 742 **waveform** firmware (not DPP). Read back off the board itself.
 - `BoardInfo.Channels` reads **2** on the x742 — it is the *group* count, not
@@ -78,10 +87,17 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   threshold and DC offset (`SetGroupFastTrigger*`).
 - **Channel**: DC-offset trim only (`SetChannelDCOffset`, an **unsigned** uint16
   DAC word — midscale `0x8000` is no shift). The 742 has **no per-channel gain**.
-  The DAC spans **±1 V — twice the 1 Vpp window** — and **increasing the DAC
-  LOWERS the baseline**. Measured on serial 53364: 0.137 counts/LSB, 2.19 V
-  across the full sweep (nominal 0.125 / 2.00 V). Only ~half the DAC range keeps
-  the window in view at all; outside it the channel rails.
+  UM4270 rev 13 sec 9.1 / Fig. 9.1: the DAC shifts the 1 Vpp window **±1 V**
+  (FSR/2 = bipolar -0.5..+0.5 V); raising the DAC raises the window, so a
+  fixed input lands on a LOWER code. Measured slope on serial 53364: 0.137
+  counts/LSB, 2.19 V across the sweep (nominal 0.125 / 2.00 V); re-measured
+  2026-10-07 at 0x7F00/0x8F00/0x9F00, inputs open: -0.0335 mV/count average
+  (-0.03325..-0.03379), ~10% steeper than nominal -0.0305. The UI shows the
+  offset as the **input voltage at the window centre**, with **0 V of
+  offset = 0x8F00** (`C.DC_OFFSET_ZERO`): the power-on default, "about 0mV"
+  per the V1742 manual sec 5.7. The nominal model puts a 0 V input at code
+  2048 there; measured, inputs open, channels read 2046-2138 (95% range for
+  a channel 2033-2143, mean ~2088). TR0 keeps 0x8000 as its zero.
 - **DC offset is the only real per-channel setting.** Probed on the board:
   `ChannelTriggerThreshold`, `ChannelSelfTrigger`, `ChannelGroupMask` and
   `ChannelPairTriggerLogic` all answer `-17`; `ChannelPulsePolarity` is a silent
@@ -126,8 +142,32 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   Verified on serial 53364. The 742 triggers on TR0/TR1 or the external input,
   not a per-group digital self-trigger, so treat those two as absent.
 
-- **TR0 threshold truth (UM4270 rev 12 sec 9.8.3, plus a day of beam
-  measurements, 2026-08-28).** The TR0 input is attenuated x2 into a fast
+- **TR0 (UM4270 rev 13, `docs/UM4270_DT5742_UserManual_rev13.pdf`, sec
+  9.1.2 and 9.8.3 / Tab. 9.1; same examples in the V1742 manual sec 5.15).**
+  - Input: 2 Vpp, attenuated **x2** into the 1 Vpp DRS4 on mezzanine PCB
+    rev >= 1. bit[9] of 0x1088/0x1188 reads 1 on serial 53364 (2026-10-06).
+  - Threshold at offset 0x8000: 0x6666 = 0 V at the input, 13.2 steps per
+    mV AT THE INPUT (NIM 0..-800 mV -> 0x51C6 = -400 mV). The threshold
+    field is input volts; the x2 only scales the digitized trace.
+  - TR DC offset: raising it LOWERS the code a fixed input lands on (as for
+    the channels), **1 V at the input per 10240 steps** - Tab. 9.1's TTL
+    row (0xA800 centres a 0..2 V signal). A delta sweep on serial 53364
+    (2026-10-06, +/-4096 steps) measured -0.198 window counts/step, both
+    groups, agreeing to 1%. The manual's "factor of 16" sentence only says
+    32768 lands near code 2048; read as a slope it is 3.2x wrong. The UI
+    shows the TR offset as the volts the DAC shifts TR0, **0 = midscale
+    0x8000** - deliberately NOT through the 0 V calibration, which would put
+    "0" at ~33576 and strip the threshold of its reference.
+  - TR0's trace uses its own zero: a 0 V input reads **code 2200** at
+    0x8000 (`volts.TR_ZERO_CODE`; terminated, the copies read 2204/2194),
+    not the 2048 the channels assume - 150 codes is ~75 mV at the input.
+  - The off-midscale rows (ECL 0x55A0, TTL 0xA800 vs "positive 0-2 V"
+    0x91A7) do not fit one threshold line - the manual's "no simple
+    formula". The TR0 trigger line is drawn ONLY at offset 0x8000.
+  - The family datasheet (`docs/DS3159_742_Digitizer_Family_r2.pdf`) agrees
+    on the channel offset range (+/-1 V); UM5698's "DAC range ~5% larger
+    than ADC range" is family-generic text.
+  - Beam history, 2026-08-28: the TR0 input is attenuated x2 into a fast
   comparator (0-2.5 V dynamic). CAEN's arithmetic - threshold DAC moves
   13.2 counts per connector-mV, signal 0-Volt at DAC 0x6666 = 26214 - is
   valid ONLY with the TR DC offset at midscale 0x8000; the manual states
@@ -148,6 +188,19 @@ dump format. Cross-platform without a complex multi-target build (Windows main).
   offset-vs-threshold tension is a passive splitter: MCP -> TR0 (trigger
   only, midscale offset, manual arithmetic) + a spare signal channel
   (3, 8-11 are empty) for full-fidelity pulse digitization.
+
+- **Never derive a reference level from the signal being measured.** The
+  TR0 trigger line once rode the live median of the trace (jittering with
+  the input), and a later attempt baked a median of whatever was plugged in
+  into a constant as "0 V". Both are wrong: volts come from the ADC code
+  and the registers through CAEN's documented relationship, corrected only
+  by the per-board 0 V calibration measured on known 0 V inputs.
+  Plots are in **input volts** (`MiniWave` vScale/vOffset): full scale is
+  exactly ADC codes 0..4095 at the current offset, so the axis moves with
+  the offset register and a trace holds still. The ROOT writer is still
+  window-referenced (`1000*(code/4095 - 0.5)` mV) - left as is on purpose.
+  Volts fields print the shortest text that maps back to the exact DAC
+  word (`fmtDacVolts`), never a fixed `toFixed(3)`.
 
 - **Link selection is DAQ_LINK** (environment, read at every open): a comma
   list tried in order - `usb` (default when unset), `a4818:<pid>` (the A4818
@@ -537,6 +590,17 @@ Never let the UI show a setting the hardware did not confirm.
   attached. The UI also disables every hardware control while disconnected.
 - Human-facing controls use human units (DC offset is volts in the UI); the DAC
   word only exists on the wire.
+
+## UI conventions
+
+- **Lockable settings (the house style).** A lock icon button sits to the
+  LEFT of the setting's label and toggles it. Locked: the control is greyed
+  out but still shows the board's value - protection, not concealment.
+  Unlocked: an ordinary editable setting. CSS: `.setting-row.lockable`
+  (+ `.locked`), `.lock-toggle`. The TR DC offset (TR0 card) is the first
+  setting built this way and is **locked by default**. The older settings
+  still use the global "lock everything" mode with per-setting unlock chips
+  on the right; move them to this pattern only when asked.
 
 ## Watching vs recording
 

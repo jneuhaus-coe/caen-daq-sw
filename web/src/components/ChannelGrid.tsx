@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { usePersistentState } from "../persist";
-import type { BoardConfig, Catalog, Telemetry } from "../types";
+import type { BoardConfig, Catalog, Telemetry, ZeroCal } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
-import { countsPerLsb, dacToVolts, voltsToDac, zeroCounts } from "../volts";
+import { defDacToVolts, defVoltsToDac, fmtDacVolts, offsetDef, zeroCodeAt,
+         zeroLine } from "../volts";
 
 interface Props {
   catalog: Catalog;
@@ -19,6 +20,8 @@ interface Props {
   /** The settings lock, keyed "ch:<n>" per channel offset. */
   locked?: (key: string) => boolean;
   onUnlock?: (key: string) => void;
+  /** Per-board 0 V calibration; display only. Absent = UM4270 nominal. */
+  zc?: ZeroCal | null;
 }
 
 // DEAD keys off a SINGLE event's peak-to-peak, not the average: averaging
@@ -31,7 +34,7 @@ const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                               yRanges, onYRange, waveMode, clearEpoch,
-                              locked, onUnlock }: Props) {
+                              locked, onUnlock, zc }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
@@ -80,15 +83,27 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
 
                   const cc = config.channels[ch];
                   const name = cc?.name ?? "";
-                  const dac = cc?.dc_offset ?? g.dc_offset_mid;
+                  const dac = cc?.dc_offset ?? g.dc_offset_zero;
+                  // The PLOT uses the channel's zero line, calibrated when
+                  // the board's 0 V calibration is applied. The offset
+                  // FIELD and slider stay on the nominal scale - 0 V of
+                  // offset is always 0x8F00 - or the calibration would show
+                  // a fresh board's 0x8F00 as a few mV.
+                  const line = zeroLine(ch, g, zc);
+                  const od = offsetDef(zeroLine(ch, g), g);
+                  const toV = (d: number) => defDacToVolts(od, d, g);
+                  const toDac = (v: number) => defVoltsToDac(od, v, g);
                   const pv = preview[ch];
-                  const shownV = pv ?? dacToVolts(dac, g);
-                  const shownDac = pv != null ? voltsToDac(pv, g) : dac;
-                  const vLimit = g.dc_offset_range_v / 2;
+                  const shownV = pv ?? toV(dac);
+                  const shownDac = pv != null ? toDac(pv) : dac;
+                  // Reachable range, snapped onto the 10 mV grid so the
+                  // slider and arrow keys step from round numbers.
+                  const vLo = Math.ceil(Math.min(toV(0), toV(0xFFFF)) / 0.01) * 0.01;
+                  const vHi = Math.floor(Math.max(toV(0), toV(0xFFFF)) / 0.01) * 0.01;
                   const commitSlider = () => {
                     if (pv == null) return;
                     setPreview((p) => ({ ...p, [ch]: undefined }));
-                    onDcOffset(ch, voltsToDac(pv, g));
+                    onDcOffset(ch, toDac(pv));
                   };
 
                   return (
@@ -121,8 +136,9 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         mode={waveMode}
                         lastWave={on ? e?.last : undefined}
                         lastId={on ? e?.last_index : undefined}
-                        baselineGuide={on ? zeroCounts(shownDac, g) : undefined}
-                        offsetDac={shownDac} offsetSlope={countsPerLsb(g)}
+                        baselineGuide={on ? zeroCodeAt(line, shownDac, g) : undefined}
+                        offsetDac={shownDac} offsetSlope={line.s} waveDac={e?.dac}
+                        zeroCode={zeroCodeAt(line, shownDac, g)}
                         clearEpoch={clearEpoch} />
 
                       {(() => {
@@ -141,7 +157,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                             live in the band above, written on release); fine
                             trim by typing (1 mV). */}
                         <input className="dc-slider" type="range"
-                          min={-vLimit} max={vLimit} step={0.01}
+                          min={vLo} max={vHi} step={0.01}
                           value={shownV}
                           onChange={(ev) => setPreview((p) => ({ ...p, [ch]: Number(ev.target.value) }))}
                           onPointerUp={commitSlider}
@@ -150,24 +166,15 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         <span className="field">
                           <BlurInput
                             type="number" step={0.005}
-                            min={-vLimit} max={vLimit}
-                            value={shownV.toFixed(3)}
+                            min={vLo} max={vHi}
+                            value={pv != null ? pv.toFixed(3) : fmtDacVolts(dac, toV, toDac)}
                             selectOnFocus
-                            onCommit={(v) => {
-                              const clamped = Math.min(vLimit, Math.max(-vLimit, Number(v || 0)));
-                              onDcOffset(ch, voltsToDac(clamped, g));
-                            }}
+                            onCommit={(v) => onDcOffset(ch, toDac(Number(v || 0)))}
                           />
                           <span className="unit">V</span>
                         </span>
                       </div>
 
-                      <div className="tile-foot">
-                        {/* Always rendered, so the tile never resizes when
-                            events start arriving - an empty span has no
-                            height, and the grid used to jump. */}
-                        <span className="n">n={e?.count ?? 0}</span>
-                      </div>
                     </div>
                   );
                 })}

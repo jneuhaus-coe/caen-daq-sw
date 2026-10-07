@@ -176,7 +176,9 @@ BANK_SETTINGS = [
              "Disabling a bank you are not using cuts readout time and file "
              "size."},
     # The TR threshold speaks the MANUAL's arithmetic (UM4270 rev 12, sec
-    # 9.8.3): the comparator DAC moves 13.2 counts per connector-mV, with
+    # 9.8.3; the same worked examples are in the V1742 manual rev 6 sec
+    # 5.15, docs/V1742_User_Manual_rev6.pdf): the comparator DAC moves 13.2
+    # counts per mV at the TR0 input, with
     # DAC 0x6666 = 26214 at the signal's 0-Volt WHEN the TR DC offset sits
     # at midscale (0x8000) - CAEN's worked NIM example, 26214 - 400*13.2 =
     # 20934, is the value that worked here on day one. The manual states no
@@ -186,12 +188,13 @@ BANK_SETTINGS = [
     {"key": "fast_trigger_threshold", "label": "TR threshold", "type": "volts",
      "lsb_v": 7.5758e-5, "zero_dac": 26214,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerThreshold",
-     "help": "TR0 FAST-TRIGGER level. TR0 halves its input (divide-by-2), so a "
-             "+30 mV pulse is ~15 mV here - set the threshold just above the "
-             "baseline noise, on the correct edge (rising for positive pulses). "
+     "help": "TR0 FAST-TRIGGER level, in volts at the TR0 input: a +30 mV "
+             "pulse is +30 mV here (CAEN's NIM example triggers a 0 to -800 mV "
+             "signal at -400 mV). Set it just above the baseline noise, on the correct edge (rising for positive pulses). "
              "ONLY meaningful with the TR DC offset at midscale.\n\n"
-             "Trigger level in volts relative to the TR signal's 0-Volt "
-             "(UM4270 9.8.3) - a -140 mV falling trigger is -0.140 here. "
+             "Trigger level in volts at the TR0 input, relative to its "
+             "ground (CAEN V1742 manual rev 6 sec 5.15) - a -140 mV falling "
+             "trigger is -0.140 here. "
              "Valid with the TR DC offset at midscale (0x8000 = 0 V), where "
              "CAEN's calibration applies; the manual provides no formula "
              "for other offsets.\n\n"
@@ -200,26 +203,29 @@ BANK_SETTINGS = [
              "On the DT5742B both banks configure the same TR0 input - keep "
              "them equal."},
     {"key": "fast_trigger_dc_offset", "label": "TR DC offset", "type": "volts",
-     "lsb_v": -4.66e-5, "zero_dac": 32768,
+     # Window centre in TR0 INPUT volts: UM4270 rev 13 Tab. 9.1's TTL row
+     # (0xA800 = 32768 + 10240 centres a 0..2 V signal) gives 1 V per 10240
+     # steps; a delta sweep on serial 53364 agreed to 1% (-0.198 window
+     # counts/step through the x2 attenuator). The manual's "factor of 16"
+     # sentence only places 32768 near ADC code 2048 - it is not the slope.
+     "lsb_v": 1 / 10240, "zero_dac": 32768,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerDCOffset",
-     "help": "Positions the TR0 baseline (its 0-Volt). UM4270 9.8.3: DAC "
-             "0x8000 = 32768 puts the baseline at MIDSCALE (0 V), which is "
-             "also the only offset where the threshold's volts are "
-             "calibrated - so keep it here unless you must fit an asymmetric "
-             "pulse.\n\n"
-             "0 V = baseline centred; a small negative value drops the "
-             "baseline to make room for a positive pulse above it. Volts use "
-             "the measured slope (-0.0466 mV per DAC step) anchored at the "
-             "manual's midscale zero."},
+     "help": "How far the DAC shifts TR0, in volts at the input. 0 V is "
+             "midscale (DAC 0x8000). TR0 takes 2 Vpp (attenuated x2 into "
+             "the 1 Vpp DRS4), so +1 V moves the window from about "
+             "-1..+1 V to 0..+2 V (CAEN's TTL/positive example, 0xA800).\n\n"
+             "Keep it at 0 V when triggering on TR0: midscale is the only "
+             "offset where CAEN gives the threshold in volts "
+             "(UM4270 sec 9.8.3)."},
 ]
 
 CHANNEL_SETTINGS = [
     {"key": "dc_offset", "label": "DC offset", "type": "volts",
      "caen": "CAEN_DGTZ_SetChannelDCOffset",
-     "help": "Moves this channel's baseline within the 1 Vpp window so the "
-             "pulse fits without clipping.\n\n"
-             "The DAC covers +/-1 V - twice the window - so only about half "
-             "its travel keeps the channel in view."},
+     "help": "The input voltage at the CENTRE of this channel's 1 Vpp "
+             "window (UM4270 sec 9.1: the DAC shifts the window +/-1 V). "
+             "0 V = window -0.5..+0.5 V; +0.4 V = -0.1..+0.9 V, room for "
+             "positive pulses; -0.4 V = -0.9..+0.1 V for negative ones."},
 ]
 
 
@@ -239,5 +245,6 @@ def catalog() -> dict:
             "dc_offset_max": C.DC_OFFSET_MAX,
             "dc_offset_range_v": C.DC_OFFSET_RANGE_V,
             "dc_offset_mid": C.DC_OFFSET_MID,
+            "dc_offset_zero": C.DC_OFFSET_ZERO,
         },
     }

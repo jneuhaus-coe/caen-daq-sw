@@ -34,6 +34,8 @@ export interface Catalog {
     num_channels: number; group_size: number; num_groups: number; record_length: number;
     adc_max: number; input_range_vpp: number;
     dc_offset_max: number; dc_offset_mid: number; dc_offset_range_v: number;
+    /** Signal-channel DAC word for 0 V of offset (0x8F00, V1742 sec 5.7). */
+    dc_offset_zero: number;
   };
 }
 
@@ -69,6 +71,9 @@ export interface ChannelTelemetry {
   min?: number;
   max?: number;
   baseline?: number;
+  /** The DC offset (DAC word) these traces were digitized under - the one
+   *  ARMED, which can lag the config by a re-arm. */
+  dac?: number | null;
   /** Latest single event, decimated - one per tick, for the overlay mode. */
   last?: number[];
   /** Its event counter, so the client adds each event exactly once. */
@@ -121,6 +126,20 @@ export interface Status {
   board: { model: string; family: string; serial: number; roc_firmware: string; amc_firmware: string; sw_release: string };
   events_seen: number;
   errors: string[];
+  /** The open unit's per-board 0 V calibration (display only). */
+  zerocal?: { applied: boolean; measured_at: string | null };
+}
+
+/** Per-board 0 V calibration (GET /api/zerocal), keyed by channel: 0-15
+ *  signal, 16/17 the TR0 copies. zero_code = ADC code a 0 V input reads at
+ *  DC offset ref_dac (0x8F00 channels, 0x8000 TR0); the display moves it
+ *  with the nominal slope. */
+export interface ZeroCal {
+  applied: boolean;
+  serial?: number;
+  measured_at?: string;
+  method?: string;
+  channels?: Record<string, { zero_code: number; ref_dac: number }>;
 }
 
 /** How often the header re-checks the board. */

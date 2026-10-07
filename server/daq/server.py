@@ -24,6 +24,7 @@ from . import configfile
 from . import runs
 from . import sessions
 from . import runtime
+from . import zerocal
 from . import constants as C
 
 log = logsetup.get("daq.api")
@@ -350,6 +351,14 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.get("/api/calibrate")
     def calibrate_status():
         return engine.calibrator.status()
+
+    @app.get("/api/zerocal")
+    def zerocal_get():
+        """The open unit's per-board 0 V calibration (display only), or
+        applied: false when none is stored for its serial."""
+        st = engine.status()
+        d = zerocal.load(st["board"]["serial"]) if st["opened"] else None
+        return {"applied": True, **d} if d else {"applied": False}
 
     @app.post("/api/trigger")
     def trigger(payload: dict | None = None):

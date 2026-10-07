@@ -124,7 +124,7 @@ def test_config_values_are_range_checked():
     assert 0 <= cfg.post_trigger <= 100
     assert 1 <= cfg.max_events_blt <= 1023
     assert cfg.channels[0].dc_offset == 0                  # clamped into range
-    assert cfg.channels[1].dc_offset == C.DC_OFFSET_MID    # not a number at all
+    assert cfg.channels[1].dc_offset == C.DC_OFFSET_ZERO   # not a number: 0 V of offset
     assert cfg.correction_level == "auto"
     C.sample_period_ns(cfg.drs4_frequency)    # must not raise
 
@@ -621,55 +621,60 @@ def _wait_calibration(eng, timeout=60):
     return st
 
 
-def test_auto_baseline_centers_every_channel():
-    """Phase 1 servo: a channel parked far off centre comes back to the
-    window middle, and TR0 is steered through its own (different) DAC."""
+def test_pulse_shift_leaves_fitting_channels_at_zero_offset():
+    """Pulse Shift never centres: a channel whose pulse fits at 0 V of offset
+    (0x8F00) ends there - even one that started far away - untouched."""
     from daq.backend.base import make_backend
     eng = AcquisitionEngine(lambda: make_backend("fake"))
     try:
         assert eng.probe() is True
         cfg = eng.get_config()
-        cfg.channels[0].dc_offset = 42598           # ~ -0.3 V: far off centre
+        cfg.channels[0].dc_offset = 42598           # somewhere else entirely
         eng.set_config(cfg)
         eng.calibrator.baseline_events = 6
+        eng.calibrator.fit_events = 6
         eng.calibrator.stall_s = 5.0
         eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
-        assert eng.calibrator.start("baseline")["ok"]
-        st = _wait_calibration(eng)
+        assert eng.calibrator.start("shift")["ok"]
+        st = _wait_calibration(eng, timeout=90)
         assert st["error"] is None
         assert st["report"] and all(r["status"] == "ok" for r in st["report"])
-        assert any(r["channel"] == "TR0" for r in st["report"])
+        assert not any(r["channel"].startswith("TR0") for r in st["report"])
         got = eng.get_config()
-        assert abs(got.channels[0].dc_offset - 32768) <= 200
+        assert all(c.dc_offset == C.DC_OFFSET_ZERO for c in got.channels)
     finally:
         eng.close()
 
 
-def test_fit_calibration_makes_room_for_the_pulse():
-    """Phase 2, polarity-agnostic: the fake's pulses are negative-going, so
-    fitting them must RAISE the baselines above centre - inferred from the
-    data, with no polarity setting anywhere."""
+def test_pulse_shift_slides_a_clipped_pulse_into_view():
+    """A negative pulse bigger than the half-window below 0 V of offset
+    clips at code 0; Pulse Shift raises the baseline (a SMALLER DAC word)
+    just enough to see all of it - inferred from the data, no polarity
+    setting anywhere."""
     from daq.backend.base import make_backend
+    from daq.backend import fake
+    big = fake._PULSE_COUNTS
+    fake._PULSE_COUNTS = 2600.0                 # 2048 - 2600 < 0: clipped
     eng = AcquisitionEngine(lambda: make_backend("fake"))
     try:
         assert eng.probe() is True
         eng.calibrator.baseline_events = 6
         eng.calibrator.fit_events = 6
         eng.calibrator.stall_s = 5.0
-        eng.calibrator.settle_s = 0.05      # the fake has no SPI to drain
-        assert eng.calibrator.start("fit")["ok"]
+        eng.calibrator.settle_s = 0.05
+        assert eng.calibrator.start("shift")["ok"]
         st = _wait_calibration(eng, timeout=90)
         assert st["error"] is None
-        assert st["report"] and all(r["status"] == "ok" for r in st["report"])
-        got = eng.get_config()
-        # ~800-count pulse below an initially centred baseline: the servo must
-        # shift the baseline up (a smaller DAC word raises it).
-        assert got.channels[0].dc_offset < 31500
         ch0 = next(r for r in st["report"] if r["channel"] == "CH 0")
-        assert ch0["below_mv"] > 150            # the pulse extent was seen
+        assert ch0["status"] == "shifted", ch0
+        got = eng.get_config()
+        assert got.channels[0].dc_offset < C.DC_OFFSET_ZERO - 1000
+        # Only as far as needed: the pulse bottom sits near the margin, not
+        # with the baseline pushed to the top of the window.
+        assert ch0["below_mv"] > 600
     finally:
+        fake._PULSE_COUNTS = big
         eng.close()
-
 
 def test_dac_changes_rearm_while_acquiring_and_refuse_while_recording():
     """A DC-offset change only takes analog effect at an arm (measured on the
@@ -715,7 +720,7 @@ def test_calibration_cancel_stops_a_patient_wait():
         assert eng.probe() is True
         eng.calibrator.settle_s = 0.05
         # The operator's event count rides in via start(); hours at 5 Hz.
-        assert eng.calibrator.start("fit", events=100000)["ok"]
+        assert eng.calibrator.start("shift", events=100000)["ok"]
         time.sleep(0.8)                          # let it settle into the wait
         assert eng.calibrator.cancel()["ok"]
         deadline = time.time() + 5
@@ -1091,8 +1096,8 @@ if __name__ == "__main__":
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
-               test_auto_baseline_centers_every_channel,
-               test_fit_calibration_makes_room_for_the_pulse,
+               test_pulse_shift_leaves_fitting_channels_at_zero_offset,
+               test_pulse_shift_slides_a_clipped_pulse_into_view,
                test_dac_changes_rearm_while_acquiring_and_refuse_while_recording,
                test_calibration_cancel_stops_a_patient_wait,
                test_recording_stops_itself_at_max_events,

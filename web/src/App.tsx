@@ -4,10 +4,11 @@ import type { Condition, DisplayPrefs, WaveMode } from "./api";
 import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
-import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
+import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
+import { SettingControl } from "./components/SettingControl";
 import { Collapsible } from "./components/Collapsible";
 import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
@@ -25,8 +26,8 @@ import { BlurInput } from "./components/BlurInput";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { usePersistentState } from "./persist";
 import { onFlush } from "./flush";
-import { TR_OFF_MID_DAC, TR_OFF_SLOPE_COUNTS, dacToVolts, trAbsThresholdV,
-         trThresholdDacForAbs, voltsToDac, windowVolts } from "./volts";
+import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
+         zeroCodeAt, zeroLine } from "./volts";
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -40,6 +41,18 @@ export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [config, setConfig] = useState<BoardConfig | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  // The open unit's per-board 0 V calibration (display only). Always loaded
+  // when present: fetched whenever the status says it changed - a new
+  // measurement, another unit, or the unit coming back.
+  const [zc, setZc] = useState<ZeroCal | null>(null);
+  const zcKey = status?.opened
+    ? `${status.board.serial}|${status.zerocal?.measured_at ?? ""}` : "";
+  useEffect(() => {
+    if (!zcKey) { setZc(null); return; }
+    let cancelled = false;
+    api.zerocal().then((z) => { if (!cancelled) setZc(z); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [zcKey]);
   const [tele, setTele] = useState<Telemetry | null>(null);
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
@@ -56,11 +69,10 @@ export function App() {
   // Per-channel waveform display ranges (volts). Persisted server-side so a
   // daq restart or a different browser comes back to the same view.
   const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
-  // Global channel controls: set the display window and the DC offset for all
+  // Global channel controls: set the display window for all
   // 16 channels at once - handy when every channel sees a similar signal.
   const [allYMin, setAllYMin] = usePersistentState("allYMin", "");
   const [allYMax, setAllYMax] = usePersistentState("allYMax", "");
-  const [allOffset, setAllOffset] = usePersistentState("allOffset", "", "session");
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
   // into a density picture. "scope": the newest single trace alone, fed by
   // free-running software triggers. Persisted with the display state.
@@ -74,6 +86,10 @@ export function App() {
   const [scopeTrigEdge, setScopeTrigEdge] =
     usePersistentState<"rising" | "falling">("scopeTrigEdge", "falling");
   const [testN, setTestN] = usePersistentState("testN", "100");
+  // TR DC offset: a lockable setting in the house style (see CLAUDE.md, UI
+  // conventions) - locked by default, the lock icon toggles it.
+  const [trOffLocked, setTrOffLocked] = useState(true);
+  const [trigHelp, setTrigHelp] = useState(false);
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = usePersistentState("recMax", "");
   // The run-notes dialog: Record opens it, and the note it collects lands in
@@ -99,14 +115,6 @@ export function App() {
   // timestamp off) records INTO it - runs of an unchanged setup stay in one
   // campaign folder instead of scattering one directory per run.
   const [runDirs, setRunDirs] = useState<string[]>([]);
-  // The TR0 baseline marker's memory: the last MEASURED baseline and the
-  // offset DAC it was measured under. The measured and bench-predicted
-  // baselines disagree by ~200 mV on this unit, so falling back to
-  // prediction whenever the 1 s averaging window drained made the marker
-  // jump on every trigger pause. Hold the measurement instead, shifted by
-  // the predicted DELTA when the offset moves - deltas are robust even
-  // where the absolute calibration is not.
-  const trBaseMem = useRef<{ counts: number; dac: number } | null>(null);
   // Bumped to wipe every channel's persistence pile: on recording start and
   // on calibration start, so each pile tells one coherent story - a
   // calibration's profile stays on screen for review until the next thing
@@ -286,13 +294,65 @@ export function App() {
     changeYRange(0, null, true);   // every channel back to the full window
     setAllYMin(""); setAllYMax("");
   };
-  const applyGlobalOffset = () => {
-    if (!config || !catalog) return;
-    const v = Number(allOffset);
-    if (!Number.isFinite(v)) return;
-    const dac = voltsToDac(v, catalog.geometry);
-    pushConfig({ ...config,
-      channels: config.channels.map((c) => ({ ...c, dc_offset: dac })) });
+  // Fit window to pulses - DISPLAY ONLY. Each channel's baseline and pulse
+  // extremes, in the plots' input volts, from the single-event traces that
+  // telemetry already ships (the last 300 events per channel; wiped with the
+  // piles). The fit gives every channel the SAME height - the largest pulse
+  // plus margin - and slides each window off centre only as far as its own
+  // pulses need. No digitizer setting or recorded byte is touched.
+  const extents = useRef<Record<number, {
+    idx: number | null; ev: { b: number; lo: number; hi: number }[] }>>({});
+  useEffect(() => { extents.current = {}; }, [wipeEpoch]);
+  useEffect(() => {
+    if (!tele || !catalog || !config) return;
+    const g = catalog.geometry;
+    for (let ch = 0; ch < g.num_channels; ch++) {
+      const e = tele.channels[String(ch)];
+      if (!e?.last || e.last_index == null) continue;
+      const rec = (extents.current[ch] ??= { idx: null, ev: [] });
+      if (rec.idx === e.last_index) continue;
+      rec.idx = e.last_index;
+      const line = zeroLine(ch, g, zc);
+      const z = zeroCodeAt(line, e.dac ?? config.channels[ch].dc_offset, g);
+      const toV = (c: number) => line.vScale * (c - z) * g.input_range_vpp / (g.adc_max + 1);
+      const sorted = [...e.last].sort((a, b) => a - b);
+      rec.ev.push({ b: toV(sorted[sorted.length >> 1]),
+                    lo: toV(sorted[0]), hi: toV(sorted[sorted.length - 1]) });
+      if (rec.ev.length > 300) rec.ev.shift();
+    }
+  }, [tele]);
+  const fitWindows = () => {
+    if (!catalog) return;
+    const per: { ch: number; b: number; below: number; above: number }[] = [];
+    for (let ch = 0; ch < catalog.geometry.num_channels; ch++) {
+      const ev = extents.current[ch]?.ev ?? [];
+      if (ev.length < 3) continue;
+      const bs = ev.map((x) => x.b).sort((a, c) => a - c);
+      const b = bs[bs.length >> 1];
+      per.push({ ch, b,
+                 below: Math.max(0, b - Math.min(...ev.map((x) => x.lo))),
+                 above: Math.max(0, Math.max(...ev.map((x) => x.hi)) - b) });
+    }
+    if (!per.length) {
+      push("warn", "No events to fit yet", ["Wait for a few triggers, then try again."]);
+      return;
+    }
+    // Same height everywhere: the tallest pulse fills 80% of it.
+    const H = Math.max(0.005, Math.max(...per.map((p) => p.below + p.above)) / 0.8);
+    const m = 0.1 * H;
+    const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+    const Hr = r4(H);                 // one height, rounded once, for all
+    const next = { ...yRanges };
+    for (const p of per) {
+      let lo = p.b - H / 2;                                   // centred...
+      if (p.b - p.below - m < lo) lo = p.b - p.below - m;     // ...unless the pulse
+      if (lo + H < p.b + p.above + m) lo = p.b + p.above + m - H;  // needs the room
+      const lor = r4(lo);
+      next[p.ch] = [lor, r4(lor + Hr)];
+    }
+    applyYRanges(next);
+    push("ok", "Plot windows fitted to pulses",
+         [`${(H * 1000).toFixed(1)} mV tall on ${per.length} channels - display only; "reset" restores full scale`]);
   };
 
   const catalogRef = useRef<Catalog | null>(null);
@@ -326,6 +386,19 @@ export function App() {
     const id = window.setInterval(tick, STATUS_POLL_MS);
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
+
+  // Adopt a status answer from an action, and the config with it when the
+  // revision moved. Start/Stop re-adopt the board's config server-side; a
+  // write sent before the next status poll then carried the old revision
+  // and was refused as stale - the field silently snapped back.
+  const adoptStatus = async (st: Status) => {
+    setStatus(st);
+    if (st.config_rev != null && st.config_rev !== cfgRev.current) {
+      cfgRev.current = st.config_rev;
+      const cfg = await api.getConfig();
+      setConfig(cfg); confirmed.current = cfg;
+    }
+  };
 
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);                       // optimistic, for input responsiveness
@@ -400,7 +473,7 @@ export function App() {
   const start = async () => {
     try {
       const st = await api.start();
-      setStatus(st);
+      await adoptStatus(st);
       // The server refuses rather than raising, so a 200 does not mean it
       // started. The reason is already in the errors panel; the toast points
       // at it instead of leaving the button looking inert.
@@ -415,7 +488,7 @@ export function App() {
   };
   const stop = async () => {
     try {
-      setStatus(await api.stop());
+      await adoptStatus(await api.stop());
     } catch (e) {
       failed("Could not stop acquisition")(e);
     }
@@ -426,7 +499,7 @@ export function App() {
     try {
       const n = Math.max(1, Math.round(Number(testN) || 100));
       const r = await api.trigger(n, 10);
-      setStatus(r.status);
+      await adoptStatus(r.status);
       if (!r.ok) push("err", "Could not fire test triggers", [r.error ?? ""]);
       else push("ok", `Firing ${r.queued} test triggers at 10 Hz`);
     } catch (e) {
@@ -531,7 +604,7 @@ export function App() {
           <button role="tab" aria-selected={view === "experiment"}
             className={view === "experiment" ? "on" : ""}
             title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
-            onClick={() => setView("experiment")}>Experiment</button>
+            onClick={() => setView("experiment")}>Experiment Settings</button>
         </nav>
         <button className={"lock-all" + (lockOn ? " on" : "")}
           title={lockOn
@@ -799,21 +872,12 @@ export function App() {
               <button onClick={resetGlobalRange}
                 title="Reset every channel's plot to the full window">reset</button>
             </span>
-            <span className="cg-group"
-              title="Write this DC offset (baseline position, volts) to all 16 channels">
-              DC offset
-              <input type="number" step={0.005} className="cg-num"
-                placeholder={dacToVolts(config.channels[0].dc_offset, catalog.geometry).toFixed(3)}
-                value={allOffset} disabled={!connected || lockOn}
-                onChange={(e) => setAllOffset(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalOffset(); }} />
-              V
-              <button onClick={applyGlobalOffset} disabled={!connected || lockOn}
-                title={lockOn ? "Settings are locked - unlock to write offsets"
-                              : "Set this DC offset on all 16 channels"}>set all</button>
-            </span>
+            <button className="cg-fit" onClick={fitWindows}
+              title="Display only: sets every channel plot's vertical range to the same height, each baseline shifted just enough to fit the largest recent pulses with margin. Changes no digitizer setting and no recorded data. 'reset' restores full scale.">
+              Fit window to pulses
+            </button>
           </div>
-          <ChannelGrid catalog={catalog} config={config} tele={tele}
+          <ChannelGrid catalog={catalog} config={config} tele={tele} zc={zc}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
@@ -824,111 +888,6 @@ export function App() {
 
         {view === "live" ? (
         <aside>
-          {(() => {
-            // The digitized TR0 trace, when TR digitizing is on: the same
-            // signal both groups see, shown once (group 0's copy, else 1's).
-            const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
-            const tr = trCh != null ? tele!.channels[String(trCh)] : null;
-            if (!config.fast_trigger_digitizing || !tr) return null;
-            const trGroup = config.groups[trCh! - 16];
-            // Baseline: the held measurement (see trBaseMem), predictively
-            // shifted if the offset moved since; bench prediction only
-            // before anything was ever measured.
-            if (tr.baseline != null) {
-              trBaseMem.current = { counts: tr.baseline,
-                                    dac: trGroup.fast_trigger_dc_offset };
-            }
-            const mem = trBaseMem.current;
-            const baseCounts = mem
-              ? mem.counts + TR_OFF_SLOPE_COUNTS
-                  * (trGroup.fast_trigger_dc_offset - mem.dac)
-              : 2048 + (trGroup.fast_trigger_dc_offset - 32768) * TR_OFF_SLOPE_COUNTS;
-            // Trigger: baseline marker plus the manual-arithmetic threshold
-            // (volts vs the TR signal's zero, UM4270 9.8.3) - exact with the
-            // TR offset at midscale, approximate elsewhere.
-            const baseV = windowVolts(baseCounts, catalog.geometry);
-            const markers = [
-              { v: baseV, label: "baseline", color: "#4ac776" },
-              { v: baseV + trAbsThresholdV(trGroup.fast_trigger_threshold),
-                label: "trigger", color: "#f85149" },
-            ];
-            return (
-              <div className="card">
-                <h2>TR0 <span className="sub">fast trigger</span></h2>
-                <MiniWave wave={tr.wave}
-                  geom={catalog.geometry}
-                  windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
-                  postTriggerPct={config.post_trigger}
-                  color="#e3b341" height={110}
-                  markers={markers}
-                  yRange={yRanges[trCh!]}
-                  onYRange={(range, all) => changeYRange(trCh!, range, all)}
-                  mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
-                  clearEpoch={wipeEpoch} />
-              </div>
-            );
-          })()}
-          <Collapsible title="TR0 Trigger" defaultOpen>
-            {(() => {
-              const offDefs = catalog.bank.filter((d) =>
-                d.key === "fast_trigger_dc_offset");
-              const [g0, g1] = config.groups;
-              const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
-                .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
-              const absV = trAbsThresholdV(g0.fast_trigger_threshold);
-              const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
-              return (
-                <>
-                  <div className="setting-row"
-                    title={"Trigger level in the manual's arithmetic (UM4270 9.8.3): volts relative to the TR signal's 0-Volt, valid with the TR DC offset at midscale (0x8000). A -140 mV falling trigger is simply -0.140 here. CAEN states no simple formula exists at other offsets - keep the offset at midscale.\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold <span className="muted">vs TR zero</span></label>
-                    <span className="field">
-                      <BlurInput type="number" step={0.005} min={-1.986} max={2.979}
-                        selectOnFocus value={absV.toFixed(3)}
-                        disabled={isLocked("fast_trigger_threshold")}
-                        onCommit={(v) => {
-                          updateTrBoth("fast_trigger_threshold",
-                            trThresholdDacForAbs(Number(v) || 0));
-                        }} />
-                      <span className="unit">V</span>
-                    </span>
-                    {isLocked("fast_trigger_threshold") ? (
-                      <button className="lock-chip"
-                        title="Locked. Click to unlock just the TR threshold."
-                        onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
-                    ) : null}
-                    {!offMid ? (
-                      <span className="muted tr-rel-note" title="UM4270 9.8.3: the threshold volts are only calibrated with the TR DC offset at midscale (0x8000); CAEN provides no formula for other offsets.">
-                        ⚠ offset not at midscale
-                      </span>
-                    ) : null}
-                  </div>
-                  <SettingsList defs={offDefs} geom={catalog.geometry}
-                    get={(k) => (g0 as any)[k]} onChange={updateTrBoth}
-                    locked={isLocked} onUnlock={unlockOne} />
-                  {diverged ? (
-                    <div className="tr-diverged">
-                      The two banks' TR0 registers differ (bank 1 has its own
-                      values). Editing here writes both;{" "}
-                      <button onClick={() => {
-                        const groups = config.groups.map((gc) => ({
-                          ...gc,
-                          fast_trigger_threshold: g0.fast_trigger_threshold,
-                          fast_trigger_dc_offset: g0.fast_trigger_dc_offset,
-                        }));
-                        pushConfig({ ...config, groups });
-                      }}>sync bank 1 to bank 0</button>
-                    </div>
-                  ) : null}
-                  <p className="muted">
-                    One input, split to both banks; this panel writes both
-                    together. Threshold volts are calibrated only with the
-                    offset at midscale (UM4270 9.8.3).
-                  </p>
-                </>
-              );
-            })()}
-          </Collapsible>
           <div className="card">
             <h2>Trigger rate</h2>
             <RateStrip tele={tele} />
@@ -945,33 +904,196 @@ export function App() {
               ) : null}
             </div>
           </div>
-          <Collapsible title="Trigger &amp; Timing" defaultOpen>
-            <div className="trig-guide">
-              <p><b>The board fires when ANY enabled source crosses its
-                level</b> (logical OR of the sources below).</p>
-              <p className="trig-warn">The 16 signal channels <b>cannot</b>
-                trigger the board. To trigger on your signal, feed a copy into
-                <b> TR0</b> (analog, has a threshold) or <b>TRG-IN</b> (a NIM/TTL
-                logic pulse).</p>
-              <p className="muted">
-                TR0: match the <b>edge</b> to your pulse (rising = positive-going),
-                keep the <b>TR DC offset at midscale</b> (its threshold is only
-                calibrated there), and set the <b>threshold</b> just above baseline
-                noise. TR0 halves its input (÷2), so a 30 mV pulse is ~15 mV at
-                the comparator.
-              </p>
-            </div>
-            <SettingsList
-              defs={catalog.unit.filter((d) => LIVE_UNIT_KEYS.has(d.key))}
-              geom={catalog.geometry}
-              get={(k) => (config as any)[k]} onChange={updateBoard}
-              locked={isLocked} onUnlock={unlockOne} />
-            <p className="muted">
-              Sampling, output format and the other campaign-tier settings
-              live on the Experiment tab.
-            </p>
+          {(() => {
+            // TR0: the digitized trace (when TR digitizing is on - the same
+            // signal both groups see, shown once: group 0's copy, else 1's)
+            // with its two settings underneath. The trace is in TR0 input
+            // volts; the trigger line is drawn ONLY at offset 0x8000, the one
+            // case UM4270 sec 9.8.3 gives the threshold in volts for.
+            const trCh = tele?.channels["16"] ? 16 : tele?.channels["17"] ? 17 : null;
+            const tr = config.fast_trigger_digitizing && trCh != null
+              ? tele!.channels[String(trCh)] : null;
+            const [g0, g1] = config.groups;
+            const gr = trCh != null ? trCh - 16 : 0;
+            const off = config.groups[gr].fast_trigger_dc_offset;
+            const trLine = zeroLine(16 + gr, catalog.geometry, zc);
+            const thr = config.groups[gr].fast_trigger_threshold;
+            const markers = off === TR_OFF_MID_DAC
+              ? [{ v: trAbsThresholdV(thr), label: "trigger", color: "#f85149" }]
+              : [];
+            const diverged = ["fast_trigger_threshold", "fast_trigger_dc_offset"]
+              .some((k) => (g0 as any)[k] !== (g1 as any)[k]);
+            const offMid = g0.fast_trigger_dc_offset === TR_OFF_MID_DAC;
+            // The TR offset field stays on CAEN's scale (Tab. 9.1), never the
+            // 0 V calibration: 0 is midscale 0x8000, where the threshold is
+            // defined.
+            const offDef = catalog.bank.find((d) => d.key === "fast_trigger_dc_offset")!;
+            const offLocked = trOffLocked || isLocked("fast_trigger_dc_offset");
+            return (
+              <div className="card">
+                <h2>TR0 <span className="sub">fast trigger</span></h2>
+                {tr ? (
+                  <MiniWave wave={tr.wave}
+                    geom={catalog.geometry}
+                    windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
+                    postTriggerPct={config.post_trigger}
+                    color="#e3b341" height={110}
+                    markers={markers} vScale={trLine.vScale}
+                    zeroCode={zeroCodeAt(trLine, off, catalog.geometry)}
+                    offsetDac={off} offsetSlope={trLine.s} waveDac={tr.dac}
+                    yRange={yRanges[trCh!]}
+                    onYRange={(range, all) => changeYRange(trCh!, range, all)}
+                    mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
+                    clearEpoch={wipeEpoch} />
+                ) : (
+                  <p className="muted tr-off">
+                    {config.fast_trigger_digitizing
+                      ? "Waiting for events."
+                      : "TR0 is not being digitized (Digitize TR traces, below)."}
+                  </p>
+                )}
+                <div className="settings-grid tr0-settings">
+                  <div className="setting-row"
+                    title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (UM4270 sec 9.8.3): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. CAEN gives no formula at other offsets - keep the offset at 0.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
+                    <label>TR threshold</label>
+                    <span className="field">
+                      {/* min sets the arrow keys' step base, so it must sit on
+                          the step grid: -1.986 made them walk -0.001, 0.004,
+                          0.009... DAC 0..65535 spans -1.9859..+2.9789 V. */}
+                      <BlurInput type="number" step={0.001} min={-1.985} max={2.978}
+                        selectOnFocus
+                        value={fmtDacVolts(g0.fast_trigger_threshold,
+                                           trAbsThresholdV, trThresholdDacForAbs)}
+                        disabled={isLocked("fast_trigger_threshold")}
+                        onCommit={(v) => {
+                          updateTrBoth("fast_trigger_threshold",
+                            trThresholdDacForAbs(Number(v) || 0));
+                        }} />
+                      <span className="unit">V</span>
+                    </span>
+                    {isLocked("fast_trigger_threshold") ? (
+                      <button className="lock-chip"
+                        title="Locked. Click to unlock just the TR threshold."
+                        onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
+                    ) : null}
+                    {!offMid ? (
+                      <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
+                        ⚠ offset not 0
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className={"setting-row lockable" + (offLocked ? " locked" : "")}
+                    title={[offDef.help, offDef.caen].filter(Boolean).join("\n\n")}>
+                    <button className="lock-toggle"
+                      aria-label={offLocked ? "Unlock TR DC offset" : "Lock TR DC offset"}
+                      aria-pressed={offLocked}
+                      title={offLocked ? "Locked - click to edit the TR DC offset"
+                                       : "Unlocked - click to lock the TR DC offset"}
+                      onClick={() => {
+                        if (offLocked) {
+                          setTrOffLocked(false);
+                          if (isLocked("fast_trigger_dc_offset")) unlockOne("fast_trigger_dc_offset");
+                        } else {
+                          setTrOffLocked(true);
+                        }
+                      }}>{offLocked ? "🔒" : "🔓"}</button>
+                    <label>TR DC offset</label>
+                    <SettingControl def={offDef} value={g0.fast_trigger_dc_offset}
+                      geom={catalog.geometry} disabled={offLocked}
+                      onChange={(v) => updateTrBoth("fast_trigger_dc_offset", v)} />
+                  </div>
+                </div>
+                {diverged ? (
+                  <div className="tr-diverged">
+                    The two banks' TR0 registers differ. Editing here writes
+                    both;{" "}
+                    <button onClick={() => {
+                      const groups = config.groups.map((gc) => ({
+                        ...gc,
+                        fast_trigger_threshold: g0.fast_trigger_threshold,
+                        fast_trigger_dc_offset: g0.fast_trigger_dc_offset,
+                      }));
+                      pushConfig({ ...config, groups });
+                    }}>sync bank 1 to bank 0</button>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
+          <Collapsible title="Trigger Settings" defaultOpen>
+            {(() => {
+              // Explicit order and labels: timing first, then the trigger
+              // sources, each source's own option right under it and only
+              // while that source is enabled.
+              const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
+              const row = (k: string, label: string, lockable = true) => {
+                const d = def(k);
+                const locked = lockable && isLocked(k);
+                return (
+                  <div className="setting-row" key={k}
+                    title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
+                    <label>{label}</label>
+                    <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
+                      dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
+                      disabled={locked}
+                      onChange={(v) => updateBoard(k, v)} />
+                    {locked ? (
+                      <button className="lock-chip"
+                        title="Locked. Click to unlock just this setting."
+                        onClick={() => unlockOne(k)}>🔒</button>
+                    ) : null}
+                  </div>
+                );
+              };
+              return (
+                <>
+                  <button className="trig-help-btn" onClick={() => setTrigHelp(true)}>
+                    How triggers work
+                  </button>
+                  <div className="settings-grid">
+                    {row("post_trigger", "Post-trigger duration")}
+                    {row("trigger_edge", "Trigger edge")}
+                    <div className="settings-divider">Trigger Sources</div>
+                    {row("external_trigger", "TRG-IN")}
+                    {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
+                    {row("fast_trigger", "TR0")}
+                    {config.fast_trigger !== "disabled"
+                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
+                    {row("software_trigger", "Software trigger", false)}
+                  </div>
+                </>
+              );
+            })()}
           </Collapsible>
-          <CalibrationPanel
+          {trigHelp ? (
+            <div className="modal-backdrop" onClick={() => setTrigHelp(false)}>
+              <div className="modal trig-modal" role="dialog" aria-label="How triggers work"
+                onClick={(e) => e.stopPropagation()}>
+                <h3>How triggers work</h3>
+                <p>
+                  The board takes an event when <b>any</b> enabled source fires.
+                </p>
+                <p>
+                  The 16 signal channels <b>cannot</b> trigger. To trigger on a
+                  signal, send a copy of it to <b>TR0</b> (analog, with a
+                  threshold) or a logic pulse to <b>TRG-IN</b> (NIM or TTL).
+                </p>
+                <p>For TR0:</p>
+                <ul>
+                  <li>Set the <b>edge</b> to match the pulse: rising for
+                    positive-going.</li>
+                  <li>Keep the <b>TR DC offset at 0</b>. The threshold is only
+                    defined there.</li>
+                  <li>Set the <b>threshold</b> in volts at the TR0 input, just
+                    clear of the baseline noise.</li>
+                </ul>
+                <div className="modal-btns">
+                  <button className="primary" onClick={() => setTrigHelp(false)}>OK</button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <CalibrationPanel zc={zc}
             connected={connected} recording={recording}
             locked={isLocked("calibration")}
             onUnlock={() => unlockOne("calibration")}

@@ -1,5 +1,5 @@
 import type { BoardConfig, Catalog, SettingDef } from "./types";
-import { defDacToVolts, fmtV } from "./volts";
+import { defFieldVolts, offsetDef, zeroLine } from "./volts";
 
 /** Describe what the unit actually holds now, in the operator's units.
  *
@@ -15,7 +15,10 @@ export function describeChanges(
 
   const fmt = (def: SettingDef | undefined, v: any) => {
     if (!def) return String(v);
-    if (def.type === "volts") return fmtV(defDacToVolts(def, Number(v), geom));
+    if (def.type === "volts") {
+      const s = defFieldVolts(def, Number(v), geom);
+      return (s.startsWith("-") ? s : "+" + s) + " V";
+    }
     if (def.type === "bool") return v ? "on" : "off";
     if (def.type === "enum") {
       const c = def.choices?.find((c) => String(c.value) === String(v));
@@ -43,6 +46,12 @@ export function describeChanges(
     if (a !== b) note(def.label, def, b, (requested as any)[def.key]);
   }
 
+  // Channel DC offsets quote the same volts their fields show: the nominal
+  // scale, 0 V of offset = 0x8F00. The 0 V calibration corrects the plots
+  // only, never the offset readouts (TR0's likewise: 0 = midscale).
+  const lined = (def: SettingDef, ch: number): SettingDef =>
+    ({ ...def, ...offsetDef(zeroLine(ch, geom), geom) });
+
   after.groups.forEach((g, gi) => {
     for (const def of cat.bank) {
       const a = (before.groups[gi] as any)?.[def.key], b = (g as any)[def.key];
@@ -55,7 +64,8 @@ export function describeChanges(
   after.channels.forEach((c, ch) => {
     const b0 = before.channels[ch];
     if (b0 && b0.dc_offset !== c.dc_offset) {
-      note(`CH ${ch} DC offset`, dcDef, c.dc_offset, requested.channels[ch]?.dc_offset);
+      note(`CH ${ch} DC offset`, dcDef && lined(dcDef, ch), c.dc_offset,
+           requested.channels[ch]?.dc_offset);
     }
     if (b0 && b0.name !== c.name) {
       out.push(`CH ${ch} name: ${c.name || "(cleared)"}`);

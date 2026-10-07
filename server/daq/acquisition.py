@@ -18,6 +18,7 @@ from . import runs
 from . import constants as C
 from . import logsetup
 from . import sounds
+from . import zerocal
 
 
 log = logsetup.get("daq.acq")
@@ -88,6 +89,12 @@ class AcquisitionEngine:
         # data-taking. (index, wave) as one tuple: assignment is atomic, so
         # the telemetry thread never sees a wave paired with the wrong id.
         self._last: dict[int, tuple[int, np.ndarray]] = {}
+        # The DC offset each channel (16/17: the TR offset) was ARMED with -
+        # what every event since the last arm was digitized under. Telemetry
+        # labels traces with it: labelling them with the CURRENT config made
+        # the display re-draw a still-old average at a new offset, and a
+        # trace snapped back for a second after every offset change.
+        self._armed_dac: dict[int, int] = {}
         # Recording is independent of acquiring: you watch first, then record.
         self._writer = None
         self._run_id: str | None = None
@@ -296,6 +303,12 @@ class AcquisitionEngine:
             self._adopt_cfg(actual)
             self._events_seen = 0      # Count reflects this acquisition run
             self._rate.reset()
+            # A new arm can carry new DC offsets: start the averages clean.
+            self._avg.clear()
+            self._last = {}
+            self._armed_dac = {ch: c.dc_offset for ch, c in enumerate(actual.channels)}
+            self._armed_dac.update({16 + gr: g.fast_trigger_dc_offset
+                                    for gr, g in enumerate(actual.groups)})
             try:
                 self._backend.start()
             except Exception as e:
@@ -820,6 +833,7 @@ class AcquisitionEngine:
                 "min": float(mean.min()),
                 "max": float(mean.max()),
                 "baseline": float(np.median(mean)),
+                "dac": self._armed_dac.get(ch),
             }
             last = self._last.get(ch)
             if last is not None:
@@ -876,4 +890,7 @@ class AcquisitionEngine:
             "data_dir": runs.DATA_ROOT,
             "next_run_number": runs.next_run_number(),
             "errors": list(self._errors),
+            # The per-board 0 V calibration for the open unit (display only).
+            "zerocal": zerocal.summary(bi.serial) if self._opened
+                       else {"applied": False, "measured_at": None},
         }

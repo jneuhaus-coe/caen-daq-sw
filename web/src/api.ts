@@ -1,4 +1,4 @@
-import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
+import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -59,13 +59,14 @@ export const api = {
       body: JSON.stringify({ count, rate_hz: rateHz }),
     }).then(j<{ ok: boolean; error?: string; queued?: number; status: Status }>),
 
-  calibrate: (mode: "baseline" | "fit", events?: number | null) =>
+  calibrate: (mode: "shift" | "zero", events?: number | null) =>
     fetch(`/api/calibrate/${mode}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ events: events ?? null }),
     }).then(j<{ ok: boolean; status: Status }>),
   calibrateStatus: () =>
     fetch("/api/calibrate").then(j<CalibrationStatus>),
+  zerocal: () => fetch("/api/zerocal").then(j<ZeroCal>),
   calibrateCancel: () =>
     fetch("/api/calibrate/cancel", { method: "POST" }).then(j<{ ok: boolean }>),
   scope: (on: boolean, rateHz?: number, trigger?: ScopeTrigger | null) =>
@@ -107,16 +108,19 @@ export interface SessionInfo { name: string; saved_at: number | null; }
 
 export interface CalibrationRow {
   channel: string;
-  dac: number;
-  baseline_mv: number | null;
-  below_mv: number;
-  above_mv: number;
-  status: "ok" | "adjusting" | "unreachable" | "no_fit" | "clipped";
+  dac?: number;
+  baseline_mv?: number | null;
+  below_mv?: number;
+  above_mv?: number;
+  /** Zero mode: the code a 0 V input read, at offset word ref_dac. */
+  zero_code?: number;
+  ref_dac?: number;
+  status: string;
 }
 
 export interface CalibrationStatus {
   active: boolean;
-  phase: "baseline" | "fit" | null;
+  phase: "shift" | "zero" | null;
   message: string;
   iteration: number;
   report: CalibrationRow[];

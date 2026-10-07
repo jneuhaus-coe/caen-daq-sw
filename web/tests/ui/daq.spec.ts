@@ -22,16 +22,28 @@ test("loads with the fake unit connected and all 16 channels", async ({ page }) 
   await page.locator(".bank-head", { hasText: "Bank 1" }).click();
   await expect(page.locator(".tile")).toHaveCount(16);
   await expect(page.locator(".pill.state")).toHaveText("idle");
-  // The event counter is always drawn (n=0 when idle), so tiles never
-  // resize when events start arriving.
-  await expect(page.locator(".tile-foot .n").first()).toHaveText(/^n=\d+$/);
+  // No per-tile event counter any more.
+  await expect(page.locator(".tile-foot")).toHaveCount(0);
 });
 
 test("unit settings split: campaign on Experiment, trigger tuning on Live", async ({ page }) => {
-  // Live keeps only what is tuned while watching the plots: Fast trigger is
-  // present, Sampling frequency is not (it moved to Experiment).
-  await expect(page.locator(".setting-row", { hasText: "Fast trigger" }).first())
-    .toBeVisible();
+  // Live keeps only what is tuned while watching the plots: the trigger
+  // sources are present, Sampling frequency is not (it moved to Experiment).
+  const trig = page.locator(".card", { has: page.locator("h2", { hasText: "Trigger Settings" }) });
+  const labels = await trig.locator(".setting-row > label").allTextContents();
+  // Timing first, then the sources; each source's option under it while
+  // that source is enabled.
+  expect(labels[0]).toBe("Post-trigger duration");
+  expect(labels[1]).toBe("Trigger edge");
+  expect(labels.slice(2)).toEqual(expect.arrayContaining(["TRG-IN", "TR0", "Software trigger"]));
+  expect(labels.indexOf("TRG-IN")).toBeLessThan(labels.indexOf("TR0"));
+  expect(labels.indexOf("TR0")).toBeLessThan(labels.indexOf("Software trigger"));
+  await expect(trig.locator(".settings-divider", { hasText: "Trigger Sources" })).toBeVisible();
+  // The prose moved behind a button.
+  await trig.getByRole("button", { name: "How triggers work" }).click();
+  const dlg = page.getByRole("dialog", { name: "How triggers work" });
+  await expect(dlg).toContainText("cannot");
+  await dlg.getByRole("button", { name: "OK" }).click();
   await expect(page.locator("main + aside .setting-row",
     { hasText: "Sampling frequency" })).toHaveCount(0);
   // Campaign settings, required first then the gated optionals, live on the
@@ -46,10 +58,12 @@ test("unit settings split: campaign on Experiment, trigger tuning on Live", asyn
 
 test("TR threshold is shown in TR-calibrated volts", async ({ page }) => {
   // Fake board default threshold 20000 through the MANUAL's arithmetic
-  // (UM4270 9.8.3): (20000 - 26214) / 13.2 mV = -471 mV vs the TR zero.
+  // (UM4270 9.8.3): (20000 - 26214) / 13.2 mV = -470.76 mV at the TR0 input.
+  // Shown to as many digits as name the exact word: "-0.471" (the old
+  // fixed mV rounding) reads back as DAC 19997, not the 20000 it holds.
   const row = page.locator(".setting-row", { hasText: "TR threshold" }).first();
   const input = row.locator('input[type="number"]');
-  await expect(input).toHaveValue("-0.471");
+  await expect(input).toHaveValue("-0.47076");
   // The change toast must quote the SAME calibration as the field - it once
   // translated the DAC word back through the channel model and announced a
   // nonsense positive voltage for a negative threshold.
@@ -66,6 +80,10 @@ test("moving the TR offset leaves the raw threshold untouched", async ({ page })
 
   const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
   const input = offRow.locator('input[type="number"]');
+  // Locked by default (house style): greyed, showing the board value.
+  await expect(input).toBeDisabled();
+  await offRow.getByRole("button", { name: "Unlock TR DC offset" }).click();
+  await expect(input).toBeEnabled();
   await input.fill("0.1");
   await input.press("Enter");
   await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
@@ -98,8 +116,8 @@ test("a typed out-of-range value is clamped before it reaches the unit", async (
 });
 
 test("the baseline guide is drawn when idle and follows the offset", async ({ page }) => {
-  // Idle (no data): the ground marker shows where the offset will put the
-  // baseline, in the channel colour, at the window centre for a centred DAC.
+  // Idle (no data): the ground marker shows where 0 V at the input lands on
+  // the full-scale (code 0..4095) axis - the centre for a centred DAC.
   const rowOf = async () => page.evaluate(() => {
     const cv = document.querySelector(".tile canvas") as HTMLCanvasElement;
     const ctx = cv.getContext("2d")!;
@@ -116,16 +134,19 @@ test("the baseline guide is drawn when idle and follows the offset", async ({ pa
     }
     return { row: best, lit: bestN, height: cv.height };
   });
+  // The power-on default 0x8F00 is 0 V of offset (V1742 manual sec 5.7).
+  expect((await cfg(page)).channels[0].dc_offset).toBe(0x8F00);
+  await expect(page.locator(".tile-dc input[type=number]").first()).toHaveValue("0.000");
   const centred = await rowOf();
   expect(centred.lit).toBeGreaterThan(50);
   expect(Math.abs(centred.row - centred.height / 2)).toBeLessThan(centred.height * 0.1);
 
-  // Typing a new offset moves the guide (auto re-arm is not needed for the
-  // marker - it predicts).
+  // +0.2 V raises the window centre to +0.2 V at the input (UM4270 sec
+  // 9.1), so 0 V sits LOWER in the full-scale view.
   const field = page.locator(".tile-dc input[type=number]").first();
   await field.fill("0.2");
   await field.press("Enter");
-  await expect.poll(async () => (await rowOf()).row).toBeLessThan(centred.row - 10);
+  await expect.poll(async () => (await rowOf()).row).toBeGreaterThan(centred.row + 10);
   await field.fill("0");
   await field.press("Enter");
 });
@@ -135,7 +156,7 @@ test("the DC-offset slider commits one write on release", async ({ page }) => {
   const slider = page.locator(".dc-slider").first();
   await slider.focus();
   await slider.press("ArrowLeft");        // one 0.01 V step down; keyup commits
-  const want = Math.round(32768 * (1 - (-0.01)));   // voltsToDac(-0.01)
+  const want = Math.round(0x8F00 + 32768 * -0.01);  // voltsToDac(-0.01): 0 V = 0x8F00
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
   expect(before).not.toBe(want);
   // The typed field agrees with what the unit reports.
@@ -146,11 +167,16 @@ test("typing a DC offset lands on the unit exactly", async ({ page }) => {
   const field = page.locator(".tile-dc input[type=number]").first();
   await field.fill("0.1");
   await field.press("Enter");
-  const want = Math.round(32768 * (1 - 0.1));       // voltsToDac(+0.1)
+  const want = Math.round(0x8F00 + 32768 * 0.1);   // voltsToDac(+0.1)
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).toBe(want);
+  // Enter commits but keeps focus, so the next tweak needs no click.
+  await expect(field).toBeFocused();
+  await field.press("ArrowUp");
+  await field.press("Enter");
+  await expect.poll(async () => (await cfg(page)).channels[0].dc_offset).not.toBe(want);
 });
 
-test("global channel controls set window and DC offset on all 16 at once", async ({ page }) => {
+test("global channel controls: window, reset, and fit window to pulses", async ({ page }) => {
   const disp = async () => (await (await page.request.get("/api/display")).json())?.y_ranges ?? {};
   // Set the display window for every channel.
   const bar = page.locator(".chan-global");
@@ -164,14 +190,28 @@ test("global channel controls set window and DC offset on all 16 at once", async
   // Reset returns every channel to the full window (no stored range).
   await bar.getByRole("button", { name: "reset", exact: true }).click();
   await expect.poll(async () => Object.keys(await disp()).length).toBe(0);
-  // Global DC offset writes all 16 channels.
-  await bar.locator(".cg-group").nth(1).locator(".cg-num").fill("0.1");
-  await bar.getByRole("button", { name: "set all", exact: true }).click();
-  const want = Math.round(32768 * (1 - 0.1));
-  await expect.poll(async () => {
-    const c = await cfg(page);
-    return c.channels.every((ch: { dc_offset: number }) => ch.dc_offset === want);
-  }).toBe(true);
+  // No all-channel DC offset any more.
+  await expect(bar.getByRole("button", { name: "set all", exact: true })).toHaveCount(0);
+  // Fit window to pulses: display only, one height for every channel, the
+  // fake's negative pulse inside each window. Events first.
+  const before = await cfg(page);
+  await page.locator(".test-trigger input").fill("20");
+  await page.locator(".test-trigger button", { hasText: "Fire" }).click();
+  await page.waitForTimeout(2500);
+  const fit = bar.getByRole("button", { name: "Fit window to pulses" });
+  await expect(fit).toHaveAttribute("title", /Display only/);
+  await fit.click();
+  await expect.poll(async () => Object.keys(await disp()).length).toBeGreaterThan(0);
+  const y = await disp();
+  const heights = Object.values(y).map((r: any) => +(r[1] - r[0]).toFixed(4));
+  expect(new Set(heights).size).toBe(1);
+  expect(y["0"][0]).toBeLessThan(-0.15);       // room for the ~-195 mV pulse
+  expect(y["0"][1]).toBeGreaterThan(0);        // baseline (0 V) inside
+  const after = await cfg(page);
+  expect(after.channels).toEqual(before.channels);   // no setting touched
+  await bar.getByRole("button", { name: "reset", exact: true }).click();
+  await expect.poll(async () => Object.keys(await disp()).length).toBe(0);
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
 test("clicking a Y label edits the display range, and it persists", async ({ page }) => {
@@ -181,9 +221,13 @@ test("clicking a Y label edits the display range, and it persists", async ({ pag
   await editor.fill("0.25");
   await editor.press("Enter");
   await expect(tile.locator("button.ax.y.max")).toHaveText("+0.250 V");
-  await expect
-    .poll(async () => (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"])
-    .toEqual([-0.5, 0.25]);   // window frame: min stays at the window bottom
+  // The min stays where full scale had it: ADC code 0 at ch0's offset,
+  // in input volts = window centre - 0.5 V.
+  const centre = ((await cfg(page)).channels[0].dc_offset - 0x8F00) / 32768;
+  const stored = async () =>
+    (await (await page.request.get("/api/display")).json())?.y_ranges?.["0"];
+  await expect.poll(async () => (await stored())?.[1]).toBe(0.25);
+  expect((await stored())[0]).toBeCloseTo(centre - 0.5, 6);
   // Survives a full reload: the display prefs live on the server.
   await page.reload();
   await expect(page.locator(".tile").first().locator("button.ax.y.max"))
@@ -192,10 +236,22 @@ test("clicking a Y label edits the display range, and it persists", async ({ pag
 
 test("the 'full' button resets a channel's range to the full window", async ({ page }) => {
   const tile = page.locator(".tile").first();
+  const field = tile.locator(".tile-dc input[type=number]");
+  await field.fill("0");
+  await field.press("Enter");
   await tile.locator("button.ax.y.max").click();
   await tile.locator(".yedit button", { hasText: "full" }).click();
-  // Window-referenced frame: full range IS the 1 Vpp window, +/-0.5 V.
+  // Full scale = ADC codes 0..4095 in input volts: at offset 0 the top is
+  // code 4095 = +0.49976 V.
   await expect(tile.locator("button.ax.y.max")).toHaveText("+0.500 V");
+  await expect(tile.locator("button.ax.y.min")).toHaveText("-0.500 V");
+  // The axis follows the offset register: +0.2 V moves the window up.
+  await field.fill("0.2");
+  await field.press("Enter");
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.700 V");
+  await expect(tile.locator("button.ax.y.min")).toHaveText("-0.300 V");
+  await field.fill("0");
+  await field.press("Enter");
 });
 
 test("sessions: save, perturb, apply restores the unit, delete", async ({ page }) => {
@@ -225,26 +281,29 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(row).toHaveCount(0);
 });
 
-test("auto-baseline centers a mis-set channel from the UI", async ({ page }) => {
-  // Park ch0 far off centre, then let the servo bring it back.
+test("Pulse Shift returns a fitting channel to 0 V of offset, never centring", async ({ page }) => {
+  // Park ch0 somewhere else; the fake's pulse fits at 0x8F00, so Pulse
+  // Shift puts it back there and moves nothing further.
   const field = page.locator(".tile-dc input[type=number]").first();
   await field.fill("-0.3");
   await field.press("Enter");
   await expect.poll(async () => (await cfg(page)).channels[0].dc_offset)
-    .toBeGreaterThan(40000);
-
-  await page.locator(".calib-btns button", { hasText: "Center baselines" }).click();
+    .toBeLessThan(28000);   // -0.3 V = 0x8F00 - 9830
+  const btn = page.locator(".calib-btns button", { hasText: "Pulse Shift" });
+  await expect(btn).toHaveAttribute("title", /slide a clipped pulse/);
+  await btn.click();
   await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
   const c = await cfg(page);
-  expect(Math.abs(c.channels[0].dc_offset - 32768)).toBeLessThanOrEqual(300);
-  // The UI re-adopted the board's new state: the field shows ~0 V again.
-  await expect(field).not.toHaveValue("-0.300");
+  expect(c.channels.every((ch: { dc_offset: number }) => ch.dc_offset === 0x8F00)).toBe(true);
+  await expect(field).toHaveValue("0.000");
+  // Center baselines is gone.
+  await expect(page.locator(".calib-btns button", { hasText: "Center baselines" })).toHaveCount(0);
 });
 
 test("a calibration's persistence profile is there to review afterwards", async ({ page }) => {
   // The pile accumulates in every mode, so the events a calibration collected
   // are already stacked when the operator flips to Overlay to look.
-  await page.locator(".calib-btns button", { hasText: "Center baselines" }).click();
+  await page.locator(".calib-btns button", { hasText: "Pulse Shift" }).click();
   await expect(page.getByText(/Calibration done/)).toBeVisible({ timeout: 60_000 });
   await page.locator(".wave-mode button", { hasText: "Overlay" }).click();
   const lit = await page.evaluate(() => {
@@ -254,7 +313,7 @@ test("a calibration's persistence profile is there to review afterwards", async 
     for (let i = 3; i < d.length; i += 4) if (d[i] > 40) n++;
     return n;
   });
-  // The fake's baseline run is quick, so the pile is thin - but present.
+  // The fake's run is quick, so the pile is thin - but present.
   expect(lit).toBeGreaterThan(150);
   await page.locator(".wave-mode button", { hasText: "Avg" }).click();
 });
@@ -350,16 +409,29 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   // Trigger settings panel is a different heading).
   const trCard = page.locator(".card", { has: page.locator("h2", { hasText: "fast trigger" }) });
   await expect(trCard).toBeVisible({ timeout: 10_000 });
-  // The labelled trigger line: red-dominant pixels drawn across the plot.
-  await expect.poll(async () => trCard.evaluate((card) => {
+  const red = () => trCard.evaluate((card) => {
     const cv = card.querySelector("canvas") as HTMLCanvasElement;
     const d = cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height).data;
-    let red = 0;
+    let n = 0;
     for (let i = 0; i < d.length; i += 4) {
-      if (d[i + 3] > 100 && d[i] > 180 && d[i + 1] < 130) red++;
+      if (d[i + 3] > 100 && d[i] > 180 && d[i + 1] < 130) n++;
     }
-    return red;
-  }), { timeout: 10_000 }).toBeGreaterThan(50);
+    return n;
+  });
+  // The trigger line exists ONLY at TR offset 0x8000 (UM4270 sec 9.8.3).
+  const offRow = page.locator(".setting-row", { hasText: "TR DC offset" }).first();
+  const off = offRow.locator('input[type="number"]');
+  await offRow.getByRole("button", { name: "Unlock TR DC offset" }).click();
+  await off.fill("0");
+  await off.press("Enter");
+  await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
+    .toBe(32768);
+  await expect.poll(red, { timeout: 10_000 }).toBeGreaterThan(50);
+  await off.fill("0.1");
+  await off.press("Enter");
+  await expect.poll(red, { timeout: 10_000 }).toBeLessThan(5);
+  await off.fill("0");
+  await off.press("Enter");
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
@@ -547,4 +619,44 @@ test("an update is offered once no run is recording, and a reload keeps the form
   // "Later" puts it away.
   await banner.getByRole("button", { name: "Later" }).click();
   await expect(banner).toBeHidden();
+});
+
+test("0 V calibration: help, calibrate, applied, settings restored", async ({ page }) => {
+  // LAST in the file on purpose: once stored, the calibration applies to
+  // every later page load of this fake board.
+  const state = page.locator(".zc-state");
+  await expect(state).toContainText("nominal");
+  await expect(state).toHaveAttribute("title", /nominal/);
+
+  // The help icon explains what to do.
+  await page.locator(".zc-help").click();
+  const dlg = page.getByRole("dialog", { name: "Zero-Volt Calibration" });
+  await expect(dlg).toContainText("Disconnect all inputs");
+  await dlg.getByRole("button", { name: "OK" }).click();
+  await expect(dlg).toHaveCount(0);
+
+  const before = await cfg(page);
+  const btn = page.locator(".zc-row button", { hasText: "Calibrate 0 V" });
+  await expect(btn).toHaveAttribute("title", /ADC code a 0 V input reads/);
+  await btn.click();
+  // The fake is a dark bench with hardware triggers off, so it saves.
+  await expect(state).toContainText("board-calibrated", { timeout: 60_000 });
+  await expect(state).toHaveAttribute("title", /plots only, not to recorded data/);
+  await expect(page.locator(".zc-row button", { hasText: "Re-calibrate 0 V" })).toBeVisible();
+  const zc = await (await page.request.get("/api/zerocal")).json();
+  expect(zc.applied).toBe(true);
+  expect(Object.keys(zc.channels)).toEqual(expect.arrayContaining(["0", "15", "16"]));
+  // One point per input at its 0 V of offset: the fake reads 2048 on a
+  // channel at 0x8F00 and 2200 on TR0 at 0x8000.
+  expect(zc.channels["0"].ref_dac).toBe(0x8F00);
+  expect(Math.abs(zc.channels["0"].zero_code - 2048)).toBeLessThan(5);
+  expect(zc.channels["16"].ref_dac).toBe(0x8000);
+  expect(Math.abs(zc.channels["16"].zero_code - 2200)).toBeLessThan(5);
+  // The operator's settings come back exactly.
+  const after = await cfg(page);
+  expect(after.channels.map((c: { dc_offset: number }) => c.dc_offset))
+    .toEqual(before.channels.map((c: { dc_offset: number }) => c.dc_offset));
+  expect(after.groups).toEqual(before.groups);
+  expect(after.external_trigger).toBe(before.external_trigger);
+  expect(after.fast_trigger).toBe(before.fast_trigger);
 });
