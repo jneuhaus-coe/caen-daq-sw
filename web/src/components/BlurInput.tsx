@@ -22,22 +22,36 @@ interface Props {
   selectOnFocus?: boolean;
 }
 
-/** An input that commits on blur, not on every keystroke.
+/** An input that commits on blur or Enter, not on every keystroke.
  *
  *  Settings here go to the hardware, so committing per character would fire a
- *  write for every digit typed. Enter commits, Escape reverts. While focused the
- *  draft is left alone, so a value arriving from the board mid-edit does not
- *  yank the field out from under the typist. */
+ *  write for every digit typed. Enter commits and KEEPS focus, with the text
+ *  selected, so a value can be tweaked again straight away (it used to blur,
+ *  which made iterating on a setting a click per try). Escape reverts. While
+ *  focused the draft is left alone - except to show what an Enter commit
+ *  landed on - so a value arriving from the board mid-edit does not yank the
+ *  field out from under the typist. */
 export function BlurInput({
   value, onCommit, onCancel, type = "text", step, min, max,
   placeholder, autoFocus, className, disabled, selectOnFocus, format,
 }: Props) {
   const [draft, setDraft] = useState(String(value));
   const editing = useRef(false);
+  // Set by an Enter commit: the next value from the board replaces the draft
+  // even though the field still has focus.
+  const awaiting = useRef(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const ref = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (!editing.current) setDraft(String(value));
+    if (!editing.current) {
+      setDraft(String(value));
+    } else if (awaiting.current) {
+      awaiting.current = false;
+      setDraft(String(value));
+      reselect.current = true;
+    }
   }, [value]);
 
   useEffect(() => {
@@ -98,6 +112,7 @@ export function BlurInput({
       }}
       onBlur={() => {
         editing.current = false;
+        awaiting.current = false;
         if (draft !== String(value)) {
           // Show where it actually landed straight away, so the field never
           // displays text the value never became - and never flashes the old
@@ -110,7 +125,23 @@ export function BlurInput({
         }
       }}
       onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Enter") {
+          if (draft !== String(value)) {
+            awaiting.current = true;
+            onCommit(draft);
+            // A commit that lands on the value already held (a clamp to
+            // the current setting) never changes `value`, so nothing would
+            // replace the typed text: show what is held after a moment.
+            window.setTimeout(() => {
+              if (!awaiting.current) return;
+              awaiting.current = false;
+              setDraft(String(valueRef.current));
+              reselect.current = true;
+            }, 800);
+          }
+          e.currentTarget.select();
+          return;
+        }
         if (e.key === "Escape") {
           setDraft(String(value));
           editing.current = false;

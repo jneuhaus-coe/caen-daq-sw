@@ -24,10 +24,11 @@ _PULSE_COUNTS = 800.0      # synthetic pulse amplitude
 
 
 def _baseline_counts(dc_offset: int) -> float:
-    """Where the baseline sits for a DAC word, nominal model: midscale at ADC
-    centre, increasing DAC lowers it, the DAC spanning twice the window."""
+    """Where the baseline sits for a DAC word, nominal model: 0V-of-offset
+    (0x8F00) at ADC centre, increasing DAC lowers it, the DAC spanning twice
+    the window."""
     half = (C.ADC_MAX + 1) / 2
-    return half - (dc_offset - C.DC_OFFSET_MID) / (C.DC_OFFSET_MAX + 1) * (C.ADC_MAX + 1) * 2
+    return half - (dc_offset - C.DC_OFFSET_ZERO) / (C.DC_OFFSET_MAX + 1) * (C.ADC_MAX + 1) * 2
 
 
 class FakeBackend(DigitizerBackend):
@@ -79,13 +80,18 @@ class FakeBackend(DigitizerBackend):
     def _event(self) -> Event:
         cfg = self._cfg
         samples = {}
+        # Pulses arrive with hardware triggers: with external AND TR0
+        # triggering both off (the 0 V calibration's setup) the fake is a
+        # dark bench - noise on a flat baseline, nothing else.
+        lit = not cfg or cfg.external_trigger != "disabled" or cfg.fast_trigger != "disabled"
         for ch in (cfg.enabled_channels() if cfg else range(C.NUM_CHANNELS)):
             base = _baseline_counts(cfg.channels[ch].dc_offset) if cfg else 2048.0
             w = base + self._rng.normal(0.0, _NOISE_COUNTS, C.RECORD_LENGTH)
             # A negative pulse two-thirds in, so the display has a shape to show.
             t0 = int(C.RECORD_LENGTH * 0.66)
             t = np.arange(C.RECORD_LENGTH) - t0
-            w -= _PULSE_COUNTS * np.exp(-0.5 * (t / 12.0) ** 2) * (t > -40)
+            if lit:
+                w -= _PULSE_COUNTS * np.exp(-0.5 * (t / 12.0) ** 2) * (t > -40)
             samples[ch] = np.clip(w, 0, C.ADC_MAX).astype(np.float32)
         if cfg and cfg.fast_trigger_digitizing:
             # The digitized TR trace, 16+group, like the real decoder: a
@@ -93,9 +99,11 @@ class FakeBackend(DigitizerBackend):
             # follows the TR DC offset (nominal slope), so the calibrator's
             # servo has an honest response to steer.
             t = np.arange(C.RECORD_LENGTH) - int(C.RECORD_LENGTH * 0.66)
-            tr_base = 2048.0 - (cfg.groups[0].fast_trigger_dc_offset - 32768) * 0.19
+            # 0 V reads 2200 at 0x8000, like the real unit (TR_ZERO_CODE).
+            tr_base = 2200.0 - (cfg.groups[0].fast_trigger_dc_offset - 32768) * 0.19
             tr = tr_base + self._rng.normal(0.0, _NOISE_COUNTS, C.RECORD_LENGTH)
-            tr -= 1200.0 * np.exp(-0.5 * (t / 6.0) ** 2)
+            if lit:
+                tr -= 1200.0 * np.exp(-0.5 * (t / 6.0) ** 2)
             for gr, g in enumerate(cfg.groups):
                 if g.enabled:
                     samples[16 + gr] = np.clip(tr, 0, C.ADC_MAX).astype(np.float32)

@@ -1,17 +1,20 @@
-import type { Catalog } from "./types";
+import type { Catalog, ZeroCal } from "./types";
 
 export type Geom = Catalog["geometry"];
 
 /** Signal-channel DC offset: a uint16 DAC word on the wire, shown as the
- *  INPUT voltage at the centre of the 1 Vpp window (UM4270 rev 13 sec 9.1,
- *  Fig. 9.1: the DAC shifts the window +/-1 V, FSR/2 = bipolar). Raising the
- *  DAC raises the window, so a fixed input lands on a LOWER ADC code. */
+ *  INPUT voltage at the centre of the 1 Vpp window. 0 V of offset is
+ *  g.dc_offset_zero = 0x8F00, the power-on default ("about 0mV" - V1742
+ *  manual sec 5.7), where a 0 V input is taken to read code 2048; the DAC
+ *  then shifts the window by its nominal 1 V per 32768 steps (UM4270 sec
+ *  9.1). Raising the DAC raises the window, so a fixed input lands on a
+ *  LOWER ADC code. */
 export function dacToVolts(dac: number, g: Geom) {
-  return ((dac - g.dc_offset_mid) / g.dc_offset_mid) * (g.dc_offset_range_v / 2);
+  return ((dac - g.dc_offset_zero) / g.dc_offset_mid) * (g.dc_offset_range_v / 2);
 }
 
 export function voltsToDac(v: number, g: Geom) {
-  const dac = Math.round(g.dc_offset_mid * (1 + v / (g.dc_offset_range_v / 2)));
+  const dac = Math.round(g.dc_offset_zero + g.dc_offset_mid * (v / (g.dc_offset_range_v / 2)));
   return Math.min(g.dc_offset_max, Math.max(0, dac));
 }
 
@@ -42,6 +45,12 @@ export const TR_OFF_MID_DAC = 32768;
  *  agreed to 1%. The manual's "factor of 16" only places 32768 near code
  *  2048; read as a slope it is off by 3.2x. */
 export const TR_ATTEN = 2;
+/** The ADC code a 0 V TR0 input reads at TR offset 0x8000. UM4270 only says
+ *  "ideally around 2048"; measured on serial 53364 with TR0 terminated in
+ *  50 ohm, the two copies read 2204 and 2194 (2026-10-06/07) - 150 codes,
+ *  ~75 mV at the input, too far off to treat 2048 as zero. The signal
+ *  channels keep 2048 (at 0x8F00): their spread is centred much closer. */
+export const TR_ZERO_CODE = 2200;
 export const TR_OFF_V_PER_LSB = 1 / 10240;
 
 /** Input volts at the centre of TR0's window for a TR DC offset word. */
@@ -79,7 +88,7 @@ export function fmtDacVolts(dac: number, toV: (d: number) => number,
 
 /** Where 0 V lands in ADC counts for a given DC offset. */
 export function zeroCounts(dac: number, g: Geom) {
-  return (g.adc_max + 1) / 2 + (dac - g.dc_offset_mid) * countsPerLsb(g);
+  return (g.adc_max + 1) / 2 + (dac - g.dc_offset_zero) * countsPerLsb(g);
 }
 
 export function voltsAtCount(counts: number, dac: number, g: Geom) {
@@ -128,4 +137,43 @@ export function defFieldVolts(
 export function fmtV(v: number) {
   const mag = Math.abs(v) < 5e-4 ? "0.000" : Math.abs(v).toFixed(3);
   return (v < 0 ? "-" : "+") + mag + " V";
+}
+
+/** One input's "zero line": the ADC code 0 V lands on (z0) at offset word
+ *  `ref`, how that code moves per offset step (s, negative), and input volts
+ *  per window volt (vScale: 1 signal, 2 TR0). Nominal: code 2048 at 0x8F00
+ *  for a signal channel, TR_ZERO_CODE (2200) at 0x8000 for TR0. The
+ *  per-board 0 V calibration, when it has this channel, replaces z0
+ *  (measured at the same offsets); the slope stays nominal.
+ *  Every DISPLAY conversion of a channel goes through its line - plot,
+ *  offset field, toast - so they cannot disagree. Recorded data never does. */
+export interface ZeroLine { z0: number; ref: number; s: number; vScale: number; cal: boolean }
+
+export function zeroLine(ch: number, g: Geom, zc?: ZeroCal | null): ZeroLine {
+  const tr = ch >= g.num_channels;
+  const c = zc?.applied ? zc.channels?.[String(ch)] : undefined;
+  return {
+    z0: c ? c.zero_code : (tr ? TR_ZERO_CODE : (g.adc_max + 1) / 2),
+    ref: c ? c.ref_dac : (tr ? g.dc_offset_mid : g.dc_offset_zero),
+    // Always the nominal slope: the calibration measures the zero only.
+    s: tr ? trCountsPerLsb(g) : countsPerLsb(g),
+    vScale: tr ? TR_ATTEN : 1,
+    cal: !!c,
+  };
+}
+
+/** The code 0 V input lands on at this offset word. */
+export function zeroCodeAt(line: ZeroLine, dac: number, g: Geom): number {
+  return line.z0 + line.s * (dac - line.ref);
+}
+
+/** The offset field's DAC<->volts line (input volts at the window centre),
+ *  in the catalog's lsb_v/zero_dac form so defDacToVolts/defVoltsToDac and
+ *  fmtDacVolts use it unchanged. */
+export function offsetDef(line: ZeroLine, g: Geom): { lsb_v: number; zero_dac: number } {
+  const perCode = line.vScale * g.input_range_vpp / (g.adc_max + 1);
+  return {
+    lsb_v: -line.s * perCode,
+    zero_dac: line.ref + ((g.adc_max + 1) / 2 - line.z0) / line.s,
+  };
 }

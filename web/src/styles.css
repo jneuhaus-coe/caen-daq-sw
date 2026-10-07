@@ -733,3 +733,19 @@ main.experiment { overflow-y: auto; }
 .tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: #3a4150;
                cursor: pointer; }
 .tour-dots i.on { background: var(--accent); }
+
+/* 0 V calibration row: state, calibrate, help - one line */
+.zc-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.zc-state {
+  display: flex; align-items: center; gap: 6px; margin-right: auto;
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+}
+.zc-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.zc-state.on { color: var(--green); }
+.zc-state.on .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(74, 199, 118, .18); }
+.zc-row .zc-help {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  font-size: 12px; font-weight: 700; line-height: 1;
+}
+.zc-modal p, .zc-modal ol { font-size: 12.5px; line-height: 1.45; margin: 0 0 9px; }
+.zc-modal ol { padding-left: 20px; }

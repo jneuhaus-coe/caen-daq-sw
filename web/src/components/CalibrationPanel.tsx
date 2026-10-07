@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { CalibrationStatus } from "../api";
+import type { ZeroCal } from "../types";
 
 interface Props {
   connected: boolean;
@@ -14,20 +15,23 @@ interface Props {
    *  UI, so the App must re-fetch what the board now holds. */
   onFinished: (st: CalibrationStatus) => void;
   onError: (title: string, lines?: string[]) => void;
+  /** The open unit's per-board 0 V calibration, when one is stored. */
+  zc?: ZeroCal | null;
 }
 
-/** Closed-loop channel setup, polarity-agnostic - the data says where the
- *  pulse goes, not a setting:
+/** Channel setup, polarity-agnostic - the data says where the pulse goes,
+ *  not a setting:
  *
- *  Auto-baseline: software triggers, every baseline (TR0 included) servoed to
- *  the window centre. The no-signal starting point.
- *  Fit to signal: with real triggers flowing, each channel's actual
- *  excursions - afterpulses of either sign included - are measured and the
- *  baseline placed so the whole pulse sits in the window with margin. */
+ *  Pulse Shift: with real triggers flowing, every channel goes to 0 V of
+ *  offset; only a channel whose pulse clips there is moved, just far enough
+ *  to bring the whole pulse into the window. Never centres anything.
+ *  Zero-volt calibration: measures each input's real 0 V reading for the
+ *  plots (display only). */
 export function CalibrationPanel({ connected, recording, locked, onUnlock,
-                                   onStarted, onFinished, onError }: Props) {
+                                   onStarted, onFinished, onError, zc }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
   const [fitEvents, setFitEvents] = useState("100");
+  const [zcHelp, setZcHelp] = useState(false);
   const wasActive = useRef(false);
 
   // Poll while a run is active - also on mount, so a page opened mid-run
@@ -61,9 +65,9 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [st?.active]);   // re-arm the poll loop when activity flips
 
-  const run = async (mode: "baseline" | "fit") => {
+  const run = async (mode: "shift" | "zero") => {
     try {
-      const n = mode === "fit" ? Number(fitEvents) : null;
+      const n = mode === "shift" ? Number(fitEvents) : null;
       await api.calibrate(mode, Number.isFinite(n as number) && (n as number) > 0 ? n : null);
       onStarted?.();
       wasActive.current = true;
@@ -85,7 +89,11 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
 
   const busy = !!st?.active;
   const rows = st?.report ?? [];
-  const bad = rows.filter((r) => r.status !== "ok");
+  // "shifted" is a success too: Pulse Shift moved a clipped channel into view.
+  const bad = rows.filter((r) => r.status !== "ok" && r.status !== "shifted");
+  const zeroReport = st?.phase === "zero";
+  const zcOn = !!zc?.applied;
+  const zcWhen = zc?.measured_at?.replace("T", " ").slice(0, 16);
 
   return (
     <div className="card">
@@ -96,21 +104,32 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
             title="Calibration locked - it steers DC offsets. Click to unlock."
             onClick={onUnlock}>🔒</button>
         ) : null}
-        <button disabled={!connected || busy || recording || locked} onClick={() => run("baseline")}
-          title="Software triggers; every channel's baseline (TR0 too) is servoed to the window centre. The setup-day tool: works on a dark bench, recovers railed channels, flags sick ones.">
-          Center baselines <span className="calib-note">no signal needed</span>
-        </button>
-        <button disabled={!connected || busy || recording || locked} onClick={() => run("fit")}
-          title="Needs real triggers. Measures each channel's actual pulse excursions - afterpulses of either sign included - and places the baseline so everything fits in the window with margin.">
-          Fit to pulses <span className="calib-note">needs triggers</span>
+        <button disabled={!connected || busy || recording || locked} onClick={() => run("shift")}
+          title="Only changes the DC offset, to slide a clipped pulse back into the ADC window. Channels that fit at 0 V of offset stay there. Needs real triggers.">
+          Pulse Shift <span className="calib-note">needs triggers</span>
         </button>
         <label className="calib-events"
-          title="Triggered events per fit measurement. It waits however long they take; it only stops if nothing triggers for 30 s.">
+          title="Triggered events per Pulse Shift measurement. It waits however long they take; it only stops if nothing triggers for 30 s.">
           <input type="number" min={4} value={fitEvents}
             disabled={busy}
             onChange={(e) => setFitEvents(e.target.value)} />
           ev
         </label>
+      </div>
+      <div className="zc-row">
+        <span className={"zc-state" + (zcOn ? " on" : "")}
+          title={zcOn
+            ? `This board's 0 V levels (measured ${zcWhen}) are applied to the plots only, not to recorded data.`
+            : "No 0 V calibration for this board: plots use CAEN's nominal 0 V levels."}>
+          <span className="dot" />
+          0 V levels: {zcOn ? "board-calibrated" : "nominal"}
+        </span>
+        <button disabled={!connected || busy || recording || locked} onClick={() => run("zero")}
+          title="Find the ADC code a 0 V input reads on every channel and TR0. Unplug every input first.">
+          {zcOn ? "Re-calibrate 0 V" : "Calibrate 0 V"}
+        </button>
+        <button className="zc-help" aria-label="About zero-volt calibration"
+          title="What this is and how to do it" onClick={() => setZcHelp(true)}>?</button>
       </div>
       {busy ? (
         <p className="calib-progress">
@@ -123,10 +142,34 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
         </p>
       ) : null}
       {st?.error ? <p className="calib-error">{st.error}</p> : null}
-      {!busy && rows.length ? (
+      {!busy && rows.length && zeroReport ? (
         <div className="calib-report">
           <div className="calib-sum">
-            {rows.length - bad.length} of {rows.length} channels ok
+            0 V found for {rows.length - bad.length} of {rows.length} inputs
+            {bad.length ? ` - not saved for: ${bad.map((r) => r.channel).join(", ")}` : ""}
+          </div>
+          <table>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.channel} className={r.status !== "ok" ? "bad" : ""}>
+                  <td>{r.channel}</td>
+                  <td className="mono" title="ADC code a 0 V input reads at this DC offset">
+                    {r.zero_code != null ? `0 V @ ${r.zero_code}` : "-"}</td>
+                  <td className="mono muted">
+                    {r.ref_dac != null ? `offset 0x${r.ref_dac.toString(16).toUpperCase()}` : ""}</td>
+                  <td>{r.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {!busy && rows.length && !zeroReport ? (
+        <div className="calib-report">
+          <div className="calib-sum">
+            {rows.filter((r) => r.status === "ok").length} of {rows.length} fit at 0 V of offset
+            {rows.some((r) => r.status === "shifted")
+              ? ` - shifted: ${rows.filter((r) => r.status === "shifted").map((r) => r.channel).join(", ")}` : ""}
             {bad.length ? ` - attention: ${bad.map((r) => r.channel).join(", ")}` : ""}
           </div>
           <table>
@@ -148,6 +191,41 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
       <p className="muted">
         Save a session afterwards to give the converged state a name.
       </p>
+      {zcHelp ? (
+        <div className="modal-backdrop" onClick={() => setZcHelp(false)}>
+          <div className="modal zc-modal" role="dialog" aria-label="Zero-Volt Calibration"
+            onClick={(e) => e.stopPropagation()}>
+            <h3>Zero-Volt Calibration</h3>
+            <p>
+              Each digitizer reads a 0&nbsp;V input slightly off CAEN's nominal
+              value, sometimes by over 100&nbsp;mV. This measures the true
+              0&nbsp;V reading on every channel and TR0 and corrects the plots
+              to match. Recorded data is not changed.
+            </p>
+            <p>
+              The calibration result is saved on this computer for the
+              connected digitizer and is applied automatically whenever that
+              digitizer is connected.
+            </p>
+            <p>To calibrate:</p>
+            <ol>
+              <li>Disconnect all inputs, including TR0, or fit 50&nbsp;&Omega;
+                terminators.</li>
+              <li>Click <b>Calibrate 0 V</b>. It takes a few seconds, and
+                your settings are restored when it finishes.</li>
+              <li>Reconnect your inputs.</li>
+            </ol>
+            <p>
+              If any input carries a signal during the measurement, the
+              calibration is not saved, and the affected inputs are listed
+              below the button.
+            </p>
+            <div className="modal-btns">
+              <button className="primary" onClick={() => setZcHelp(false)}>OK</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

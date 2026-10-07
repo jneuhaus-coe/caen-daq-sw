@@ -50,14 +50,14 @@ OUTPUT_FORMATS = ("ascii", "binary", "root")
 @dataclass
 class ChannelConfig:
     # Unsigned 16-bit DAC word, matching CAEN_DGTZ_SetChannelDCOffset's uint32_t.
-    dc_offset: int = C.DC_OFFSET_MID
+    dc_offset: int = C.DC_OFFSET_ZERO      # 0 V of offset (the power-on default)
     # Operator label, e.g. "Upstream". The UI shows it as "CH 3 - Upstream", but
     # that prefix is presentation only and never reaches the recording.
     name: str = ""
 
     def __post_init__(self):
         self.dc_offset = _clamp_int(self.dc_offset, 0, C.DC_OFFSET_MAX,
-                                    C.DC_OFFSET_MID)
+                                    C.DC_OFFSET_ZERO)
         self.name = "" if self.name is None else str(self.name)[:64]
 
 

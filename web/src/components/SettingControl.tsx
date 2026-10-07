@@ -63,7 +63,7 @@ export function SettingControl({ def, value, geom, dependsOn, disabled, onChange
     // mapped through the same line.
     const ends = [defDacToVolts(def, 0, geom), defDacToVolts(def, 0xFFFF, geom)];
     const lo = Math.min(...ends), hi = Math.max(...ends);
-    const mid = def.zero_dac ?? geom.dc_offset_mid;
+    const mid = def.zero_dac ?? geom.dc_offset_zero;
     return (
       <span className="field">
         <BlurInput

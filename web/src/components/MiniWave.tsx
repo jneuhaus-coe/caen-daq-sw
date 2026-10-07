@@ -39,19 +39,24 @@ interface Props {
    *  where everything will sit once the change is armed. */
   offsetDac?: number;
   offsetSlope?: number;
+  /** The offset the incoming traces were DIGITIZED under (telemetry's
+   *  armed DAC). Falls back to offsetDac. Labelling a trace with the
+   *  current config instead re-drew a still-old average at the new offset,
+   *  and the trace snapped back after every change. */
+  waveDac?: number | null;
   /** Input volts per window volt: 1 for signal channels, 2 for TR0 (its
    *  x2 input attenuator, UM4270 sec 9.1.2). */
   vScale?: number;
-  /** Input volts at the window centre for the CURRENT offset register. With
-   *  offsetDac/offsetSlope this puts every trace in input volts as of the
-   *  offset it was digitized under: a trace holds still when the offset
-   *  moves, and the full-scale axis moves instead. */
-  vOffset?: number;
+  /** The ADC code 0 V input lands on at the CURRENT offset register (the
+   *  channel's zero line, volts.ts). With offsetDac/offsetSlope this puts
+   *  every trace in input volts as of the offset it was digitized under: a
+   *  trace holds still when the offset moves, the full-scale axis moves. */
+  zeroCode?: number;
 }
 
 /** One channel's waveform in INPUT volts - the voltage on the connector's
- * centre pin relative to its shield - through UM4270's documented scale and
- * DC-offset shift, nothing measured. At the default full range the plot
+ * centre pin relative to its shield - through the channel's zero line:
+ * UM4270's nominal model, or the per-board 0 V calibration when present. At the default full range the plot
  * edges are ADC codes 0 and 4095 at the current offset: the rails, where a
  * clipped signal sits pinned.
  *
@@ -62,11 +67,12 @@ interface Props {
 export function MiniWave({
   wave, geom, windowNs, postTriggerPct, height = 140, color,
   yRange, onYRange, mode = "avg", lastWave, lastId, baselineGuide,
-  clearEpoch, markers, offsetDac, offsetSlope, vScale = 1, vOffset = 0,
+  clearEpoch, markers, offsetDac, offsetSlope, waveDac, vScale = 1, zeroCode,
 }: Props) {
   // ADC code -> input volts at the current offset (shifted codes for
   // history taken under another offset come in through shiftOf).
-  const pv = (code: number) => vScale * windowVolts(code, geom) + vOffset;
+  const z = zeroCode ?? (geom.adc_max + 1) / 2;
+  const pv = (code: number) => vScale * (windowVolts(code, geom) - windowVolts(z, geom));
   const ref = useRef<HTMLCanvasElement | null>(null);
   const density = useRef(new WaveDensity());
   const offscreen = useRef<HTMLCanvasElement | null>(null);
@@ -74,7 +80,7 @@ export function MiniWave({
   // captured, so the trace shifts predictively alongside the pile.
   const waveStamp = useRef<{ w?: number[]; dac?: number; post?: number }>({});
   if (wave !== waveStamp.current.w) {
-    waveStamp.current = { w: wave, dac: offsetDac, post: postTriggerPct };
+    waveStamp.current = { w: wave, dac: waveDac ?? offsetDac, post: postTriggerPct };
   }
   const shiftOf = (refDac?: number) =>
     offsetDac != null && offsetSlope != null && refDac != null
@@ -103,7 +109,7 @@ export function MiniWave({
   // same event; the id makes adds exact.
   useEffect(() => {
     if (lastWave && lastId != null) {
-      density.current.add(lastId, lastWave, offsetDac, postTriggerPct);
+      density.current.add(lastId, lastWave, waveDac ?? offsetDac, postTriggerPct);
     }
   }, [lastWave, lastId]);
 
@@ -200,16 +206,17 @@ export function MiniWave({
       ctx.stroke();
     }
 
-    // Scope: the newest trace as-is - it is at most one trigger period old,
-    // so no predictive shifting; what arrived is what is on the line.
+    // Scope: the newest trace, converted at the offset it was digitized
+    // under - between an offset change and the re-arm that is the old one.
     if (mode === "scope" && lastWave && lastWave.length > 0) {
       const n = lastWave.length;
+      const s = shiftOf(waveDac ?? offsetDac);
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         const px = (i / (n - 1)) * w;
-        const yy = clampY(y(pv(lastWave[i])));
+        const yy = clampY(y(pv(lastWave[i] + s)));
         i === 0 ? ctx.moveTo(px, yy) : ctx.lineTo(px, yy);
       }
       ctx.stroke();
@@ -236,7 +243,7 @@ export function MiniWave({
     }
   }, [wave, yMin, yMax, height, color, trigFrac, geom, zeroFrac, mode, lastId,
       baselineGuide, clearEpoch, markers, offsetDac, offsetSlope,
-      postTriggerPct, vScale, vOffset]);
+      postTriggerPct, vScale, z, waveDac]);
 
   const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
 

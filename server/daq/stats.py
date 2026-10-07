@@ -47,6 +47,13 @@ class RollingAverage:
             while buf and buf[0][0] < cutoff:
                 self._sum[ch] -= buf.popleft()[1]
 
+    def clear(self) -> None:
+        """Forget every channel's window - at each arm, so an average never
+        mixes events taken under two different DC offsets."""
+        with self._lock:
+            self._buf.clear()
+            self._sum.clear()
+
     def snapshot(self, ch: int):
         """Return (mean_wave float32, count) or (None, 0)."""
         with self._lock:

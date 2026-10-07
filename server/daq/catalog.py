@@ -210,12 +210,12 @@ BANK_SETTINGS = [
      # sentence only places 32768 near ADC code 2048 - it is not the slope.
      "lsb_v": 1 / 10240, "zero_dac": 32768,
      "caen": "CAEN_DGTZ_SetGroupFastTriggerDCOffset",
-     "help": "The TR0 input voltage at the CENTRE of its digitized window. "
-             "TR0 takes 2 Vpp (attenuated x2 into the 1 Vpp DRS4), so at "
-             "0 V the trace spans -1 V..+1 V; +1 V shifts it to 0..+2 V "
-             "(CAEN's TTL/positive example, 0xA800).\n\n"
-             "Keep it at 0 V (DAC 0x8000) when triggering on TR0: that is "
-             "the only offset where CAEN gives the threshold in volts "
+     "help": "How far the DAC shifts TR0, in volts at the input. 0 V is "
+             "midscale (DAC 0x8000). TR0 takes 2 Vpp (attenuated x2 into "
+             "the 1 Vpp DRS4), so +1 V moves the window from about "
+             "-1..+1 V to 0..+2 V (CAEN's TTL/positive example, 0xA800).\n\n"
+             "Keep it at 0 V when triggering on TR0: midscale is the only "
+             "offset where CAEN gives the threshold in volts "
              "(UM4270 sec 9.8.3)."},
 ]
 
@@ -245,5 +245,6 @@ def catalog() -> dict:
             "dc_offset_max": C.DC_OFFSET_MAX,
             "dc_offset_range_v": C.DC_OFFSET_RANGE_V,
             "dc_offset_mid": C.DC_OFFSET_MID,
+            "dc_offset_zero": C.DC_OFFSET_ZERO,
         },
     }

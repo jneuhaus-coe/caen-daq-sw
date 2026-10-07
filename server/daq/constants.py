@@ -27,6 +27,13 @@ DC_OFFSET_RANGE_V = 2.0    # total span, i.e. +/-1 V
 # unsigned 16-bit DAC word, midscale = no shift.
 DC_OFFSET_MAX = 0xFFFF
 DC_OFFSET_MID = 0x8000
+# Signal-channel DC offset word for 0 V of offset: the board's power-on
+# default, "0x8F00 (about 0mV, for input bipolar signals)" - V1742 manual
+# rev 6 sec 5.7 (docs/). The UI's nominal model puts a 0 V input at ADC code
+# 2048 here (measured on serial 53364 with inputs open: 2046-2138, mean ~2088).
+# TR0 keeps 0x8000 as its zero - UM4270's midscale, where the threshold
+# arithmetic is defined.
+DC_OFFSET_ZERO = 0x8F00
 
 # --- DRS4 sampling frequency enum (matches CAEN_DGTZ_DRS4Frequency_t) ---
 # value : (label, sample_rate_Hz, sample_period_ns)

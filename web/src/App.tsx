@@ -4,7 +4,7 @@ import type { Condition, DisplayPrefs, WaveMode } from "./api";
 import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
-import type { BoardConfig, Catalog, Status, Telemetry } from "./types";
+import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
@@ -22,8 +22,8 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
-import { TR_ATTEN, TR_OFF_MID_DAC, dacToVolts, fmtDacVolts, trAbsThresholdV,
-         trCountsPerLsb, trOffsetV, trThresholdDacForAbs, voltsToDac } from "./volts";
+import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
+         zeroCodeAt, zeroLine } from "./volts";
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -37,6 +37,18 @@ export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [config, setConfig] = useState<BoardConfig | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  // The open unit's per-board 0 V calibration (display only). Always loaded
+  // when present: fetched whenever the status says it changed - a new
+  // measurement, another unit, or the unit coming back.
+  const [zc, setZc] = useState<ZeroCal | null>(null);
+  const zcKey = status?.opened
+    ? `${status.board.serial}|${status.zerocal?.measured_at ?? ""}` : "";
+  useEffect(() => {
+    if (!zcKey) { setZc(null); return; }
+    let cancelled = false;
+    api.zerocal().then((z) => { if (!cancelled) setZc(z); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [zcKey]);
   const [tele, setTele] = useState<Telemetry | null>(null);
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
@@ -54,7 +66,6 @@ export function App() {
   // 16 channels at once - handy when every channel sees a similar signal.
   const [allYMin, setAllYMin] = useState("");
   const [allYMax, setAllYMax] = useState("");
-  const [allOffset, setAllOffset] = useState("");
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
   // into a density picture. "scope": the newest single trace alone, fed by
   // free-running software triggers. Persisted with the display state.
@@ -253,13 +264,65 @@ export function App() {
     changeYRange(0, null, true);   // every channel back to the full window
     setAllYMin(""); setAllYMax("");
   };
-  const applyGlobalOffset = () => {
-    if (!config || !catalog) return;
-    const v = Number(allOffset);
-    if (!Number.isFinite(v)) return;
-    const dac = voltsToDac(v, catalog.geometry);
-    pushConfig({ ...config,
-      channels: config.channels.map((c) => ({ ...c, dc_offset: dac })) });
+  // Fit window to pulses - DISPLAY ONLY. Each channel's baseline and pulse
+  // extremes, in the plots' input volts, from the single-event traces that
+  // telemetry already ships (the last 300 events per channel; wiped with the
+  // piles). The fit gives every channel the SAME height - the largest pulse
+  // plus margin - and slides each window off centre only as far as its own
+  // pulses need. No digitizer setting or recorded byte is touched.
+  const extents = useRef<Record<number, {
+    idx: number | null; ev: { b: number; lo: number; hi: number }[] }>>({});
+  useEffect(() => { extents.current = {}; }, [wipeEpoch]);
+  useEffect(() => {
+    if (!tele || !catalog || !config) return;
+    const g = catalog.geometry;
+    for (let ch = 0; ch < g.num_channels; ch++) {
+      const e = tele.channels[String(ch)];
+      if (!e?.last || e.last_index == null) continue;
+      const rec = (extents.current[ch] ??= { idx: null, ev: [] });
+      if (rec.idx === e.last_index) continue;
+      rec.idx = e.last_index;
+      const line = zeroLine(ch, g, zc);
+      const z = zeroCodeAt(line, e.dac ?? config.channels[ch].dc_offset, g);
+      const toV = (c: number) => line.vScale * (c - z) * g.input_range_vpp / (g.adc_max + 1);
+      const sorted = [...e.last].sort((a, b) => a - b);
+      rec.ev.push({ b: toV(sorted[sorted.length >> 1]),
+                    lo: toV(sorted[0]), hi: toV(sorted[sorted.length - 1]) });
+      if (rec.ev.length > 300) rec.ev.shift();
+    }
+  }, [tele]);
+  const fitWindows = () => {
+    if (!catalog) return;
+    const per: { ch: number; b: number; below: number; above: number }[] = [];
+    for (let ch = 0; ch < catalog.geometry.num_channels; ch++) {
+      const ev = extents.current[ch]?.ev ?? [];
+      if (ev.length < 3) continue;
+      const bs = ev.map((x) => x.b).sort((a, c) => a - c);
+      const b = bs[bs.length >> 1];
+      per.push({ ch, b,
+                 below: Math.max(0, b - Math.min(...ev.map((x) => x.lo))),
+                 above: Math.max(0, Math.max(...ev.map((x) => x.hi)) - b) });
+    }
+    if (!per.length) {
+      push("warn", "No events to fit yet", ["Wait for a few triggers, then try again."]);
+      return;
+    }
+    // Same height everywhere: the tallest pulse fills 80% of it.
+    const H = Math.max(0.005, Math.max(...per.map((p) => p.below + p.above)) / 0.8);
+    const m = 0.1 * H;
+    const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+    const Hr = r4(H);                 // one height, rounded once, for all
+    const next = { ...yRanges };
+    for (const p of per) {
+      let lo = p.b - H / 2;                                   // centred...
+      if (p.b - p.below - m < lo) lo = p.b - p.below - m;     // ...unless the pulse
+      if (lo + H < p.b + p.above + m) lo = p.b + p.above + m - H;  // needs the room
+      const lor = r4(lo);
+      next[p.ch] = [lor, r4(lor + Hr)];
+    }
+    applyYRanges(next);
+    push("ok", "Plot windows fitted to pulses",
+         [`${(H * 1000).toFixed(1)} mV tall on ${per.length} channels - display only; "reset" restores full scale`]);
   };
 
   const catalogRef = useRef<Catalog | null>(null);
@@ -771,21 +834,12 @@ export function App() {
               <button onClick={resetGlobalRange}
                 title="Reset every channel's plot to the full window">reset</button>
             </span>
-            <span className="cg-group"
-              title="Write this DC offset (input volts at the window centre) to all 16 channels">
-              DC offset
-              <input type="number" step={0.005} className="cg-num"
-                placeholder={dacToVolts(config.channels[0].dc_offset, catalog.geometry).toFixed(3)}
-                value={allOffset} disabled={!connected || lockOn}
-                onChange={(e) => setAllOffset(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") applyGlobalOffset(); }} />
-              V
-              <button onClick={applyGlobalOffset} disabled={!connected || lockOn}
-                title={lockOn ? "Settings are locked - unlock to write offsets"
-                              : "Set this DC offset on all 16 channels"}>set all</button>
-            </span>
+            <button className="cg-fit" onClick={fitWindows}
+              title="Display only: sets every channel plot's vertical range to the same height, each baseline shifted just enough to fit the largest recent pulses with margin. Changes no digitizer setting and no recorded data. 'reset' restores full scale.">
+              Fit window to pulses
+            </button>
           </div>
-          <ChannelGrid catalog={catalog} config={config} tele={tele}
+          <ChannelGrid catalog={catalog} config={config} tele={tele} zc={zc}
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
@@ -807,6 +861,7 @@ export function App() {
             // UM4270 sec 9.8.3 gives the threshold in volts for; elsewhere
             // CAEN states there is no formula, so there is no line.
             const off = config.groups[trCh! - 16].fast_trigger_dc_offset;
+            const trLine = zeroLine(trCh!, catalog.geometry, zc);
             const thr = config.groups[trCh! - 16].fast_trigger_threshold;
             const markers = off === TR_OFF_MID_DAC
               ? [{ v: trAbsThresholdV(thr), label: "trigger", color: "#f85149" }]
@@ -819,8 +874,9 @@ export function App() {
                   windowNs={tele ? tele.sample_period_ns * tele.record_length : undefined}
                   postTriggerPct={config.post_trigger}
                   color="#e3b341" height={110}
-                  markers={markers} vScale={TR_ATTEN} vOffset={trOffsetV(off)}
-                  offsetDac={off} offsetSlope={trCountsPerLsb(catalog.geometry)}
+                  markers={markers} vScale={trLine.vScale}
+                  zeroCode={zeroCodeAt(trLine, off, catalog.geometry)}
+                  offsetDac={off} offsetSlope={trLine.s} waveDac={tr.dac}
                   yRange={yRanges[trCh!]}
                   onYRange={(range, all) => changeYRange(trCh!, range, all)}
                   mode={waveMode} lastWave={tr.last} lastId={tr.last_index}
@@ -830,6 +886,11 @@ export function App() {
           })()}
           <Collapsible title="TR0 Trigger" defaultOpen>
             {(() => {
+              // The TR offset field stays on CAEN's scale (Tab. 9.1), NOT the
+              // 0 V calibration: 0 is midscale 0x8000, the reference the
+              // threshold arithmetic is defined against. Through the
+              // calibration, "0" landed at 33576 and the threshold lost its
+              // meaning. The TR0 TRACE is still calibrated.
               const offDefs = catalog.bank.filter((d) =>
                 d.key === "fast_trigger_dc_offset");
               const [g0, g1] = config.groups;
@@ -935,7 +996,7 @@ export function App() {
               live on the Experiment tab.
             </p>
           </Collapsible>
-          <CalibrationPanel
+          <CalibrationPanel zc={zc}
             connected={connected} recording={recording}
             locked={isLocked("calibration")}
             onUnlock={() => unlockOne("calibration")}
