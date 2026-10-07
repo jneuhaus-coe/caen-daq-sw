@@ -582,6 +582,45 @@ test("a legacy Configuration B file loads through the Load button", async ({ pag
   expect(c.channels[12].dc_offset).toBe(18536);
 });
 
+test("an update is offered once no run is recording, and a reload keeps the forms", async ({ page }) => {
+  // What `daq update` leaves behind: the server now serves a different
+  // bundle than this page was loaded from.
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, version: "99.0.0",
+                                            ui_assets: ["/assets/index-next.js"] } });
+  });
+  const banner = page.locator(".update-banner");
+  const recording = async () =>
+    (await (await page.request.get("/api/status")).json()).recording;
+
+  // Never invited to reload in the middle of a run...
+  await page.request.post("/api/rec/start", { data: { name: "update-suite" } });
+  await expect.poll(recording).toBe(true);
+  await expect(page.locator(".rec-group.on")).toBeVisible();
+  await expect(banner).toBeHidden();
+  // ...and offered the moment it ends.
+  await page.request.post("/api/rec/stop");
+  await expect(banner).toContainText("Update ready: DAQ 99.0.0");
+
+  // Reloading keeps what was typed: remembered values and this window's drafts.
+  await page.locator("#runname").fill("cosmics");
+  await page.locator("#runno").fill("7");
+  await page.locator("#recmax").fill("5000");
+  await page.locator(".rec-stamp input").uncheck();
+  await banner.getByRole("button", { name: "Reload" }).click();
+  await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#runname")).toHaveValue("cosmics");
+  await expect(page.locator("#runno")).toHaveValue("7");
+  await expect(page.locator("#recmax")).toHaveValue("5000");
+  await expect(page.locator(".rec-stamp input")).not.toBeChecked();
+
+  // "Later" puts it away.
+  await banner.getByRole("button", { name: "Later" }).click();
+  await expect(banner).toBeHidden();
+});
+
 test("0 V calibration: help, calibrate, applied, settings restored", async ({ page }) => {
   // LAST in the file on purpose: once stored, the calibration applies to
   // every later page load of this fake board.

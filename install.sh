@@ -8,6 +8,10 @@
 # Environment:
 #   DAQ_VERSION=v0.2.0   install that tagged release instead of the newest
 #   DAQ_VERSION=source   build from the tip of main instead of a release (needs git)
+#
+# Set by `daq update`, which runs this script to do its installing:
+#   DAQ_WHEEL=<url>      install this wheel; the release was already looked up
+#   DAQ_RELAUNCH=<args>  after a good install, start `daq <args>` in this terminal
 
 set -euo pipefail
 
@@ -15,6 +19,8 @@ REPO="jneuhaus-coe/caen-daq-sw"
 PKG="dt5742b-daq"
 PYTHON_VERSION="3.11"
 VERSION="${DAQ_VERSION:-latest}"
+WHEEL="${DAQ_WHEEL:-}"
+RELAUNCH="${DAQ_RELAUNCH:-}"
 
 if [ -t 1 ]; then B=$'\033[1m'; Y=$'\033[33m'; R=$'\033[31m'; G=$'\033[32m'; N=$'\033[0m'
 else B=""; Y=""; R=""; G=""; N=""; fi
@@ -180,7 +186,7 @@ if [ "$VERSION" = "source" ]; then
     say "Building from the tip of main"
     SPEC="$GIT_SPEC"
 else
-    WHEEL="$(resolve_wheel || true)"
+    [ -n "$WHEEL" ] || WHEEL="$(resolve_wheel || true)"
     if [ -n "$WHEEL" ]; then
         say "Release: $(basename "$WHEEL")"
         SPEC="$PKG @ $WHEEL"
@@ -248,6 +254,17 @@ fi
 echo
 printf '%sInstalled:%s %s\n' "$B" "$N" "$($DAQ_BIN --version 2>/dev/null || echo "$PKG")"
 echo
+
+if [ -n "$RELAUNCH" ]; then
+    # `daq update` stopped the server to install over it; bring it back the way
+    # it was running. Exec, so Ctrl-C reaches the server as it would have.
+    if [ "$missing" -eq 1 ]; then
+        warn "Install the CAEN items above before the unit will open."
+    fi
+    say "Starting the DAQ again"
+    # shellcheck disable=SC2086  # word splitting is the point: these are arguments
+    exec "$DAQ_BIN" $RELAUNCH
+fi
 echo "  daq                    open the DAQ (starts the server if needed)"
 echo "  daq --host 0.0.0.0     serve to the network"
 echo "  daq --help             all options"

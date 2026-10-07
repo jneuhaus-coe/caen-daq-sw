@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePersistentState } from "../persist";
 import type { BoardConfig, Catalog, Telemetry, ZeroCal } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
@@ -37,7 +38,8 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
-  const [open, setOpen] = useState<Record<number, boolean>>({});
+  const [open, setOpen] =
+    usePersistentState<Record<number, boolean>>("channelOpen", {});
   const [renaming, setRenaming] = useState<number | null>(null);
   // Slider previews: value shown (and band drawn) while dragging, in volts.
   // The hardware write happens once, on release - a drag must not become a

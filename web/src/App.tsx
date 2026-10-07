@@ -23,6 +23,9 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { usePersistentState } from "./persist";
+import { onFlush } from "./flush";
 import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
          zeroCodeAt, zeroLine } from "./volts";
 
@@ -53,51 +56,55 @@ export function App() {
   const [tele, setTele] = useState<Telemetry | null>(null);
   const [serverUp, setServerUp] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
-  const [runName, setRunName] = useState("");
+  // Form values survive a reload - the one an update asks for included. The
+  // remembered last-used values are "local" (every window); a window's own
+  // drafts are "session" (that window only).
+  const [runName, setRunName] = usePersistentState("runName", "");
   // Empty = let the server infer the next number from the data directory.
-  const [runNo, setRunNo] = useState("");
-  const [stampRun, setStampRun] = useState(true);
+  const [runNo, setRunNo] = usePersistentState("runNo", "", "session");
+  const [stampRun, setStampRun] = usePersistentState("stampRun", true);
   const [tour, setTour] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
   // Per-channel waveform display ranges (volts). Persisted server-side so a
   // daq restart or a different browser comes back to the same view.
   const [yRanges, setYRanges] = useState<Record<number, [number, number]>>({});
-  // Global channel controls: set the display window and the DC offset for all
+  // Global channel controls: set the display window for all
   // 16 channels at once - handy when every channel sees a similar signal.
-  const [allYMin, setAllYMin] = useState("");
-  const [allYMax, setAllYMax] = useState("");
+  const [allYMin, setAllYMin] = usePersistentState("allYMin", "");
+  const [allYMax, setAllYMax] = usePersistentState("allYMax", "");
   // "avg": the 1 s rolling mean. "overlay": the last N single events piled
   // into a density picture. "scope": the newest single trace alone, fed by
   // free-running software triggers. Persisted with the display state.
   const [waveMode, setWaveMode] = useState<WaveMode>("avg");
   // Scope mode's software-trigger rate; committed via /api/scope.
-  const [scopeHz, setScopeHz] = useState("2");
+  const [scopeHz, setScopeHz] = usePersistentState("scopeHz", "2");
   // The scope's channel-trigger: "" = show every event; a channel number =
   // only events where that trace crosses the level refresh the display.
-  const [scopeTrigCh, setScopeTrigCh] = useState("");
-  const [scopeTrigMv, setScopeTrigMv] = useState("20");
-  const [scopeTrigEdge, setScopeTrigEdge] = useState<"rising" | "falling">("falling");
-  const [testN, setTestN] = useState("100");
+  const [scopeTrigCh, setScopeTrigCh] = usePersistentState("scopeTrigCh", "");
+  const [scopeTrigMv, setScopeTrigMv] = usePersistentState("scopeTrigMv", "20");
+  const [scopeTrigEdge, setScopeTrigEdge] =
+    usePersistentState<"rising" | "falling">("scopeTrigEdge", "falling");
+  const [testN, setTestN] = usePersistentState("testN", "100");
   // TR DC offset: a lockable setting in the house style (see CLAUDE.md, UI
   // conventions) - locked by default, the lock icon toggles it.
   const [trOffLocked, setTrOffLocked] = useState(true);
   const [trigHelp, setTrigHelp] = useState(false);
   // Blank = record until stopped; a number = auto-close the run at N events.
-  const [recMax, setRecMax] = useState("");
+  const [recMax, setRecMax] = usePersistentState("recMax", "");
   // The run-notes dialog: Record opens it, and the note it collects lands in
   // run_metadata.json - what was tested, beam energy, the context no
   // register readback can supply. Cleared after each run starts: a note
   // describes ONE run, and a stale one silently attached to the next run
   // would be worse than none.
   const [recDialog, setRecDialog] = useState(false);
-  const [recNote, setRecNote] = useState("");
+  const [recNote, setRecNote] = usePersistentState("recNote", "", "session");
   // The conditions snapshot shown in the confirm-setup dialog, fetched fresh
   // each time it opens so it reflects the server's truth, not tab state.
   const [recCond, setRecCond] = useState<Condition[]>([]);
   // Live = watch and operate; Experiment = campaign setup, conditions, and
   // everything you would hate to change by accident mid-campaign.
-  const [view, setView] = useState<"live" | "experiment">("live");
+  const [view, setView] = usePersistentState<"live" | "experiment">("view", "live");
   // The settings lock: lock everything with one button, unlock individual
   // settings one at a time - deliberate exceptions, wholesale protection.
   const [lockOn, setLockOn] = useState(false);
@@ -115,6 +122,10 @@ export function App() {
   const [wipeEpoch, setWipeEpoch] = useState(0);
   const saveTimer = useRef<number | undefined>(undefined);
   const displayTimer = useRef<number | undefined>(undefined);
+  // The writes those timers are holding, so a reload can send them now
+  // instead of dropping an edit made in the last fraction of a second.
+  const pendingConfig = useRef<(() => Promise<unknown>) | null>(null);
+  const pendingDisplay = useRef<(() => Promise<unknown>) | null>(null);
   // The config the unit last confirmed - what a change gets measured against.
   const confirmed = useRef<BoardConfig | null>(null);
   // The server's config revision this tab is based on. Sent with every push
@@ -131,6 +142,17 @@ export function App() {
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
       cfgRev.current = st.config_rev ?? 0;
+      // A scope already firing (from before a reload, or another window)
+      // is the truth for its controls - not whatever was last typed here.
+      if (st.scope_hz != null) {
+        setScopeHz(String(st.scope_hz));
+        const trig = st.scope_trigger;
+        setScopeTrigCh(trig ? String(trig.channel) : "");
+        if (trig) {
+          setScopeTrigMv(String(trig.level_mv));
+          setScopeTrigEdge(trig.edge === "rising" ? "rising" : "falling");
+        }
+      }
     } catch (e) {
       // Leaving this to console.error left the page reading "Loading..." for
       // ever, with nothing on screen to say the server had not answered.
@@ -175,13 +197,16 @@ export function App() {
   const saveDisplay = (ranges: Record<number, [number, number]>,
                        mode: WaveMode) => {
     window.clearTimeout(displayTimer.current);
-    displayTimer.current = window.setTimeout(() => {
+    const send = () => {
+      pendingDisplay.current = null;
       const y_ranges: Record<string, [number, number]> = {};
       for (const [k, v] of Object.entries(ranges)) y_ranges[k] = v;
-      api.setDisplay({ y_ranges, wave_mode: mode,
-                       lock_on: lockRef.current.on,
-                       lock_open: lockRef.current.open }).catch(() => {});
-    }, 400);
+      return api.setDisplay({ y_ranges, wave_mode: mode,
+                              lock_on: lockRef.current.on,
+                              lock_open: lockRef.current.open }).catch(() => {});
+    };
+    pendingDisplay.current = send;
+    displayTimer.current = window.setTimeout(send, 400);
   };
 
   // The lock: keyed by setting ("post_trigger"), channel ("ch:5"), or
@@ -378,10 +403,11 @@ export function App() {
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);                       // optimistic, for input responsiveness
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
+    const send = () => {
+      pendingConfig.current = null;
       // Whatever the board reports wins - a rejected write must not leave the
       // UI showing a value the hardware never took.
-      api.setConfig(next, cfgRev.current)
+      return api.setConfig(next, cfgRev.current)
         .then((r) => {
           if (r.config_rev != null) cfgRev.current = r.config_rev;
           setConfig(r.config);
@@ -407,8 +433,15 @@ export function App() {
           }
         })
         .catch(() => push("err", "Could not reach the DAQ server"));
-    }, 250);
+    };
+    pendingConfig.current = send;
+    saveTimer.current = window.setTimeout(send, 250);
   };
+  useEffect(() => onFlush(() => {
+    window.clearTimeout(saveTimer.current);
+    window.clearTimeout(displayTimer.current);
+    return Promise.all([pendingConfig.current?.(), pendingDisplay.current?.()]);
+  }), []);
   const updateBoard = (key: string, value: any) =>
     config && pushConfig({ ...config, [key]: value });
   const updateGroup = (g: number, key: string, value: any) => {
@@ -1095,6 +1128,7 @@ export function App() {
         </fieldset>
       </div>
       <Toasts toasts={toasts} onDismiss={dismiss} />
+      <UpdateBanner status={status} recording={recording} />
       {recDialog ? (
         <div className="modal-backdrop" onClick={() => setRecDialog(false)}>
           <div className="modal rec-modal" onClick={(e) => e.stopPropagation()}

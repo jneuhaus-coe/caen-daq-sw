@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { usePersistentState } from "../persist";
 
 interface Props {
   title: string;
@@ -10,7 +11,8 @@ interface Props {
 }
 
 export function Collapsible({ title, children, defaultOpen = false, right, variant = "card" }: Props) {
-  const [open, setOpen] = useState(defaultOpen);
+  // Remembered per panel title, so a reload comes back to the same layout.
+  const [open, setOpen] = usePersistentState(`open:${title}`, defaultOpen);
   return (
     <div className={variant === "card" ? "card" : "sub-collapse"}>
       {/* A real button, not a clickable heading: these are the only way to
