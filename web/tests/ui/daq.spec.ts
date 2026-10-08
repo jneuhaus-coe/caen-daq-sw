@@ -268,7 +268,8 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(page.getByText(/applied and read back/)).toBeVisible();
 
   page.on("dialog", (d) => d.accept());
-  await row.locator("button.danger").click();
+  await row.getByRole("button", { name: /More/ }).click();
+  await row.getByRole("menuitem", { name: "Delete" }).click();
   await expect(row).toHaveCount(0);
 });
 
@@ -595,7 +596,7 @@ test("a legacy Configuration B file loads through the Load button", async ({ pag
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
   // Straight onto the hidden input - clicking Load would open the native
   // chooser, which is the browser's UI, not ours to test.
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.locator('.card:has(h2:text("Config file")) input[type="file"]').setInputFiles({
     name: "configB.txt", mimeType: "text/plain",
     buffer: Buffer.from(legacy),
   });

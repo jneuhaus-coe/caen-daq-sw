@@ -4,6 +4,7 @@ enabled channels + a rolling rate window) at a fixed cadence."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -229,6 +230,44 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.get("/api/sessions")
     def list_sessions():
         return {"sessions": sessions.listing()}
+
+    @app.post("/api/session-import")
+    async def import_session(request: Request, filename: str = ""):
+        """Add a file to the session list (never to the unit): a session
+        file, or a board config in any format Load accepts."""
+        text = (await request.body()).decode("utf-8", errors="replace")
+        try:
+            r = sessions.import_text(text, filename)
+        except ValueError as e:
+            logsetup.did(log, f"Importing {filename or 'a file'} as a session",
+                         f"Refused: {e}", level=logging.WARNING)
+            raise HTTPException(400, str(e))
+        logsetup.did(log, f"Importing {filename or 'a file'} as a session",
+                     f"Saved as {r['name']!r}")
+        return {"ok": True, **r}
+
+    @app.get("/api/sessions/{name}/file")
+    def download_session(name: str):
+        """The session record itself - Import takes it back, here or on
+        another machine."""
+        s = sessions.load(name)
+        if s is None:
+            raise HTTPException(404, "no such session")
+        return Response(json.dumps(s, indent=2), media_type="application/json",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{s.get("name") or name}.session.json"'})
+
+    @app.get("/api/sessions/{name}/config")
+    def export_session_config(name: str):
+        """Just the session's board config, in the config-file format (what
+        Load and other copies of this app read)."""
+        s = sessions.load(name)
+        if s is None:
+            raise HTTPException(404, "no such session")
+        body = configfile.to_json(BoardConfig.from_dict(s["config"]))
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{s.get("name") or name}-board-config.json"'})
 
     @app.post("/api/sessions/{name}")
     def save_session(name: str):

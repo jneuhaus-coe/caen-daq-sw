@@ -630,14 +630,15 @@ Never let the UI show a setting the hardware did not confirm.
 - **Lockable settings (the house style).** A monochrome line-icon lock
   button (`LockToggle`, `currentColor` - it reads like the label, never as a
   highlighted control) sits to the LEFT of the setting's label and toggles
-  it. Every hardware setting is lockable except Digitize TR traces and
+  it. Every hardware setting is lockable except the per-channel DC
+  offsets, Digitize TR traces and
   Software trigger (never were; a `.lock-spacer` keeps their labels in
   line). Optional campaign settings are plain lockable rows - the old
   "uncheck to return to default" checkbox is gone. Locked: the control is greyed out but still shows the board's value -
   protection, not concealment. Locking never writes or resets anything, and
   one click unlocks. CSS: `.setting-row.lockable` (+ `.locked`),
   `.lock-toggle`. Keys: the setting key, `bank<N>:<key>` for bank settings,
-  `ch:<N>` for a channel's DC offset, `calibration` for the calibrator.
+  `calibration` for the calibrator.
   Locks live in the display prefs (`locks`), so every window and a reload
   agree; `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked -
   today only the TR DC offset. The old global "lock everything" mode is

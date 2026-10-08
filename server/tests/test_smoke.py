@@ -896,6 +896,25 @@ def test_sessions_and_display_roundtrip():
             assert a["connected"] is False and a["ok"] is False   # no unit
             assert a["display"]["y_ranges"]["3"] == [-0.5, 0.25]  # still lands
 
+            # Download -> Import gives the session back, under a fresh name
+            # rather than over the original.
+            f = c.get("/api/sessions/cosmics nov/file")
+            assert "cosmics nov.session.json" in f.headers["content-disposition"]
+            r = c.post("/api/session-import?filename=cosmics nov.session.json",
+                       content=f.content).json()
+            assert r["kind"] == "session" and r["name"] == "cosmics nov-2"
+            # Export Board Config is a config file, so Import reads it as a
+            # config-only session: applying it leaves the display alone.
+            cf = c.get("/api/sessions/cosmics nov/config")
+            assert json.loads(cf.content)["format"] == "dt5742b-daq/config"
+            r = c.post("/api/session-import?filename=beam.json", content=cf.content).json()
+            assert r["kind"] == "config" and r["name"] == "beam"
+            c.post("/api/display", json={"y_ranges": {"3": [-0.1, 0.1]}})
+            c.post("/api/sessions/beam/apply")
+            assert c.get("/api/display").json()["y_ranges"]["3"] == [-0.1, 0.1]
+            assert c.post("/api/session-import?filename=x.txt",
+                          content=b"\x00not a config").status_code == 400
+
             assert c.delete("/api/sessions/cosmics nov").json()["ok"]
             assert c.post("/api/sessions/cosmics nov/apply").status_code == 404
         finally:

@@ -109,6 +109,14 @@ export const api = {
   deleteSession: (name: string) =>
     fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" })
       .then(j<{ ok: boolean }>),
+  /** Adds a file to the list - a session file, or a board config in any
+   *  format Load reads. Never touches the unit; Apply does. */
+  importSession: (text: string, filename: string) =>
+    fetch(`/api/session-import?filename=${encodeURIComponent(filename)}`, {
+      method: "POST", headers: { "Content-Type": "text/plain" }, body: text,
+    }).then(j<{ ok: boolean; name: string; kind: "session" | "config"; notes: string[] }>),
+  sessionFileUrl: (name: string) => `/api/sessions/${encodeURIComponent(name)}/file`,
+  sessionConfigUrl: (name: string) => `/api/sessions/${encodeURIComponent(name)}/config`,
 };
 
 export interface SessionInfo { name: string; saved_at: number | null; }

@@ -420,6 +420,21 @@ select { min-width: 90px; }
 }
 .session-row .session-date { color: var(--muted); font-size: 10.5px; }
 .session-row button { padding: 1px 8px; font-size: 11px; }
+/* More: Download / Export Board Config / Delete, as words in a dropdown. */
+.session-more { position: relative; }
+.session-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
+  display: flex; flex-direction: column; min-width: 170px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.session-row .session-menu button {
+  text-align: left; padding: 5px 9px; font-size: 12px; white-space: nowrap;
+  background: none; border: 1px solid transparent;
+}
+.session-row .session-menu button:hover { background: #21262d; border-color: transparent; }
+.session-menu button.danger { color: var(--red); }
+.session-import { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 
 .config-btns { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .config-btns .spacer { flex: 1; }
@@ -650,9 +665,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   position: relative; z-index: 1; font-weight: 650;
 }
 
-.tile-dc .lock-toggle { color: var(--muted); }
-.tile-dc.locked label { color: #6e7681; }
-.tile-dc.locked input { opacity: .45; }
 
 /* experiment view layout */
 main.experiment { overflow-y: auto; }

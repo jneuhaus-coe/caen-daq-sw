@@ -295,6 +295,14 @@ export function App() {
   // the truth; the fields show it, never a value this tab merely asked for).
   const avg: AvgSettings = tele?.avg
     ?? { mode: "time", seconds: tele?.avg_window_s ?? 1, events: 100 };
+  // The mode just picked, until telemetry confirms it. Without it a number
+  // typed straight after switching to "events" committed as SECONDS - the
+  // field still followed the old mode for the telemetry round trip.
+  const [avgModePick, setAvgModePick] = useState<AvgSettings["mode"] | null>(null);
+  useEffect(() => {
+    if (avgModePick && tele?.avg?.mode === avgModePick) setAvgModePick(null);
+  }, [tele?.avg?.mode, avgModePick]);
+  const avgMode = avgModePick ?? avg.mode;
   const avgLabel = avg.mode === "time" ? `${avg.seconds} s` : `${avg.events} events`;
   const applyAverage = (patch: Partial<AvgSettings>) => {
     api.setAverage(patch)
@@ -792,6 +800,11 @@ export function App() {
                 <SessionsPanel
                   recording={recording}
                   onSaved={(name) => push("ok", `Session "${name}" saved`)}
+                  onImported={(name, kind, notes) => push(notes.length ? "warn" : "ok",
+                    `Imported as session "${name}"`,
+                    [kind === "config"
+                      ? "Board settings only - Apply leaves the display and conditions alone."
+                      : "Nothing is sent to the unit until you Apply it.", ...notes])}
                   onError={(title, lines) => push("err", title, lines)}
                   onApplied={(cfg, display, errors, isConn, name) => {
                     setConfig(cfg); confirmed.current = cfg;
@@ -873,17 +886,21 @@ export function App() {
                   title={"Average over a time span (follows the beam: empties when triggers stop) or over a number of events (holds the last N when triggers stop). Display only - nothing recorded is averaged."}>
                   over last
                   <BlurInput type="number" className="avg-n" selectOnFocus
-                    min={avg.mode === "time" ? 0.1 : 1}
-                    step={avg.mode === "time" ? 0.1 : 1}
-                    value={avg.mode === "time" ? avg.seconds : avg.events}
+                    min={avgMode === "time" ? 0.1 : 1}
+                    step={avgMode === "time" ? 0.1 : 1}
+                    value={avgMode === "time" ? avg.seconds : avg.events}
                     onCommit={(v) => {
                       const n = Number(v);
                       if (!Number.isFinite(n) || n <= 0) return;
-                      applyAverage(avg.mode === "time" ? { seconds: n }
-                                                       : { events: Math.round(n) });
+                      applyAverage(avgMode === "time" ? { mode: "time", seconds: n }
+                                                      : { mode: "events", events: Math.round(n) });
                     }} />
-                  <select value={avg.mode}
-                    onChange={(e) => applyAverage({ mode: e.target.value as AvgSettings["mode"] })}>
+                  <select value={avgMode}
+                    onChange={(e) => {
+                      const mode = e.target.value as AvgSettings["mode"];
+                      setAvgModePick(mode);
+                      applyAverage({ mode });
+                    }}>
                     <option value="time">s</option>
                     <option value="events">events</option>
                   </select>
@@ -1000,8 +1017,7 @@ export function App() {
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
-            clearEpoch={wipeEpoch}
-            locked={isLocked} onToggleLock={toggleLock} />
+            clearEpoch={wipeEpoch} />
         </main>
         )}
 
