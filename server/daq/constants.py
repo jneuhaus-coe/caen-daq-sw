@@ -80,7 +80,7 @@ RECONNECT_RETRY_S = 5.0
 
 # The post-trigger register counts TIME, not percent: ~8.5 ns per step. The API
 # takes a percentage, so the reachable percentages depend on how long the
-# 1024-sample record is at the current sampling frequency — coarse at 5 GS/s
+# 1024-sample record is at the current sampling frequency â€” coarse at 5 GS/s
 # (204.8 ns record -> 4.15% steps, only 25 values) and every whole percent at
 # 1 GS/s or slower. Asking for anything else just gets silently snapped.
 # Measured 8.45 ns on serial 53364 (ROC 04.29); CAEN document 8.5 ns.
@@ -102,3 +102,11 @@ def post_trigger_steps(drs4_freq: int) -> list[int]:
 
 def record_ns(drs4_freq: int) -> float:
     return RECORD_LENGTH * sample_period_ns(drs4_freq)
+
+# usbwatch: the most often Windows' device list is scanned (only while the unit
+# is not open, and only when asked), and how long a digitizer that just
+# appeared on USB is left to boot before the CAEN driver is called.
+USB_POLL_S = 1.0
+USB_SETTLE_S = 5.0
+# An open still inside the driver after this long is reported as stuck.
+OPEN_STUCK_S = 15.0

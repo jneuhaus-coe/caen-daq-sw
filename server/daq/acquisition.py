@@ -113,6 +113,13 @@ class AcquisitionEngine:
         self._errors: list[str] = []
         self._opened = False
         self._last_open_attempt = 0.0
+        # Set while backend.open() is inside the driver; None otherwise.
+        self._opening_since: float | None = None
+        # Why the unit is not open, in the operator's words, for status().
+        self._not_open_reason = "not opened yet"
+        # Answers link_gate() between opens. Constructing a backend is free
+        # (the CAEN one loads nothing until open), so one is kept for asking.
+        self._gatekeeper: DigitizerBackend | None = None
         # Software triggers are queued here and fired by the readout loop, one
         # per pass at the requested pace. Firing from the request thread that
         # asked for them would put a second thread inside libCAENDigitizer
@@ -144,7 +151,19 @@ class AcquisitionEngine:
         with self._open_lock:
             with logsetup.step(log, "Opening the digitizer", level=level) as opening:
                 backend = self._backend_factory()
-                board_info = backend.open()
+                waiting = backend.link_gate()
+                if waiting:
+                    raise RuntimeError(f"Not opened: {waiting}")
+                # Visible to status() and reconnect() while the driver has us:
+                # an open that is merely slow must never read as "no unit".
+                self._opening_since = time.monotonic()
+                try:
+                    board_info = backend.open()
+                except Exception as e:
+                    self._not_open_reason = str(e)
+                    raise
+                finally:
+                    self._opening_since = None
                 self._backend = backend
                 self._board_info = board_info
                 opening.done(f"Found {board_info.model} S/N {board_info.serial}, "
@@ -505,7 +524,9 @@ class AcquisitionEngine:
             if self._thread:
                 self._thread.join(timeout=2.0)
             halted = True
-            if self._backend is not None:
+            # Not into a board already known lost: the call cannot reach it,
+            # and a driver call aimed at a vanished unit is how it wedges.
+            if self._backend is not None and self._opened:
                 try:
                     self._backend.stop()
                 except Exception as e:
@@ -540,44 +561,75 @@ class AcquisitionEngine:
         if self._running.is_set():
             return self._opened
         if self._opened and self._backend is not None:
-            alive = False
             try:
-                alive = bool(self._backend.is_alive())
+                if self._backend.is_alive():
+                    return True
             except Exception:
-                alive = False
-            if alive:
-                return True
-            self._mark_opened(False)
-            self._board_info = BoardInfo()
-            self._record_error("board stopped responding")
+                pass
+            self._mark_lost("board stopped responding")
         self._try_open(force=False)
         return self._opened
 
+    def _mark_lost(self, why: str) -> None:
+        log.warning("Lost the unit: %s", why)
+        if self._backend is not None:
+            self._backend.note_lost()
+        self._mark_opened(False)
+        self._board_info = BoardInfo()
+        self._not_open_reason = why
+        self._record_error(f"lost the unit: {why}")
+
     def reconnect(self) -> dict:
-        """Explicit user-driven reconnect: drop what we have and open again now."""
+        """Explicit user-driven reconnect: drop what we have and open again now.
+
+        Pressed while an open is already inside the driver, it says so and
+        leaves that open alone - answering "No unit found" there sent the
+        operator off to power-cycle a unit that was mid-connect."""
         with logsetup.step(log, "Reconnecting to the unit") as reconnecting:
+            since = self._opening_since
+            if since is not None:
+                reconnecting.done("Still connecting: an open has been waiting on "
+                                  f"the driver for {time.monotonic() - since:.0f}s")
+                return self.status()
             self.stop()
             self._mark_opened(False)
-            self._try_open(force=True)
-            reconnecting.done("Reconnected" if self._opened else "No unit found")
+            outcome = self._try_open(force=True)
+            reconnecting.done("Reconnected" if self._opened
+                              else f"Not connected: {outcome}")
         return self.status()
 
-    def _try_open(self, force: bool):
+    def _link_gate(self) -> str | None:
+        if self._gatekeeper is None:
+            try:
+                self._gatekeeper = self._backend_factory()
+            except Exception:
+                return None     # cannot ask; open() reports the real failure
+        return self._gatekeeper.link_gate()
+
+    def _try_open(self, force: bool) -> str:
+        """Open if it is time to; returns what happened, in words."""
         if self._opened:
-            return
+            return "already open"
+        # Absent or still booting: wait without touching the driver, and
+        # without spending the retry cadence - so the open goes out the
+        # moment the unit is ready rather than up to a retry period later.
+        waiting = self._link_gate()
+        if waiting:
+            self._not_open_reason = waiting
+            return waiting
         now = time.monotonic()
         if not force and now - self._last_open_attempt < C.RECONNECT_RETRY_S:
-            return
+            return self._not_open_reason
         # An open is already running: leave it alone rather than starting a
         # second one on the same hardware.
         if not self._open_lock.acquire(blocking=False):
-            return
+            return "an open is already in progress"
         try:
-            self._open_locked(force, now)
+            return self._open_locked(force, now)
         finally:
             self._open_lock.release()
 
-    def _open_locked(self, force: bool, now: float):
+    def _open_locked(self, force: bool, now: float) -> str:
         self._last_open_attempt = now
         if self._backend is not None:
             closed = "Ok"
@@ -592,9 +644,12 @@ class AcquisitionEngine:
             # An automatic retry every few seconds must not fill the log; a
             # reconnect the operator asked for must always say what happened.
             self.open(level=logging.INFO if force else logging.DEBUG)
+            return "opened"
         except Exception as e:
+            self._not_open_reason = str(e)
             if force:
                 self._record_error(f"reconnect: {e}")
+            return str(e)
 
     # ---------- recording ----------
     def start_recording(self, name: str, timestamp: bool = True,
@@ -740,9 +795,7 @@ class AcquisitionEngine:
                 fails += 1
                 self._record_error(f"read: {e}")
                 if fails >= C.READ_FAIL_LIMIT:
-                    self._record_error("board stopped responding - acquisition halted")
-                    self._mark_opened(False)
-                    self._board_info = BoardInfo()
+                    self._mark_lost("board stopped responding - acquisition halted")
                     self._running.clear()
                     break
                 time.sleep(0.05)
@@ -867,10 +920,30 @@ class AcquisitionEngine:
             "rate": self._rate.snapshot(),
         }
 
+    def _link_status(self) -> dict:
+        """What the connection is doing, for the badge: open, opening (inside
+        the driver right now), waiting (unit absent or booting - nothing is
+        sent to it), or closed (the last attempt failed)."""
+        if self._opened:
+            return {"state": "open", "detail": ""}
+        since = self._opening_since
+        if since is not None:
+            s = time.monotonic() - since
+            detail = f"Connecting: waiting on the CAEN driver for {s:.0f}s"
+            if s >= C.OPEN_STUCK_S:
+                detail += (". The driver looks stuck - switch the unit off, wait "
+                           "a few seconds, and on again; it reconnects by itself")
+            return {"state": "opening", "detail": detail}
+        waiting = self._link_gate()
+        if waiting:
+            return {"state": "waiting", "detail": waiting[0].upper() + waiting[1:]}
+        return {"state": "closed", "detail": self._not_open_reason}
+
     def status(self) -> dict:
         bi = self._board_info
         return {
             "opened": self._opened,
+            "link": self._link_status(),
             "running": self._running.is_set(),
             "backend": "caen",
             "board": {

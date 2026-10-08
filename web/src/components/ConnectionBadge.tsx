@@ -13,15 +13,21 @@ interface Props {
 export function ConnectionBadge({ status, serverUp, busy, onReconnect }: Props) {
   const connected = serverUp && !!status?.opened;
   const b = status?.board;
+  // An open in progress is not "no board": saying so sent operators off to
+  // power-cycle a unit that was mid-connect, restarting the wait.
+  const link = serverUp && !connected ? status?.link : undefined;
+  const opening = busy || link?.state === "opening";
 
-  const state = busy ? "busy" : connected ? "ok" : "bad";
-  const label = busy
+  const state = opening ? "busy" : connected ? "ok" : "bad";
+  const label = opening
     ? "Connecting…"
     : connected
       ? b?.model || "board"
-      : serverUp
-        ? "No board"
-        : "Server offline";
+      : !serverUp
+        ? "Server offline"
+        : link?.state === "waiting"
+          ? "Waiting for unit"
+          : "No board";
 
   // Everything we know about the unit, for the hover.
   const detail = connected && b
@@ -33,7 +39,8 @@ export function ConnectionBadge({ status, serverUp, busy, onReconnect }: Props) 
         b.sw_release ? `Lib ${b.sw_release}` : null,
       ].filter(Boolean).join("\n")
     : serverUp
-      ? "No digitizer is open. Power the unit on, then press Reconnect."
+      ? (link?.detail ? link.detail + "\n\n" : "")
+        + "It reconnects by itself once the unit is on and booted."
       : "Cannot reach the DAQ server.";
 
   return (
@@ -43,7 +50,7 @@ export function ConnectionBadge({ status, serverUp, busy, onReconnect }: Props) 
       {connected && b ? (
         <span className="conn-sn mono">S/N:{b.serial}</span>
       ) : null}
-      {!connected && !busy ? (
+      {!connected && !opening ? (
         <button className="mini conn-btn" onClick={onReconnect}>Reconnect</button>
       ) : null}
     </span>
