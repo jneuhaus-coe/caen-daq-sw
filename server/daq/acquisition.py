@@ -19,6 +19,7 @@ from . import constants as C
 from . import logsetup
 from . import sounds
 from . import zerocal
+from . import lastused
 
 
 log = logsetup.get("daq.acq")
@@ -68,7 +69,10 @@ class AcquisitionEngine:
         self._backend_factory = backend_factory
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
-        self._cfg = default_config()   # only a seed; the board wins once open
+        # Only a seed; the board wins once open - except for what the board
+        # cannot hold (names, output options, the library's BLT limit), which
+        # comes back from the last-used file instead of resetting.
+        self._cfg = lastused.apply(default_config())
         # Bumped on every adopted config (open, write, session). A browser
         # tab compares it against the one it fetched under: a tab pushing a
         # WHOLE config it loaded before a restart once silently reverted
@@ -181,6 +185,9 @@ class AcquisitionEngine:
             with logsetup.step(log, "Reading settings off the unit",
                                level=level) as reading:
                 cfg, errs = backend.read_settings(self._cfg)
+                # A fresh handle answers the LIBRARY's default here, not
+                # anything the unit holds; keep the value we last used.
+                cfg.max_events_blt = self._cfg.max_events_blt
                 for e in errs:
                     log.warning("%sCould not read: %s", "  ", e)
                     self._record_error(f"read settings: {e}")
@@ -215,6 +222,7 @@ class AcquisitionEngine:
         with self._lock:
             self._cfg = cfg
             self._cfg_rev += 1
+        lastused.save(cfg)
 
     def config_rev(self) -> int:
         with self._lock:

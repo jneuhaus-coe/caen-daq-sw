@@ -679,8 +679,17 @@ downloaded or deleted.
   DOM — a DOM-only test would pass while the write silently failed. One
   worker, file order: the tests share the one fake board's state. CI runs it
   on ubuntu with `DAQ_TEST_SERVER_CMD` overriding the local uv launch.
-- Nothing is persisted between runs of the process: the unit holds the settings
-  and is read at open. Save/Load write and read an explicit file instead.
+- **Board registers are not persisted by us** - the unit holds them across
+  daq restarts (not a power cycle) and is read at open. **What the unit
+  cannot hold is** (`lastused.py`, `<state dir>/last_used.json`, saved on
+  every adopted config): channel names, correction level, dump format and
+  header, and Events per readout - libCAENDigitizer keeps that limit in its
+  own memory (0x800C reads a constant 10), so a new process or reopened
+  handle reads the library default; open() keeps the last-used value over
+  it. These used to reset to defaults on every daq restart. Sessions are
+  the named, explicit snapshots on top of that. The smoke suite points the
+  state dir at a temp dir at import, or its engines would overwrite the
+  operator's real names.
 - The `Writer` interface is byte-compatible-WaveDump for v1; ROOT/HDF5 are meant
   to slot in behind it.
 

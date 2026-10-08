@@ -11,6 +11,13 @@ import time
 import numpy as np
 from fastapi.testclient import TestClient
 
+# Every engine here adopts configs, and adopting one saves the last-used file
+# - so without this the suite would write test channel names over the
+# operator's real ones. Set before daq is imported; tests that point the
+# state dir elsewhere restore this, not the real one.
+_STATE = tempfile.mkdtemp(prefix="daq-smoke-state-")
+os.environ["LOCALAPPDATA" if os.name == "nt" else "XDG_STATE_HOME"] = _STATE
+
 from daq.acquisition import AcquisitionEngine
 from daq.config import default_config, BoardConfig
 from daq.stats import RollingAverage, TriggerRateMeter, decimate
@@ -480,6 +487,38 @@ def test_power_cycle_while_acquiring_is_noticed():
     finally:
         C.QUIET_CHECK_S, C.READ_STALL_S = saved
         release.set()
+        eng.close()
+
+
+def test_settings_the_unit_cannot_hold_survive_a_daq_restart():
+    """Names, output options and the library's BLT limit live nowhere on the
+    unit; they used to reset on every daq restart. Now a new engine (a new
+    process) seeds them from the last-used file - and a fresh handle's
+    library-default BLT limit does not override the one in use."""
+    from daq.backend.fake import FakeBackend
+
+    class Board(FakeBackend):
+        def read_settings(self, cfg):
+            out, errs = super().read_settings(cfg)
+            out.max_events_blt = 1023        # what a fresh library handle says
+            return out, errs
+
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe()
+        cfg = eng.get_config()
+        cfg.channels[3].name = "Upstream"
+        cfg.output_format, cfg.correction_level, cfg.max_events_blt = "binary", "auto", 5
+        eng.set_config(cfg)
+    finally:
+        eng.close()
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe()
+        c = eng.get_config()
+        assert c.channels[3].name == "Upstream"
+        assert (c.output_format, c.correction_level, c.max_events_blt) == ("binary", "auto", 5)
+    finally:
         eng.close()
 
 
@@ -1231,6 +1270,7 @@ if __name__ == "__main__":
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
                test_power_cycle_while_acquiring_is_noticed,
+               test_settings_the_unit_cannot_hold_survive_a_daq_restart,
                test_pulse_shift_leaves_fitting_channels_at_zero_offset,
                test_pulse_shift_slides_a_clipped_pulse_into_view,
                test_dac_changes_rearm_while_acquiring_and_refuse_while_recording,
