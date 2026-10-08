@@ -23,11 +23,17 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
+import { LockToggle } from "./components/LockToggle";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { usePersistentState } from "./persist";
 import { onFlush } from "./flush";
 import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
          zeroCodeAt, zeroLine } from "./volts";
+
+// Settings that start out locked until someone unlocks them. The TR DC
+// offset: the threshold is only defined at offset 0 (UM4270 sec 9.8.3), so a
+// stray edit silently invalidates the trigger level.
+const LOCKED_BY_DEFAULT = new Set(["fast_trigger_dc_offset"]);
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -86,9 +92,6 @@ export function App() {
   const [scopeTrigEdge, setScopeTrigEdge] =
     usePersistentState<"rising" | "falling">("scopeTrigEdge", "falling");
   const [testN, setTestN] = usePersistentState("testN", "100");
-  // TR DC offset: a lockable setting in the house style (see CLAUDE.md, UI
-  // conventions) - locked by default, the lock icon toggles it.
-  const [trOffLocked, setTrOffLocked] = useState(true);
   const [trigHelp, setTrigHelp] = useState(false);
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = usePersistentState("recMax", "");
@@ -105,12 +108,15 @@ export function App() {
   // Live = watch and operate; Experiment = campaign setup, conditions, and
   // everything you would hate to change by accident mid-campaign.
   const [view, setView] = usePersistentState<"live" | "experiment">("view", "live");
-  // The settings lock: lock everything with one button, unlock individual
-  // settings one at a time - deliberate exceptions, wholesale protection.
-  const [lockOn, setLockOn] = useState(false);
-  const [lockOpen, setLockOpen] = useState<Set<string>>(new Set());
-  const lockRef = useRef({ on: false, open: [] as string[] });
-  lockRef.current = { on: lockOn, open: [...lockOpen] };
+  // Per-setting locks (house style: the icon left of the label). Keyed by
+  // setting ("post_trigger"), bank setting ("bank1:enabled"), channel offset
+  // ("ch:5") or activity ("calibration"); a key not present falls back to
+  // LOCKED_BY_DEFAULT. Saved with the display prefs, so every window and a
+  // reload see the same locks. A lock only stops edits from this UI - it
+  // never writes or resets the value it protects.
+  const [locks, setLocks] = useState<Record<string, boolean>>({});
+  const locksRef = useRef(locks);
+  locksRef.current = locks;
   // Existing run folders feed the run-name dropdown: picking one (with the
   // timestamp off) records INTO it - runs of an unchanged setup stay in one
   // campaign folder instead of scattering one directory per run.
@@ -175,8 +181,7 @@ export function App() {
       // The display mode restores; the scope's trigger firing does NOT start
       // on page load - status.scope_hz says whether a scope is already live.
       setWaveMode(asWaveMode(d.wave_mode));
-      setLockOn(!!d.lock_on);
-      setLockOpen(new Set(Array.isArray(d.lock_open) ? d.lock_open : []));
+      setLocks(asLocks(d.locks));
     }).catch(() => {});
   }, []);
 
@@ -187,6 +192,14 @@ export function App() {
   useEffect(() => {
     api.runs().then((r) => setRunDirs(r.runs.map((x) => x.id))).catch(() => {});
   }, [runsKey]);
+
+  const asLocks = (v: unknown): Record<string, boolean> => {
+    const out: Record<string, boolean> = {};
+    if (v && typeof v === "object") {
+      for (const [k, b] of Object.entries(v)) if (typeof b === "boolean") out[k] = b;
+    }
+    return out;
+  };
 
   const asWaveMode = (v: DisplayPrefs["wave_mode"]): WaveMode =>
     v === "overlay" || v === "scope" ? v : "avg";
@@ -206,40 +219,28 @@ export function App() {
   };
 
   const saveDisplay = (ranges: Record<number, [number, number]>,
-                       mode: WaveMode) => {
+                       mode: WaveMode, now = false) => {
     window.clearTimeout(displayTimer.current);
     const send = () => {
       pendingDisplay.current = null;
       const y_ranges: Record<string, [number, number]> = {};
       for (const [k, v] of Object.entries(ranges)) y_ranges[k] = v;
       return api.setDisplay({ y_ranges, wave_mode: mode,
-                              lock_on: lockRef.current.on,
-                              lock_open: lockRef.current.open }).catch(() => {});
+                              locks: locksRef.current }).catch(() => {});
     };
     pendingDisplay.current = send;
-    displayTimer.current = window.setTimeout(send, 400);
+    if (now) send();
+    else displayTimer.current = window.setTimeout(send, 400);
   };
 
-  // The lock: keyed by setting ("post_trigger"), channel ("ch:5"), or
-  // activity ("calibration"). Locking all clears every exception - the
-  // whole point is that unlocks are deliberate, one at a time.
-  const isLocked = (key: string) => lockOn && !lockOpen.has(key);
-  const unlockOne = (key: string) => {
-    setLockOpen((prev) => {
-      const next = new Set(prev).add(key);
-      lockRef.current = { on: lockOn, open: [...next] };
-      saveDisplay(yRanges, waveMode);
-      return next;
-    });
-  };
-  const toggleLockAll = () => {
-    if (lockOn && !window.confirm(
-        "Unlock ALL settings? Individual unlocks are usually safer.")) return;
-    const on = !lockOn;
-    setLockOn(on);
-    setLockOpen(new Set());
-    lockRef.current = { on, open: [] };
-    saveDisplay(yRanges, waveMode);
+  const isLocked = (key: string) => locks[key] ?? LOCKED_BY_DEFAULT.has(key);
+  const toggleLock = (key: string) => {
+    const next = { ...locksRef.current, [key]: !isLocked(key) };
+    locksRef.current = next;
+    setLocks(next);
+    // At once, not debounced: a lock is one deliberate click, and a window
+    // closed (or reloaded) inside the debounce would silently drop it.
+    saveDisplay(yRanges, waveMode, true);
   };
 
   const applyYRanges = (next: Record<number, [number, number]>) => {
@@ -722,12 +723,12 @@ export function App() {
                     defs={catalog.unit.filter((d) => !LIVE_UNIT_KEYS.has(d.key))}
                     geom={catalog.geometry}
                     get={(k) => (config as any)[k]} onChange={updateBoard}
-                    locked={isLocked} onUnlock={unlockOne} />
+                    locked={isLocked} onToggleLock={toggleLock} />
                 </div>
                 <Collapsible title="Bank Settings" defaultOpen>
                   <BankPanel catalog={catalog} config={config}
                     onGroupChange={updateGroup}
-                    locked={isLocked} onUnlock={unlockOne} />
+                    locked={isLocked} onToggleLock={toggleLock} />
                 </Collapsible>
               </div>
               <div className="exp-col">
@@ -897,7 +898,7 @@ export function App() {
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
             clearEpoch={wipeEpoch}
-            locked={isLocked} onUnlock={unlockOne} />
+            locked={isLocked} onToggleLock={toggleLock} />
         </main>
         )}
 
@@ -943,7 +944,8 @@ export function App() {
             // 0 V calibration: 0 is midscale 0x8000, where the threshold is
             // defined.
             const offDef = catalog.bank.find((d) => d.key === "fast_trigger_dc_offset")!;
-            const offLocked = trOffLocked || isLocked("fast_trigger_dc_offset");
+            const offLocked = isLocked("fast_trigger_dc_offset");
+            const thrLocked = isLocked("fast_trigger_threshold");
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -968,9 +970,18 @@ export function App() {
                   </p>
                 )}
                 <div className="settings-grid tr0-settings">
-                  <div className="setting-row"
+                  <div className={"setting-row lockable" + (thrLocked ? " locked" : "")}
                     title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (UM4270 sec 9.8.3): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. CAEN gives no formula at other offsets - keep the offset at 0.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold</label>
+                    <LockToggle locked={thrLocked} what="TR threshold"
+                      onToggle={() => toggleLock("fast_trigger_threshold")} />
+                    <label>
+                      TR threshold
+                      {!offMid ? (
+                        <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
+                          ⚠ offset not 0
+                        </span>
+                      ) : null}
+                    </label>
                     <span className="field">
                       {/* min sets the arrow keys' step base, so it must sit on
                           the step grid: -1.986 made them walk -0.001, 0.004,
@@ -979,39 +990,18 @@ export function App() {
                         selectOnFocus
                         value={fmtDacVolts(g0.fast_trigger_threshold,
                                            trAbsThresholdV, trThresholdDacForAbs)}
-                        disabled={isLocked("fast_trigger_threshold")}
+                        disabled={thrLocked}
                         onCommit={(v) => {
                           updateTrBoth("fast_trigger_threshold",
                             trThresholdDacForAbs(Number(v) || 0));
                         }} />
                       <span className="unit">V</span>
                     </span>
-                    {isLocked("fast_trigger_threshold") ? (
-                      <button className="lock-chip"
-                        title="Locked. Click to unlock just the TR threshold."
-                        onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
-                    ) : null}
-                    {!offMid ? (
-                      <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
-                        ⚠ offset not 0
-                      </span>
-                    ) : null}
                   </div>
                   <div className={"setting-row lockable" + (offLocked ? " locked" : "")}
                     title={[offDef.help, offDef.caen].filter(Boolean).join("\n\n")}>
-                    <button className="lock-toggle"
-                      aria-label={offLocked ? "Unlock TR DC offset" : "Lock TR DC offset"}
-                      aria-pressed={offLocked}
-                      title={offLocked ? "Locked - click to edit the TR DC offset"
-                                       : "Unlocked - click to lock the TR DC offset"}
-                      onClick={() => {
-                        if (offLocked) {
-                          setTrOffLocked(false);
-                          if (isLocked("fast_trigger_dc_offset")) unlockOne("fast_trigger_dc_offset");
-                        } else {
-                          setTrOffLocked(true);
-                        }
-                      }}>{offLocked ? "🔒" : "🔓"}</button>
+                    <LockToggle locked={offLocked} what="TR DC offset"
+                      onToggle={() => toggleLock("fast_trigger_dc_offset")} />
                     <label>TR DC offset</label>
                     <SettingControl def={offDef} value={g0.fast_trigger_dc_offset}
                       geom={catalog.geometry} disabled={offLocked}
@@ -1041,22 +1031,18 @@ export function App() {
               // sources, each source's own option right under it and only
               // while that source is enabled.
               const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
-              const row = (k: string, label: string, lockable = true) => {
+              const row = (k: string, label: string) => {
                 const d = def(k);
-                const locked = lockable && isLocked(k);
+                const locked = isLocked(k);
                 return (
-                  <div className="setting-row" key={k}
+                  <div className={"setting-row lockable" + (locked ? " locked" : "")} key={k}
                     title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
+                    <LockToggle locked={locked} what={label} onToggle={() => toggleLock(k)} />
                     <label>{label}</label>
                     <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
                       dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
                       disabled={locked}
                       onChange={(v) => updateBoard(k, v)} />
-                    {locked ? (
-                      <button className="lock-chip"
-                        title="Locked. Click to unlock just this setting."
-                        onClick={() => unlockOne(k)}>🔒</button>
-                    ) : null}
                   </div>
                 );
               };
@@ -1073,8 +1059,8 @@ export function App() {
                     {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
                     {row("fast_trigger", "TR0")}
                     {config.fast_trigger !== "disabled"
-                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
-                    {row("software_trigger", "Software trigger", false)}
+                      ? row("fast_trigger_digitizing", "Digitize TR traces") : null}
+                    {row("software_trigger", "Software trigger")}
                   </div>
                 </>
               );
@@ -1111,7 +1097,7 @@ export function App() {
           <CalibrationPanel zc={zc}
             connected={connected} recording={recording}
             locked={isLocked("calibration")}
-            onUnlock={() => unlockOne("calibration")}
+            onToggleLock={() => toggleLock("calibration")}
             onStarted={() => setWipeEpoch((e) => e + 1)}
             onError={(title, lines) => push("err", title, lines)}
             onFinished={async (st) => {

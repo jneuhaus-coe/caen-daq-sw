@@ -616,14 +616,17 @@ Never let the UI show a setting the hardware did not confirm.
 
 ## UI conventions
 
-- **Lockable settings (the house style).** A lock icon button sits to the
-  LEFT of the setting's label and toggles it. Locked: the control is greyed
-  out but still shows the board's value - protection, not concealment.
-  Unlocked: an ordinary editable setting. CSS: `.setting-row.lockable`
-  (+ `.locked`), `.lock-toggle`. The TR DC offset (TR0 card) is the first
-  setting built this way and is **locked by default**. The older settings
-  still use the global "lock everything" mode with per-setting unlock chips
-  on the right; move them to this pattern only when asked.
+- **Lockable settings (the house style), on every setting.** A lock icon
+  button (`LockToggle`) sits to the LEFT of the setting's label and toggles
+  it. Locked: the control is greyed out but still shows the board's value -
+  protection, not concealment. Locking never writes or resets anything, and
+  one click unlocks. CSS: `.setting-row.lockable` (+ `.locked`),
+  `.lock-toggle`. Keys: the setting key, `bank<N>:<key>` for bank settings,
+  `ch:<N>` for a channel's DC offset, `calibration` for the calibrator.
+  Locks live in the display prefs (`locks`), so every window and a reload
+  agree; `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked -
+  today only the TR DC offset. The old global "lock everything" mode is
+  gone.
 
 ## Watching vs recording
 

@@ -267,7 +267,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
    to its default, so it reads muted but stays legible - the operator should
    still see WHAT the default is, just not mistake it for a choice they made. */
 .setting-row.optional { grid-template-columns: auto 1fr auto; }
-.setting-row.optional input[type="checkbox"]:first-child { margin: 0; }
+.setting-row.optional > input[type="checkbox"] { margin: 0; }
 .setting-row.optional.off label { color: var(--muted); }
 .setting-row.optional.off select,
 .setting-row.optional.off .field input { opacity: 0.55; }
@@ -644,21 +644,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   position: relative; z-index: 1; font-weight: 650;
 }
 
-/* the settings lock: one big switch, per-setting exceptions */
-.lock-all {
-  margin-left: 10px; font-size: 12px; padding: 4px 12px; cursor: pointer;
-  border-radius: 6px; border: 1px solid var(--border);
-  background: #12151b; color: var(--muted);
-}
-.lock-all.on { background: #3a2a12; color: #e3b341; border-color: #7a5a1e; }
-.lock-chip {
-  background: none; border: none; cursor: pointer; padding: 0 4px;
-  font-size: 13px; line-height: 1; opacity: .85;
-}
-.lock-chip:hover { opacity: 1; background: none; border: none; }
-.tile { position: relative; }
-.tile-lock { position: absolute; right: 6px; bottom: 34px; z-index: 2; }
-.tile-dc.locked input { pointer-events: none; opacity: .45; }
+.tile-dc .lock-toggle { font-size: 11px; }
+.tile-dc.locked label { color: #6e7681; }
+.tile-dc.locked input { opacity: .45; }
 
 /* experiment view layout */
 main.experiment { overflow-y: auto; }
@@ -784,11 +772,14 @@ main.experiment { overflow-y: auto; }
    the control is greyed out but still shows the board's value; unlocked it
    is an ordinary editable setting. */
 .setting-row.lockable { grid-template-columns: auto 1fr auto; }
+.setting-row.optional.lockable { grid-template-columns: auto auto 1fr auto; }
 .lock-toggle {
   background: none; border: none; cursor: pointer; padding: 0 2px;
-  font-size: 13px; line-height: 1; opacity: .85;
+  font-size: 13px; line-height: 1; opacity: .5;
 }
-.lock-toggle:hover { opacity: 1; background: none; border: none; }
+.lock-toggle[aria-pressed="true"] { opacity: .9; }
+.lock-toggle:hover:not(:disabled) { opacity: 1; background: none; border: none; }
+.setting-row.lockable.locked .tr-rel-note { opacity: .55; }
 .setting-row.lockable.locked label { color: var(--muted); }
 .setting-row.lockable.locked select,
 .setting-row.lockable.locked .field input { opacity: 0.55; }

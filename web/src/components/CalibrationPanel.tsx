@@ -3,13 +3,14 @@ import { usePersistentState } from "../persist";
 import { api } from "../api";
 import type { CalibrationStatus } from "../api";
 import type { ZeroCal } from "../types";
+import { LockToggle } from "./LockToggle";
 
 interface Props {
   connected: boolean;
   recording: boolean;
-  /** The settings lock: calibration steers DC offsets, so it locks too. */
+  /** Calibration steers DC offsets, so it locks like a setting does. */
   locked?: boolean;
-  onUnlock?: () => void;
+  onToggleLock?: () => void;
   /** A run began - here or in another window; the app wipes the piles. */
   onStarted?: () => void;
   /** Called when a run finishes: the server changed the config underneath the
@@ -28,7 +29,7 @@ interface Props {
  *  to bring the whole pulse into the window. Never centres anything.
  *  Zero-volt calibration: measures each input's real 0 V reading for the
  *  plots (display only). */
-export function CalibrationPanel({ connected, recording, locked, onUnlock,
+export function CalibrationPanel({ connected, recording, locked, onToggleLock,
                                    onStarted, onFinished, onError, zc }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
   const [fitEvents, setFitEvents] = usePersistentState("calFitEvents", "100");
@@ -100,10 +101,8 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
     <div className="card">
       <h2>Calibration</h2>
       <div className="calib-btns">
-        {locked ? (
-          <button className="lock-chip"
-            title="Calibration locked - it steers DC offsets. Click to unlock."
-            onClick={onUnlock}>🔒</button>
+        {onToggleLock ? (
+          <LockToggle locked={!!locked} what="calibration" onToggle={onToggleLock} />
         ) : null}
         <button disabled={!connected || busy || recording || locked} onClick={() => run("shift")}
           title="Only changes the DC offset, to slide a clipped pulse back into the ADC window. Channels that fit at 0 V of offset stay there. Needs real triggers.">

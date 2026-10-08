@@ -152,13 +152,11 @@ export interface Condition {
 
 /** UI state that persists across restarts, keyed however the UI likes.
  *  y_ranges: per-channel waveform display range in volts, [min, max].
- *  lock_on/lock_open: the settings lock - everything locked, individually
- *  unlocked exceptions listed by key. */
+ *  locks: per-setting UI locks by key; a missing key takes its default. */
 export interface DisplayPrefs {
   y_ranges?: Record<string, [number, number]>;
   wave_mode?: WaveMode;
-  lock_on?: boolean;
-  lock_open?: string[];
+  locks?: Record<string, boolean>;
 }
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */

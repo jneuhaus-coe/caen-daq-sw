@@ -89,6 +89,9 @@ test("moving the TR offset leaves the raw threshold untouched", async ({ page })
   await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
     .not.toBe(32768);
   expect((await cfg(page)).groups[0].fast_trigger_threshold).toBe(before);
+  // Locks persist (server-side display prefs): leave it locked as found.
+  await offRow.getByRole("button", { name: "Lock TR DC offset" }).click();
+  await expect(input).toBeDisabled();
 });
 
 test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
@@ -541,22 +544,24 @@ test("experiment conditions reach the server and the record dialog", async ({ pa
   await page.locator(".rec-modal button", { hasText: "Cancel" }).click();
 });
 
-test("lock everything, then unlock a single setting", async ({ page }) => {
-  await page.locator(".lock-all").click();
-  await expect(page.locator(".lock-all")).toContainText("LOCKED");
-  // Every settings row is locked and wears its own chip...
+test("locking a setting greys it out without touching the unit", async ({ page }) => {
   const row = page.locator(".settings-grid .setting-row",
     { hasText: "Trigger edge" }).first();
-  await expect(row.locator(".lock-chip")).toBeVisible();
-  await expect(row.locator("select")).toBeDisabled();
-  // ...and clicking the chip unlocks JUST that row.
-  await row.locator(".lock-chip").click();
-  await expect(row.locator(".lock-chip")).toHaveCount(0);
-  await expect(row.locator("select")).toBeEnabled();
-  // Unlock everything again so later tests are unaffected.
-  page.on("dialog", (d) => d.accept());
-  await page.locator(".lock-all").click();
-  await expect(page.locator(".lock-all")).not.toContainText("LOCKED");
+  const select = row.locator("select");
+  const before = (await cfg(page)).trigger_edge;
+  // The lock sits LEFT of the label (house style).
+  await row.getByRole("button", { name: "Lock Trigger edge" }).click();
+  await expect(select).toBeDisabled();
+  // Protection, not concealment: the value stays shown, nothing is written.
+  await expect(select).toHaveValue(before);
+  expect((await cfg(page)).trigger_edge).toBe(before);
+  // It survives a reload - every window shares the same locks.
+  await page.reload();
+  await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
+  await expect(select).toBeDisabled();
+  // And one click gives the setting back.
+  await row.getByRole("button", { name: "Unlock Trigger edge" }).click();
+  await expect(select).toBeEnabled();
 });
 
 test("a legacy Configuration B file loads through the Load button", async ({ page }) => {

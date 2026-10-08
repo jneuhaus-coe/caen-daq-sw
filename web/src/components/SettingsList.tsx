@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Catalog, SettingDef } from "../types";
 import { SettingControl } from "./SettingControl";
+import { LockToggle } from "./LockToggle";
 
 interface Props {
   defs: SettingDef[];
@@ -8,10 +9,13 @@ interface Props {
   get: (key: string) => any;
   onChange: (key: string, value: any) => void;
   skip?: string[];
-  /** The settings lock: everything locked, unlocked one at a time. A locked
-   *  row still shows its value - protection, not concealment. */
+  /** Per-setting locks (house style: the icon left of the label). A locked
+   *  row still shows its value - protection, not concealment. Absent = the
+   *  rows are not lockable. `lockPrefix` namespaces the keys, so bank 0's
+   *  and bank 1's "enabled" lock separately. */
   locked?: (key: string) => boolean;
-  onUnlock?: (key: string) => void;
+  onToggleLock?: (key: string) => void;
+  lockPrefix?: string;
 }
 
 /** Required settings first - the ones every run must have deliberately chosen -
@@ -20,14 +24,16 @@ interface Props {
  *  the unit, so the checkbox states always describe what the hardware holds,
  *  not merely what the form shows. */
 export function SettingsList({ defs, geom, get, onChange, skip = [],
-                               locked, onUnlock }: Props) {
-  const isLocked = (key: string) => locked?.(key) ?? false;
-  const lockChip = (key: string) =>
-    isLocked(key) ? (
-      <button className="lock-chip"
-        title="Locked. Click to unlock just this setting."
-        onClick={() => onUnlock?.(key)}>🔒</button>
+                               locked, onToggleLock, lockPrefix = "" }: Props) {
+  const lockable = !!locked && !!onToggleLock;
+  const isLocked = (key: string) => locked?.(lockPrefix + key) ?? false;
+  const lockIcon = (def: SettingDef) =>
+    lockable ? (
+      <LockToggle locked={isLocked(def.key)} what={def.label}
+        onToggle={() => onToggleLock!(lockPrefix + def.key)} />
     ) : null;
+  const lockCls = (key: string) =>
+    lockable ? " lockable" + (isLocked(key) ? " locked" : "") : "";
   const shown = defs.filter((d) => !skip.includes(d.key));
   // Only an entry that declares its default can be pinned to it. Tiers whose
   // catalog carries no defaults (the bank panel) render every row plainly.
@@ -41,15 +47,15 @@ export function SettingsList({ defs, geom, get, onChange, skip = [],
   const [engaged, setEngaged] = useState<Set<string>>(new Set());
 
   const row = (def: SettingDef) => (
-    <div className="setting-row" key={def.key}
+    <div className={"setting-row" + lockCls(def.key)} key={def.key}
       title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
+      {lockIcon(def)}
       {/* The unit lives inside the field, not appended to the label. */}
       <label>{def.label}</label>
       <SettingControl def={def} value={get(def.key)} geom={geom}
         dependsOn={def.depends_on ? get(def.depends_on) : undefined}
         disabled={isLocked(def.key)}
         onChange={(v) => onChange(def.key, v)} />
-      {lockChip(def.key)}
     </div>
   );
 
@@ -65,8 +71,10 @@ export function SettingsList({ defs, geom, get, onChange, skip = [],
       if (!on && customized) onChange(def.key, def.default);
     };
     return (
-      <div className={"setting-row optional" + (active ? "" : " off")} key={def.key}
+      <div className={"setting-row optional" + (active ? "" : " off") + lockCls(def.key)}
+        key={def.key}
         title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
+        {lockIcon(def)}
         <input type="checkbox" checked={active} disabled={isLocked(def.key)}
           title={active ? "Uncheck to return this setting to its default"
                         : "Check to customize this setting"}
@@ -76,7 +84,6 @@ export function SettingsList({ defs, geom, get, onChange, skip = [],
           dependsOn={def.depends_on ? get(def.depends_on) : undefined}
           disabled={!active || isLocked(def.key)}
           onChange={(v) => onChange(def.key, v)} />
-        {lockChip(def.key)}
       </div>
     );
   };

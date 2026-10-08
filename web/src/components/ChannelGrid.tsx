@@ -3,6 +3,7 @@ import { usePersistentState } from "../persist";
 import type { BoardConfig, Catalog, Telemetry, ZeroCal } from "../types";
 import { MiniWave } from "./MiniWave";
 import { BlurInput } from "./BlurInput";
+import { LockToggle } from "./LockToggle";
 import { defDacToVolts, defVoltsToDac, fmtDacVolts, offsetDef, zeroCodeAt,
          zeroLine } from "../volts";
 
@@ -17,9 +18,9 @@ interface Props {
   onYRange: (ch: number, range: [number, number] | null, all: boolean) => void;
   waveMode: "avg" | "overlay" | "scope";
   clearEpoch: number;
-  /** The settings lock, keyed "ch:<n>" per channel offset. */
+  /** Per-channel offset locks, keyed "ch:<n>". */
   locked?: (key: string) => boolean;
-  onUnlock?: (key: string) => void;
+  onToggleLock?: (key: string) => void;
   /** Per-board 0 V calibration; display only. Absent = UM4270 nominal. */
   zc?: ZeroCal | null;
 }
@@ -34,7 +35,7 @@ const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                               yRanges, onYRange, waveMode, clearEpoch,
-                              locked, onUnlock, zc }: Props) {
+                              locked, onToggleLock, zc }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
@@ -100,6 +101,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                   // slider and arrow keys step from round numbers.
                   const vLo = Math.ceil(Math.min(toV(0), toV(0xFFFF)) / 0.01) * 0.01;
                   const vHi = Math.floor(Math.max(toV(0), toV(0xFFFF)) / 0.01) * 0.01;
+                  const chLocked = locked?.(`ch:${ch}`) ?? false;
                   const commitSlider = () => {
                     if (pv == null) return;
                     setPreview((p) => ({ ...p, [ch]: undefined }));
@@ -141,24 +143,21 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         zeroCode={zeroCodeAt(line, shownDac, g)}
                         clearEpoch={clearEpoch} />
 
-                      {(() => {
-                        const chLocked = locked?.(`ch:${ch}`) ?? false;
-                        if (!chLocked) return null;
-                        return (
-                          <button className="lock-chip tile-lock"
-                            title="DC offset locked. Click to unlock just this channel."
-                            onClick={() => onUnlock?.(`ch:${ch}`)}>🔒</button>
-                        );
-                      })()}
-                      <div className={"tile-dc" + ((locked?.(`ch:${ch}`) ?? false) ? " locked" : "")}
-                        title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
+                      <div className={"tile-dc" + (chLocked ? " locked" : "")}
+                        title={`${dcHelp}
+
+DAC word: ${shownDac}`}>
+                        {onToggleLock ? (
+                          <LockToggle locked={chLocked} what={`CH ${ch} DC offset`}
+                            onToggle={() => onToggleLock(`ch:${ch}`)} />
+                        ) : null}
                         <label>DC offset</label>
                         {/* Coarse placement by slider (0.01 V steps, previewed
                             live in the band above, written on release); fine
                             trim by typing (1 mV). */}
                         <input className="dc-slider" type="range"
                           min={vLo} max={vHi} step={0.01}
-                          value={shownV}
+                          value={shownV} disabled={chLocked}
                           onChange={(ev) => setPreview((p) => ({ ...p, [ch]: Number(ev.target.value) }))}
                           onPointerUp={commitSlider}
                           onKeyUp={commitSlider}
@@ -168,7 +167,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                             type="number" step={0.005}
                             min={vLo} max={vHi}
                             value={pv != null ? pv.toFixed(3) : fmtDacVolts(dac, toV, toDac)}
-                            selectOnFocus
+                            selectOnFocus disabled={chLocked}
                             onCommit={(v) => onDcOffset(ch, toDac(Number(v || 0)))}
                           />
                           <span className="unit">V</span>
