@@ -245,6 +245,23 @@ test("the 'full' button resets a channel's range to the full window", async ({ p
   await field.press("Enter");
 });
 
+test("a display range past +/-0.5 V sticks (TR0's whole scale lives there)", async ({ page }) => {
+  // Display prefs are re-read after every save; a stale +/-0.5 V filter on
+  // that path threw such ranges away, and the plot snapped back ~1 s later.
+  const tile = page.locator(".tile").first();
+  await tile.locator("button.ax.y.max").click();
+  await tile.locator(".yedit input[type=number]").fill("0.8");
+  await tile.locator(".yedit input[type=number]").press("Enter");
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.800 V");
+  await page.waitForTimeout(4000);                  // a few status polls
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.800 V");
+  await page.reload();
+  await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
+  await expect(tile.locator("button.ax.y.max")).toHaveText("+0.800 V");
+  await tile.locator("button.ax.y.max").click();
+  await tile.locator(".yedit button", { hasText: "full" }).click();
+});
+
 test("sessions: save, perturb, apply restores the unit, delete", async ({ page }) => {
   const mark = (await cfg(page)).channels[0].dc_offset;
 
