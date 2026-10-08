@@ -465,6 +465,29 @@ class AcquisitionEngine:
                      "Ok")
         return {"ok": True, "scope_hz": rate_hz, "scope_trigger": trig}
 
+    def set_average(self, mode: str | None = None, seconds: float | None = None,
+                    events: int | None = None) -> dict:
+        """The display average's window: the last `seconds` of events
+        ("time") or the last `events` events ("events"). Omitted values keep
+        their current setting. Display only - nothing recorded is averaged."""
+        cur = self._avg.settings()
+        try:
+            self._avg.configure(mode or cur["mode"],
+                                cur["seconds"] if seconds is None else float(seconds),
+                                cur["events"] if events is None else int(events))
+        except (TypeError, ValueError):
+            pass                    # a junk value keeps the current window
+        new = self._avg.settings()
+        if new != cur:
+            logsetup.did(log, "Setting the display average to the last "
+                         + (f"{new['seconds']:g} s" if new["mode"] == "time"
+                            else f"{new['events']} events"), "Ok")
+        return new
+
+    def clear_average(self) -> None:
+        """Start every channel's display average afresh."""
+        self._avg.clear()
+
     def _scope_gate(self, ev) -> bool:
         """Should this event refresh the single-trace display?
 
@@ -910,6 +933,7 @@ class AcquisitionEngine:
             "record_length": cfg.record_length,
             "overview_points": C.OVERVIEW_POINTS,
             "avg_window_s": self._avg.window_s,
+            "avg": self._avg.settings(),
             "events_seen": self._events_seen,
             "recording": self._writer is not None,
             "run_id": self._run_id,

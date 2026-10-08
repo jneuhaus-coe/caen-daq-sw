@@ -307,7 +307,7 @@ server/daq/
   backend/
     base.py        DigitizerBackend ABC + Event/BoardInfo  <-- the hardware seam
     caen.py        real board via ctypes
-  stats.py         time-windowed RollingAverage + fixed-window TriggerRateMeter + decimate
+  stats.py         RollingAverage (time or event window) + TriggerRateMeter + decimate
   runs.py          recorded runs on disk: create/list/zip/delete
   writer.py        Writer interface + WaveDump-compatible writer
   acquisition.py   threaded readout engine + telemetry snapshots

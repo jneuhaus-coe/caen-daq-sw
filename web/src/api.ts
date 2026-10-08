@@ -1,4 +1,4 @@
-import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
+import type { AvgSettings, BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -53,6 +53,13 @@ export const api = {
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
+  setAverage: (avg: Partial<AvgSettings>) =>
+    fetch("/api/average", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(avg),
+    }).then(j<{ ok: boolean; avg: AvgSettings }>),
+  clearAverage: () =>
+    fetch("/api/average/clear", { method: "POST" }).then(j<{ ok: boolean }>),
   trigger: (count: number, rateHz: number) =>
     fetch("/api/trigger", {
       method: "POST", headers: { "Content-Type": "application/json" },

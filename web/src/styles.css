@@ -89,7 +89,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
 .card h2 .sub, .grid-head .sub { text-transform: none; letter-spacing: 0; color: #6e7681; font-weight: 500; }
 
 /* channel grid */
-.grid-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.grid-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; white-space: nowrap; }
 .grid-head h2 { margin: 0; }
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .legend .lg::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
@@ -797,3 +797,13 @@ main.experiment { overflow-y: auto; }
    position: relative makes each row's offsetTop count from the list. */
 .runs { position: relative; }
 .runs.scrolls { overflow-y: auto; padding-right: 4px; }
+
+/* Avg mode's window (span or count) and the Clear button, riding along with
+   the display-mode toggle like the scope's controls. */
+.avg-ctl, .wave-clear {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 10px; font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.avg-ctl input { width: 62px; font-size: 11px; padding: 2px 4px; }
+.avg-ctl select { min-width: 0; font-size: 11px; padding: 2px 4px; }
+.wave-clear button { font-size: 11px; padding: 2px 10px; border-radius: 5px; }

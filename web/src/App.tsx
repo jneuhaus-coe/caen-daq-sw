@@ -4,7 +4,7 @@ import type { Condition, DisplayPrefs, WaveMode } from "./api";
 import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
-import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
+import type { AvgSettings, BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
@@ -279,6 +279,26 @@ export function App() {
     } catch (e) {
       push("err", "Could not start the scope",
            [e instanceof Error ? e.message : String(e)]);
+    }
+  };
+
+  // The display average's window, as the server applies it (telemetry is
+  // the truth; the fields show it, never a value this tab merely asked for).
+  const avg: AvgSettings = tele?.avg
+    ?? { mode: "time", seconds: tele?.avg_window_s ?? 1, events: 100 };
+  const avgLabel = avg.mode === "time" ? `${avg.seconds} s` : `${avg.events} events`;
+  const applyAverage = (patch: Partial<AvgSettings>) => {
+    api.setAverage(patch)
+      .catch(failed("Could not change the average"));
+  };
+  // Clear: start the picture afresh. The average is computed on the server
+  // (so this clears it for every window); the overlay's density pile lives
+  // in this page, like the wipe on recording start.
+  const clearWaves = () => {
+    if (waveMode === "avg") {
+      api.clearAverage().catch(failed("Could not clear the average"));
+    } else {
+      setWipeEpoch((e) => e + 1);
     }
   };
 
@@ -791,16 +811,16 @@ export function App() {
         ) : (
         <main>
           <div className="grid-head">
-            <h2>Channels <span className="sub">
+            <h2 title="Click a channel's title to rename it">Channels <span className="sub">
               {waveMode === "avg"
-                ? `all 16 · avg ${tele?.avg_window_s ?? 1}s window · click a title to rename`
+                ? `average of the last ${avgLabel}`
                 : waveMode === "scope"
-                ? `all 16 · newest single trace, full resolution · click a title to rename`
-                : `all 16 · last ${PERSIST_TRACES} events, density-shaded · click a title to rename`}
+                ? "newest single trace, full resolution"
+                : `last ${PERSIST_TRACES} events, density-shaded`}
             </span></h2>
             <div className="wave-mode" role="group" aria-label="Waveform display mode">
               <button className={waveMode === "avg" ? "on" : ""}
-                title={`Rolling mean of the last ${tele?.avg_window_s ?? 1}s of events`}
+                title={`Rolling mean of the last ${avgLabel}`}
                 onClick={() => changeWaveMode("avg")}>Avg</button>
               <button className={waveMode === "overlay" ? "on" : ""}
                 title={`The last ${PERSIST_TRACES} single events stacked, brightness = how often a path is taken`}
@@ -809,6 +829,37 @@ export function App() {
                 disabled={!connected}
                 title="One full-resolution trace at a time, fed by free-running software triggers - for studying the noise on a line"
                 onClick={() => changeWaveMode("scope")}>Scope</button>
+              {waveMode === "avg" ? (
+                <span className="avg-ctl"
+                  title={"Average over a time span (follows the beam: empties when triggers stop) or over a number of events (holds the last N when triggers stop). Display only - nothing recorded is averaged."}>
+                  over last
+                  <BlurInput type="number" className="avg-n" selectOnFocus
+                    min={avg.mode === "time" ? 0.1 : 1}
+                    step={avg.mode === "time" ? 0.1 : 1}
+                    value={avg.mode === "time" ? avg.seconds : avg.events}
+                    onCommit={(v) => {
+                      const n = Number(v);
+                      if (!Number.isFinite(n) || n <= 0) return;
+                      applyAverage(avg.mode === "time" ? { seconds: n }
+                                                       : { events: Math.round(n) });
+                    }} />
+                  <select value={avg.mode}
+                    onChange={(e) => applyAverage({ mode: e.target.value as AvgSettings["mode"] })}>
+                    <option value="time">s</option>
+                    <option value="events">events</option>
+                  </select>
+                </span>
+              ) : null}
+              {waveMode !== "scope" ? (
+                <span className="wave-clear">
+                  <button onClick={clearWaves}
+                    title={waveMode === "avg"
+                      ? "Empty the average and start it afresh from the next event (every window sees it)"
+                      : "Wipe the overlay and start piling up events afresh"}>
+                    Clear
+                  </button>
+                </span>
+              ) : null}
               {waveMode === "scope" ? (
                 <>
                   <label className="scope-rate" title="Software-trigger rate, 0.1-20 Hz">

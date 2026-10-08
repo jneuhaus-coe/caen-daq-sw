@@ -564,6 +564,38 @@ test("locking a setting greys it out without touching the unit", async ({ page }
   await expect(select).toBeEnabled();
 });
 
+test("the average runs over a span or an event count, and Clear empties it", async ({ page }) => {
+  // The averaged picture's truth is the telemetry the server streams.
+  const tele = () => page.evaluate(() => new Promise<any>((res) => {
+    const ws = new WebSocket(`ws://${location.host}/ws/telemetry`);
+    ws.onmessage = (e) => { ws.close(); res(JSON.parse(e.data)); };
+  }));
+  await page.locator(".wave-mode button", { hasText: "Avg" }).click();
+  const ctl = page.locator(".avg-ctl");
+  await ctl.locator("select").selectOption("events");
+  await ctl.locator("input").fill("5");
+  await ctl.locator("input").press("Enter");
+  await expect.poll(async () => (await tele()).avg)
+    .toEqual({ mode: "events", seconds: 1, events: 5 });
+  await expect(page.locator(".grid-head h2")).toContainText("last 5 events");
+  // Persisted with the display prefs, so a restart keeps it.
+  expect((await (await page.request.get("/api/display")).json()).avg.events).toBe(5);
+  // An event window holds its last N once triggers stop...
+  await page.locator(".test-trigger input").fill("12");
+  await page.locator(".test-trigger button", { hasText: "Fire" }).click();
+  await expect.poll(async () => (await tele()).channels["0"]?.count, { timeout: 10_000 })
+    .toBe(5);
+  await expect.poll(async () => (await page.request.get("/api/status").then((r) => r.json()))
+    .sw_triggers_pending ?? 0, { timeout: 10_000 }).toBe(0);
+  // ...until Clear empties it.
+  await page.locator(".wave-clear button").click();
+  await expect.poll(async () => (await tele()).channels["0"]?.count ?? 0).toBe(0);
+  // Back to the default for later tests.
+  await ctl.locator("select").selectOption("time");
+  await expect.poll(async () => (await tele()).avg.mode).toBe("time");
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
+});
+
 test("a legacy Configuration B file loads through the Load button", async ({ page }) => {
   const legacy = [
     "Module 125", "DRS4FREQ 0",

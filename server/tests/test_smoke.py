@@ -57,6 +57,24 @@ def test_rolling_average_matches_numpy():
     assert count == 3 and np.allclose(mean, np.mean(waves, axis=0))
 
 
+def test_rolling_average_event_window():
+    # "events" mode: exactly the last N while N fits in the buckets, and it
+    # holds still when triggers stop (no time eviction).
+    avg = RollingAverage(mode="events", window_n=3)
+    for k in range(10):
+        avg.add(0, np.full(4, k, dtype=np.float32), t=float(k))
+    mean, count = avg.snapshot(0)
+    assert count == 3 and np.allclose(mean, 8.0)
+    # Past the bucket count the window is N plus at most one bucket.
+    avg.configure("events", 1.0, 1000)
+    for k in range(5000):
+        avg.add(0, np.full(4, k, dtype=np.float32), t=0.0)
+    _, count = avg.snapshot(0)
+    assert 1000 <= count <= 1000 + -(-1000 // 64)
+    avg.clear()
+    assert avg.snapshot(0) == (None, 0)
+
+
 def test_decimate():
     w = np.arange(1024, dtype=np.float32)
     assert len(decimate(w, 256)) == 256

@@ -75,8 +75,17 @@ class _UiFiles(StaticFiles):
         return response
 
 
+def _apply_avg_prefs(engine: AcquisitionEngine, display: dict) -> None:
+    """The display average's window lives with the display prefs, so a
+    restart or an applied session comes back to the same averaging."""
+    avg = display.get("avg") if isinstance(display, dict) else None
+    if isinstance(avg, dict):
+        engine.set_average(avg.get("mode"), avg.get("seconds"), avg.get("events"))
+
+
 def create_app(engine: AcquisitionEngine) -> FastAPI:
     app = FastAPI(title="DT5742B DAQ")
+    _apply_avg_prefs(engine, sessions.get_display())
 
     @app.get("/api/status")
     def status():
@@ -181,8 +190,25 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.post("/api/display")
     def set_display(payload: dict):
-        """Autosaved UI state (waveform Y ranges). Never touches the board."""
-        sessions.set_display(payload or {})
+        """Autosaved UI state (waveform Y ranges, locks). Never touches the
+        board. MERGED into what is stored, so a window that does not know a
+        key (the average window, set through /api/average) cannot drop it."""
+        sessions.set_display({**sessions.get_display(), **(payload or {})})
+        return {"ok": True}
+
+    @app.post("/api/average")
+    def set_average(payload: dict | None = None):
+        """The display average: {"mode": "time"|"events", "seconds": 1,
+        "events": 100}, any subset. Display only; persisted with the
+        display prefs."""
+        p = payload or {}
+        avg = engine.set_average(p.get("mode"), p.get("seconds"), p.get("events"))
+        sessions.set_display({**sessions.get_display(), "avg": avg})
+        return {"ok": True, "avg": avg}
+
+    @app.post("/api/average/clear")
+    def clear_average():
+        engine.clear_average()
         return {"ok": True}
 
     @app.get("/api/conditions")
@@ -225,7 +251,10 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         with logsetup.step(log, f"Applying session {name!r}") as applying:
             cfg, errs = engine.set_config(BoardConfig.from_dict(s["config"]))
             if isinstance(s.get("display"), dict):
-                sessions.set_display(s["display"])
+                # A session saved before the average was configurable keeps
+                # the current window rather than dropping it from the prefs.
+                sessions.set_display({"avg": engine.set_average(), **s["display"]})
+                _apply_avg_prefs(engine, s["display"])
             if isinstance(s.get("conditions"), list):
                 sessions.set_conditions(s["conditions"])
             st = engine.status()

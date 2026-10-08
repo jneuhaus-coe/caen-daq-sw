@@ -49,9 +49,14 @@ DEFAULT_DRS4_FREQUENCY = 0  # 5 GS/s, WaveDump default
 # grid (plenty to spot dead/railed channels; keeps the wire light).
 OVERVIEW_POINTS = 256
 
-# Fixed display aggregation: waveforms are averaged over a rolling time window
-# and pushed at a fixed cadence (no user-facing moving-average slider).
+# Display aggregation: waveforms are averaged over a rolling window - a time
+# span or an event count, the operator's choice - and pushed at a fixed
+# cadence. Display only; nothing recorded is averaged.
 AVG_WINDOW_SECONDS = 1.0
+AVG_WINDOW_EVENTS = 100
+AVG_SECONDS_MIN, AVG_SECONDS_MAX = 0.1, 600.0
+AVG_EVENTS_MAX = 100_000
+AVG_BUCKETS = 64          # window granularity; also caps memory per channel
 TELEMETRY_HZ = 12.0
 
 # Trigger-rate strip: fixed rolling window.

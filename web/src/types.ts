@@ -89,6 +89,8 @@ export interface Telemetry {
   record_length: number;
   overview_points: number;
   avg_window_s: number;
+  /** The display average's window, as the server applies it. */
+  avg?: AvgSettings;
   events_seen: number;
   recording: boolean;
   run_id: string | null;
@@ -145,6 +147,14 @@ export interface ZeroCal {
   measured_at?: string;
   method?: string;
   channels?: Record<string, { zero_code: number; ref_dac: number }>;
+}
+
+/** The display average: over the last `seconds` ("time") or the last
+ *  `events` events ("events"). */
+export interface AvgSettings {
+  mode: "time" | "events";
+  seconds: number;
+  events: number;
 }
 
 /** How often the header re-checks the board. */
