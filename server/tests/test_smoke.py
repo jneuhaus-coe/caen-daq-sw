@@ -190,6 +190,54 @@ def test_probe_and_reconnect_without_hardware():
     assert c.post("/api/board/reconnect").json()["opened"] is False
 
 
+def test_power_cycle_never_calls_the_driver_at_the_wrong_moment():
+    """The CAEN USB driver wedges when called while the unit is off or still
+    booting, so those moments must cost zero driver calls: a lost unit is
+    reported to the gate (so a quick off/on still gets its boot time), an
+    absent unit is waited for without opening, and Reconnect during a slow
+    open says so instead of claiming there is no unit."""
+    import threading
+    from daq.backend.fake import FakeBackend
+
+    usb = {"gate": None, "alive": True}
+    calls = {"open": 0, "lost": 0}
+    release = threading.Event()
+
+    class Board(FakeBackend):
+        slow = False
+        def link_gate(self): return usb["gate"]
+        def link_booting(self, reason): return reason == "booting"
+        def note_lost(self): calls["lost"] += 1
+        def is_alive(self): return usb["alive"]
+        def open(self):
+            calls["open"] += 1
+            if Board.slow:
+                release.wait(5)
+            return super().open()
+
+    eng = AcquisitionEngine(Board)
+    assert eng.probe() is True and calls["open"] == 1
+
+    usb["alive"], usb["gate"] = False, "booting"  # flipped off and back on
+    assert eng.probe() is False and calls["lost"] == 1
+    eng._last_open_attempt = 0                   # retry cadence not in the way
+    assert eng.probe() is False and calls["open"] == 1
+    assert eng.status()["link"]["state"] == "waiting"
+    usb["gate"] = "absent"                       # switched off is not waiting
+    assert eng.status()["link"]["state"] == "closed"
+
+    usb["gate"], Board.slow = None, True         # booted; the open is slow
+    t = threading.Thread(target=eng.probe)
+    t.start()
+    while eng._opening_since is None:
+        pass
+    r = eng.reconnect()
+    assert r["link"]["state"] == "opening" and calls["open"] == 2
+    release.set()
+    t.join()
+    assert eng.status()["link"]["state"] == "open"
+
+
 def test_software_trigger_is_refused_with_no_unit():
     """No unit means nothing can fire: the request must be refused, not queued
     for an acquisition that can never start."""
@@ -1090,6 +1138,7 @@ if __name__ == "__main__":
                test_wavedump_file_can_turn_a_bank_off,
                test_rate_meter_total_and_last_bucket,
                test_probe_and_reconnect_without_hardware,
+               test_power_cycle_never_calls_the_driver_at_the_wrong_moment,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
                test_run_numbers_are_inferred_and_never_reused,

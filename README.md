@@ -287,10 +287,15 @@ accepts a CAEN `WaveDumpConfig.txt`.
 
 ## When something is wrong
 
-**Badge is red, "No board".**
-Press **Reconnect**. If that fails, check the unit is powered and its USB cable
-is seated, then Reconnect again. Settings controls are disabled while
-disconnected — that is deliberate, nothing can be sent.
+**Badge is red, "No board" or "Unit booting…".**
+Switching the unit off and on is safe at any time. Once the unit shows up on
+USB the badge reads **Unit booting…** for about 5 s, then it reconnects by
+itself. While the badge says
+**Connecting…**, leave it alone: power-cycling then only restarts the wait.
+If it stays red, check the unit is powered and its USB cable is seated, then
+press **Reconnect**. Hover over the badge to see what it is waiting for.
+Settings controls are disabled while disconnected — that is deliberate,
+nothing can be sent.
 
 **Rate is zero and no events arrive.**
 The board is waiting for a trigger. Check the trigger source under Unit Settings

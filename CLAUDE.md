@@ -254,6 +254,29 @@ driver is missing.
   cancel the stuck I/O (reboot if that fails), and keep USB selective suspend
   off for the port. Do not diagnose software from anything a wedged driver
   says.
+- **So the driver is never called at the wrong moment (`usbwatch.py`).**
+  After a power cycle, OpenDigitizer blocked 24-58 s per attempt and then
+  failed (2026-10-07). A raw open on a booted unit takes ~10 ms. The trigger
+  was our 5 s auto-retry calling the driver while the unit was off or still
+  booting. Every USB open is now gated on Windows' device list (cfgmgr32,
+  VID 0x21E1 PID 0). Nothing is sent while the unit is absent, or for
+  `USB_SETTLE_S` after it appears. Losing an open unit restarts that clock,
+  so a quick off/on still gets its boot time. **The scan is on demand, not a
+  polling thread:** it runs only while the unit is NOT open, at most once
+  per `USB_POLL_S` (1 s), and only when a status poll asks. While connected
+  there are no scans at all - this is a shared beamline PC, not ours to
+  spin on. Verified 2026-10-08: a stuck open was released only by a power-off
+  (after 3m20s). The board then reappeared, was left 5 s, and reconnected
+  first try. **The 5 s settle is measured, do not shorten it.** Opens 2.3 s
+  after the unit appeared on USB following a POWER-ON hung 3 of 3 times
+  (17 s, 45 s, 65+ s). Opens at 6.0/6.0/7.2 s were fine (2026-10-08). A
+  cable replug (board never lost power) opened fine at 1.5 s, but from the
+  host a replug and a power cycle look identical, so both pay the 5 s. An
+  `a4818:` entry is skipped while no other CAEN USB device (the adapter) is
+  present. Before that, an absent A4818 in DAQ_LINK put the whole open
+  back on the 5 s retry timer, and a cable replug took ~12 s. Reconnect pressed during an in-flight open
+  reports "still connecting" - it used to say "No unit found", which sent
+  the operator off to power-cycle the unit mid-connect.
 
 **Windows is the deployment target.** The Mac + lima guest is a dev convenience
 for fast iteration; keep host-specific setup out of this repo.

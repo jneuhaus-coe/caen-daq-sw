@@ -25,6 +25,7 @@ from . import corrections
 from .base import DigitizerBackend, Event, BoardInfo
 from .. import constants as C
 from .. import logsetup
+from .. import usbwatch
 
 log = logsetup.get("daq.caen")
 
@@ -313,6 +314,17 @@ class _BoardInfoC(ct.Structure):
     ]
 
 
+def _link_waiting(conn_type: int) -> str | None:
+    """Why this link must not be tried now, judged from Windows' device list
+    alone; None if it may be. PCIe optical cards are not USB: never gated."""
+    if conn_type == ConnectionType_USB:
+        return usbwatch.gate()
+    if conn_type == ConnectionType_A4818:
+        usbwatch.gate()                 # refreshes the scan adapter_gate reads
+        return usbwatch.adapter_gate()
+    return None
+
+
 def _load_lib():
     """Load libCAENDigitizer / CAENDigitizer.dll.
 
@@ -368,6 +380,12 @@ class CaenBackend(DigitizerBackend):
         failures = []
         ret = None
         for conn_type, link_num, label in _link_specs():
+            # Never call the USB driver while the unit is absent or still
+            # booting - that is what wedges it (usbwatch has the story).
+            waiting = _link_waiting(conn_type)
+            if waiting:
+                failures.append(f"{label}: {waiting}")
+                continue
             ret = self._lib.CAEN_DGTZ_OpenDigitizer(
                 conn_type, link_num, self._conet_node,
                 self._vme_base, ct.byref(self._h))
@@ -376,7 +394,12 @@ class CaenBackend(DigitizerBackend):
                 if label != "usb":
                     logsetup.did(log, f"Opening over the {label} link", "Ok")
                 break
-            failures.append(f"{label}: {_ERROR_NAMES.get(ret, ret)}")
+            # Plain names here: the "retried once" gloss in _ERROR_NAMES is
+            # true of _get/_set, but OpenDigitizer is not retried.
+            failures.append(f"{label}: " + ("CommError" if ret == CAEN_DGTZ_CommError
+                                            else str(_ERROR_NAMES.get(ret, ret))))
+        if ret is None:
+            raise RuntimeError("Not opened: " + "; ".join(failures))
         if ret != CAEN_DGTZ_Success:
             self._chk(ret, "OpenDigitizer (" + "; ".join(failures) + ")")
         bi = _BoardInfoC()
@@ -417,6 +440,19 @@ class CaenBackend(DigitizerBackend):
                 self._h, REG_ACQUISITION_STATUS, ct.byref(val)) == CAEN_DGTZ_Success
         except Exception:
             return False
+
+    def link_gate(self) -> str | None:
+        # The open as a whole waits only when EVERY configured link must. A
+        # DAQ_LINK naming an absent A4818 used to defeat the gate entirely,
+        # leaving USB on the 5 s retry timer - up to ~12 s to reconnect.
+        reasons = [_link_waiting(t) for t, _, _ in _link_specs()]
+        return None if any(r is None for r in reasons) else reasons[-1]
+
+    def link_booting(self, reason: str) -> bool:
+        return usbwatch.is_booting(reason)
+
+    def note_lost(self) -> None:
+        usbwatch.unit_lost()
 
     # ---------- settings: the board is the source of truth ----------
     def _get(self, name, *args, ctype=ct.c_uint32):
