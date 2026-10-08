@@ -215,11 +215,16 @@ export function App() {
   const fromPrefs = (d: DisplayPrefs): Record<number, [number, number]> => {
     const out: Record<number, [number, number]> = {};
     for (const [k, v] of Object.entries(d.y_ranges ?? {})) {
-      // Window-referenced volts: nothing outside the 1 Vpp window is ever
-      // readable, and ranges saved under the older input-referred frame
-      // (up to +/-1 V) are silently retired by the same check.
-      if (Array.isArray(v) && v.length === 2 && v[0] < v[1]
-          && v[0] >= -0.501 && v[1] <= 0.501) {
+      // Plots are in INPUT volts and move with the offset register: a
+      // channel's window can sit anywhere in about +/-1.5 V, and TR0 (x2
+      // attenuated, its own offset shifting it up to ~+/-3.2 V) further
+      // still. A +/-0.5 V bound left over from the window-referenced era
+      // silently dropped every TR0 range - and since display prefs are
+      // re-adopted after each save, the plot snapped back a second after
+      // every edit. Only reject what no plot could ever show.
+      if (Array.isArray(v) && v.length === 2
+          && Number.isFinite(v[0]) && Number.isFinite(v[1]) && v[0] < v[1]
+          && v[0] >= -5 && v[1] <= 5) {
         out[Number(k)] = [v[0], v[1]];
       }
     }
