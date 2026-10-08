@@ -90,6 +90,11 @@ class DigitizerBackend(abc.ABC):
         moment must simply not be called then."""
         return None
 
+    def link_booting(self, reason: str) -> bool:
+        """Is this link_gate() reason "present, still booting" (as opposed
+        to "absent")? Only the first is worth telling an operator to wait."""
+        return False
+
     def note_lost(self) -> None:
         """The open unit stopped answering. What is there next may be the
         same unit switched off and on, still booting, so link_gate should

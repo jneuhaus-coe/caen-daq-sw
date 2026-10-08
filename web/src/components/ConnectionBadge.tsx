@@ -26,7 +26,7 @@ export function ConnectionBadge({ status, serverUp, busy, onReconnect }: Props) 
       : !serverUp
         ? "Server offline"
         : link?.state === "waiting"
-          ? "Waiting for unit"
+          ? "Unit booting…"
           : "No board";
 
   // Everything we know about the unit, for the hover.

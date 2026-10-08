@@ -314,6 +314,17 @@ class _BoardInfoC(ct.Structure):
     ]
 
 
+def _link_waiting(conn_type: int) -> str | None:
+    """Why this link must not be tried now, judged from Windows' device list
+    alone; None if it may be. PCIe optical cards are not USB: never gated."""
+    if conn_type == ConnectionType_USB:
+        return usbwatch.gate()
+    if conn_type == ConnectionType_A4818:
+        usbwatch.gate()                 # refreshes the scan adapter_gate reads
+        return usbwatch.adapter_gate()
+    return None
+
+
 def _load_lib():
     """Load libCAENDigitizer / CAENDigitizer.dll.
 
@@ -369,13 +380,12 @@ class CaenBackend(DigitizerBackend):
         failures = []
         ret = None
         for conn_type, link_num, label in _link_specs():
-            if conn_type == ConnectionType_USB:
-                # Never call the USB driver while the unit is absent or still
-                # booting - that is what wedges it (usbwatch has the story).
-                waiting = usbwatch.gate()
-                if waiting:
-                    failures.append(f"{label}: {waiting}")
-                    continue
+            # Never call the USB driver while the unit is absent or still
+            # booting - that is what wedges it (usbwatch has the story).
+            waiting = _link_waiting(conn_type)
+            if waiting:
+                failures.append(f"{label}: {waiting}")
+                continue
             ret = self._lib.CAEN_DGTZ_OpenDigitizer(
                 conn_type, link_num, self._conet_node,
                 self._vme_base, ct.byref(self._h))
@@ -432,11 +442,14 @@ class CaenBackend(DigitizerBackend):
             return False
 
     def link_gate(self) -> str | None:
-        # Only a USB-only configuration can be gated as a whole; with another
-        # link in DAQ_LINK, open() still tries that one and skips just USB.
-        if all(t == ConnectionType_USB for t, _, _ in _link_specs()):
-            return usbwatch.gate()
-        return None
+        # The open as a whole waits only when EVERY configured link must. A
+        # DAQ_LINK naming an absent A4818 used to defeat the gate entirely,
+        # leaving USB on the 5 s retry timer - up to ~12 s to reconnect.
+        reasons = [_link_waiting(t) for t, _, _ in _link_specs()]
+        return None if any(r is None for r in reasons) else reasons[-1]
+
+    def link_booting(self, reason: str) -> bool:
+        return usbwatch.is_booting(reason)
 
     def note_lost(self) -> None:
         usbwatch.unit_lost()

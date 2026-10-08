@@ -936,7 +936,11 @@ class AcquisitionEngine:
             return {"state": "opening", "detail": detail}
         waiting = self._link_gate()
         if waiting:
-            return {"state": "waiting", "detail": waiting[0].upper() + waiting[1:]}
+            # "waiting" only when there is something to wait FOR: a unit that
+            # is switched off is simply not there.
+            booting = self._gatekeeper.link_booting(waiting)
+            return {"state": "waiting" if booting else "closed",
+                    "detail": waiting[0].upper() + waiting[1:]}
         return {"state": "closed", "detail": self._not_open_reason}
 
     def status(self) -> dict:

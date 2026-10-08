@@ -33,6 +33,7 @@ log = logsetup.get("daq.usb")
 # A4818 optical adapter is also VID 0x21E1 but has its own PID, so it does not
 # match.
 _DEVICE_PREFIX = "USB\\VID_21E1&PID_0000\\"
+_CAEN_PREFIX = "USB\\VID_21E1&"
 
 _CR_SUCCESS = 0
 _CM_GETIDLIST_FILTER_ENUMERATOR = 0x00000001
@@ -60,8 +61,10 @@ class _CfgMgr:
         self.status.argtypes = [pul, pul, ul, ul]
         self.status.restype = ul
 
-    def digitizer_ready(self) -> bool:
-        """True if a present DT57xx has a started driver and no problem code."""
+    def scan(self) -> tuple[bool, bool]:
+        """(digitizer ready, another CAEN USB device present). The second is
+        what an a4818 link needs - the A4818 is a CAEN (VID 0x21E1) USB device
+        of its own - so without one, that link cannot work and is not tried."""
         flags = _CM_GETIDLIST_FILTER_ENUMERATOR | _CM_GETIDLIST_FILTER_PRESENT
         # The list can grow between the size call and the fetch (a device
         # arriving), which answers CR_BUFFER_SMALL; a retry settles it.
@@ -74,9 +77,11 @@ class _CfgMgr:
                 break
         else:
             raise OSError("CM_Get_Device_ID_List failed")
-        ids = ct.wstring_at(ct.addressof(buf), len(buf)).split("\0")
+        ids = [i.upper() for i in ct.wstring_at(ct.addressof(buf), len(buf)).split("\0")]
+        other = any(i.startswith(_CAEN_PREFIX) and not i.startswith(_DEVICE_PREFIX)
+                    for i in ids)
         for dev_id in ids:
-            if not dev_id.upper().startswith(_DEVICE_PREFIX):
+            if not dev_id.startswith(_DEVICE_PREFIX):
                 continue
             inst = ct.c_ulong(0)
             if self.locate(ct.byref(inst), dev_id, 0) != _CR_SUCCESS:
@@ -85,8 +90,8 @@ class _CfgMgr:
             if self.status(ct.byref(st), ct.byref(problem), inst.value, 0) != _CR_SUCCESS:
                 continue
             if st.value & _DN_STARTED and problem.value == 0:
-                return True
-        return False
+                return True, other
+        return False, other
 
 
 _lock = threading.Lock()
@@ -99,6 +104,7 @@ _ready = False
 # us, not one mid-boot.
 _ready_since = float("-inf")
 _first_look = True
+_adapter = True     # another CAEN USB device (an A4818) present; True = unknown
 
 
 def _scan_locked(now: float) -> None:
@@ -111,12 +117,13 @@ def _scan_locked(now: float) -> None:
             log.warning("USB device checks unavailable (%s); the driver will "
                         "be called without them", e)
             return
+    global _adapter
     try:
-        ready = _cfg.digitizer_ready()
+        ready, _adapter = _cfg.scan()
     except Exception as e:
         log.debug("USB device scan failed (%s); not gating this time", e)
         _last_scan = now
-        _ready, _ready_since = True, float("-inf")
+        _ready, _ready_since, _adapter = True, float("-inf"), True
         return
     _last_scan = now
     if ready and not _ready:
@@ -144,11 +151,30 @@ def gate() -> str | None:
         if _unavailable:
             return None
         if not _ready:
-            return "the unit is not on USB (switched off or unplugged)"
+            return ABSENT
         left = C.USB_SETTLE_S - (now - _ready_since)
         if left > 0:
-            return f"the unit just appeared on USB; letting it boot ({left:.0f}s)"
+            return f"{BOOTING} ({left:.0f}s)"
         return None
+
+
+# gate()'s two answers, so a caller can tell "off" from "booting" - the badge
+# says No board for the first and Waiting for unit only for the second.
+ABSENT = "the unit is not on USB (switched off or unplugged)"
+BOOTING = "the unit is on USB and booting; not talking to it yet"
+
+
+def is_booting(reason: str | None) -> bool:
+    return bool(reason) and reason.startswith(BOOTING)
+
+
+def adapter_gate() -> str | None:
+    """Why an a4818 link cannot work right now (no A4818 on USB), or None.
+    Reuses gate()'s scan cadence; call it after gate()."""
+    if _unavailable:
+        return None
+    with _lock:
+        return None if _adapter else "no A4818 adapter on USB"
 
 
 def unit_lost() -> None:

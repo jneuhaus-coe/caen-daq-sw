@@ -287,9 +287,10 @@ accepts a CAEN `WaveDumpConfig.txt`.
 
 ## When something is wrong
 
-**Badge is red, "No board" or "Waiting for unit".**
-Switching the unit off and on is safe at any time. The DAQ waits a few seconds
-for it to boot and then reconnects by itself. While the badge says
+**Badge is red, "No board" or "Unit booting…".**
+Switching the unit off and on is safe at any time. Once the unit shows up on
+USB the badge reads **Unit booting…** for about 5 s, then it reconnects by
+itself. While the badge says
 **Connecting…**, leave it alone: power-cycling then only restarts the wait.
 If it stays red, check the unit is powered and its USB cable is seated, then
 press **Reconnect**. Hover over the badge to see what it is waiting for.

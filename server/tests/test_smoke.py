@@ -206,6 +206,7 @@ def test_power_cycle_never_calls_the_driver_at_the_wrong_moment():
     class Board(FakeBackend):
         slow = False
         def link_gate(self): return usb["gate"]
+        def link_booting(self, reason): return reason == "booting"
         def note_lost(self): calls["lost"] += 1
         def is_alive(self): return usb["alive"]
         def open(self):
@@ -222,6 +223,8 @@ def test_power_cycle_never_calls_the_driver_at_the_wrong_moment():
     eng._last_open_attempt = 0                   # retry cadence not in the way
     assert eng.probe() is False and calls["open"] == 1
     assert eng.status()["link"]["state"] == "waiting"
+    usb["gate"] = "absent"                       # switched off is not waiting
+    assert eng.status()["link"]["state"] == "closed"
 
     usb["gate"], Board.slow = None, True         # booted; the open is slow
     t = threading.Thread(target=eng.probe)

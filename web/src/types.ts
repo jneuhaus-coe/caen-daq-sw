@@ -102,8 +102,9 @@ export interface Telemetry {
 export interface Status {
   opened: boolean;
   /** What the connection is doing: "opening" is inside the CAEN driver right
-   *  now; "waiting" means the unit is off or still booting and nothing is
-   *  being sent to it; "closed" means the last attempt failed. */
+   *  now; "waiting" means the unit is on USB but still booting, so nothing
+   *  is sent to it yet; "closed" means it is off/unplugged or the last
+   *  attempt failed (detail says which). */
   link?: { state: "open" | "opening" | "waiting" | "closed"; detail: string };
   /** The server's own pid, so `daq stop` can tell it from a stale record. */
   pid?: number;
