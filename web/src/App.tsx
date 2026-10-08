@@ -1134,13 +1134,15 @@ export function App() {
               // sources, each source's own option right under it and only
               // while that source is enabled.
               const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
-              const row = (k: string, label: string) => {
+              const row = (k: string, label: string, lockable = true) => {
                 const d = def(k);
-                const locked = isLocked(k);
+                const locked = lockable && isLocked(k);
                 return (
                   <div className={"setting-row lockable" + (locked ? " locked" : "")} key={k}
                     title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
-                    <LockToggle locked={locked} what={label} onToggle={() => toggleLock(k)} />
+                    {lockable
+                      ? <LockToggle locked={locked} what={label} onToggle={() => toggleLock(k)} />
+                      : <span className="lock-spacer" />}
                     <label>{label}</label>
                     <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
                       dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
@@ -1162,8 +1164,8 @@ export function App() {
                     {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
                     {row("fast_trigger", "TR0")}
                     {config.fast_trigger !== "disabled"
-                      ? row("fast_trigger_digitizing", "Digitize TR traces") : null}
-                    {row("software_trigger", "Software trigger")}
+                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
+                    {row("software_trigger", "Software trigger", false)}
                   </div>
                 </>
               );

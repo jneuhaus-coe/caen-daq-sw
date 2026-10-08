@@ -627,9 +627,13 @@ Never let the UI show a setting the hardware did not confirm.
 
 ## UI conventions
 
-- **Lockable settings (the house style), on every setting.** A lock icon
-  button (`LockToggle`) sits to the LEFT of the setting's label and toggles
-  it. Locked: the control is greyed out but still shows the board's value -
+- **Lockable settings (the house style).** A monochrome line-icon lock
+  button (`LockToggle`, `currentColor` - it reads like the label, never as a
+  highlighted control) sits to the LEFT of the setting's label and toggles
+  it. Every hardware setting is lockable except Digitize TR traces and
+  Software trigger (never were; a `.lock-spacer` keeps their labels in
+  line). Optional campaign settings are plain lockable rows - the old
+  "uncheck to return to default" checkbox is gone. Locked: the control is greyed out but still shows the board's value -
   protection, not concealment. Locking never writes or resets anything, and
   one click unlocks. CSS: `.setting-row.lockable` (+ `.locked`),
   `.lock-toggle`. Keys: the setting key, `bank<N>:<key>` for bank settings,

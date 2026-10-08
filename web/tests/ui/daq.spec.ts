@@ -46,13 +46,15 @@ test("unit settings split: campaign on Experiment, trigger tuning on Live", asyn
   await dlg.getByRole("button", { name: "OK" }).click();
   await expect(page.locator("main + aside .setting-row",
     { hasText: "Sampling frequency" })).toHaveCount(0);
-  // Campaign settings, required first then the gated optionals, live on the
-  // Experiment view.
+  // Campaign settings, required first then the optionals, live on the
+  // Experiment view - every row a plain lockable setting, no checkbox gate.
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
   const grid = page.locator(".exp-grid .settings-grid").first();
   await expect(grid.locator("> *").nth(0)).toContainText("Sampling frequency");
   await expect(grid.locator(".settings-divider")).toBeVisible();
-  await expect(grid.locator(".setting-row.optional").first()).toBeVisible();
+  const opt = grid.locator(".setting-row", { hasText: "Events per readout" });
+  await expect(opt.getByRole("button", { name: "Lock Events per readout" })).toBeVisible();
+  await expect(opt.locator('input[type="number"]')).toBeEnabled();
   await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
@@ -94,23 +96,9 @@ test("moving the TR offset leaves the raw threshold untouched", async ({ page })
   await expect(input).toBeDisabled();
 });
 
-test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
-  // Customize "Dump header" (default off), then uncheck the row: the value
-  // must return to the default ON THE SERVER, not merely in the form.
-  await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  const row = page.locator(".setting-row.optional", { hasText: "Dump header" });
-  const box = row.locator('input[type="checkbox"]').first();
-  await box.check();                                  // engage
-  await row.locator('input[type="checkbox"]').nth(1).check();  // the value itself
-  await expect.poll(async () => (await cfg(page)).output_header).toBe(true);
-  await box.uncheck();                                // pin back to default
-  await expect.poll(async () => (await cfg(page)).output_header).toBe(false);
-});
-
 test("a typed out-of-range value is clamped before it reaches the unit", async ({ page }) => {
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  const row = page.locator(".setting-row.optional", { hasText: "Events per readout" });
-  await row.locator('input[type="checkbox"]').first().check();
+  const row = page.locator(".setting-row", { hasText: "Events per readout" });
   const input = row.locator('input[type="number"]');
   await input.fill("5000");
   await input.press("Enter");

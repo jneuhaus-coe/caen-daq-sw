@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { Catalog, SettingDef } from "../types";
 import { SettingControl } from "./SettingControl";
 import { LockToggle } from "./LockToggle";
@@ -19,70 +18,35 @@ interface Props {
 }
 
 /** Required settings first - the ones every run must have deliberately chosen -
- *  then the optional ones, each behind a checkbox. An unchecked optional
- *  setting is pinned to its default: unchecking one writes the default back to
- *  the unit, so the checkbox states always describe what the hardware holds,
- *  not merely what the form shows. */
+ *  then the optional ones under their own divider. Every row is an ordinary
+ *  lockable setting; the optional ones are simply the ones that are usually
+ *  left at their defaults. */
 export function SettingsList({ defs, geom, get, onChange, skip = [],
                                locked, onToggleLock, lockPrefix = "" }: Props) {
   const lockable = !!locked && !!onToggleLock;
   const isLocked = (key: string) => locked?.(lockPrefix + key) ?? false;
-  const lockIcon = (def: SettingDef) =>
-    lockable ? (
-      <LockToggle locked={isLocked(def.key)} what={def.label}
-        onToggle={() => onToggleLock!(lockPrefix + def.key)} />
-    ) : null;
-  const lockCls = (key: string) =>
-    lockable ? " lockable" + (isLocked(key) ? " locked" : "") : "";
   const shown = defs.filter((d) => !skip.includes(d.key));
-  // Only an entry that declares its default can be pinned to it. Tiers whose
+  // Only an entry that declares its default counts as optional. Tiers whose
   // catalog carries no defaults (the bank panel) render every row plainly.
-  const gated = (d: SettingDef) => !d.required && d.default !== undefined;
-  const required = shown.filter((d) => !gated(d));
-  const optional = shown.filter(gated);
+  const isOptional = (d: SettingDef) => !d.required && d.default !== undefined;
+  const required = shown.filter((d) => !isOptional(d));
+  const optional = shown.filter(isOptional);
 
-  // Checked-but-still-at-default rows: engaged by hand, awaiting a first edit.
-  // Everything else derives from value !== default, which survives reloads and
-  // other operators' changes without any state of its own.
-  const [engaged, setEngaged] = useState<Set<string>>(new Set());
-
-  const row = (def: SettingDef) => (
-    <div className={"setting-row" + lockCls(def.key)} key={def.key}
-      title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
-      {lockIcon(def)}
-      {/* The unit lives inside the field, not appended to the label. */}
-      <label>{def.label}</label>
-      <SettingControl def={def} value={get(def.key)} geom={geom}
-        dependsOn={def.depends_on ? get(def.depends_on) : undefined}
-        disabled={isLocked(def.key)}
-        onChange={(v) => onChange(def.key, v)} />
-    </div>
-  );
-
-  const optionalRow = (def: SettingDef) => {
-    const customized = get(def.key) !== def.default;
-    const active = customized || engaged.has(def.key);
-    const toggle = (on: boolean) => {
-      setEngaged((prev) => {
-        const next = new Set(prev);
-        on ? next.add(def.key) : next.delete(def.key);
-        return next;
-      });
-      if (!on && customized) onChange(def.key, def.default);
-    };
+  const row = (def: SettingDef) => {
+    const lk = isLocked(def.key);
     return (
-      <div className={"setting-row optional" + (active ? "" : " off") + lockCls(def.key)}
+      <div className={"setting-row" + (lockable ? " lockable" + (lk ? " locked" : "") : "")}
         key={def.key}
         title={[def.help, def.caen].filter(Boolean).join("\n\n")}>
-        {lockIcon(def)}
-        <input type="checkbox" checked={active} disabled={isLocked(def.key)}
-          title={active ? "Uncheck to return this setting to its default"
-                        : "Check to customize this setting"}
-          onChange={(e) => toggle(e.target.checked)} />
+        {lockable ? (
+          <LockToggle locked={lk} what={def.label}
+            onToggle={() => onToggleLock!(lockPrefix + def.key)} />
+        ) : null}
+        {/* The unit lives inside the field, not appended to the label. */}
         <label>{def.label}</label>
         <SettingControl def={def} value={get(def.key)} geom={geom}
           dependsOn={def.depends_on ? get(def.depends_on) : undefined}
-          disabled={!active || isLocked(def.key)}
+          disabled={lk}
           onChange={(v) => onChange(def.key, v)} />
       </div>
     );
@@ -93,9 +57,8 @@ export function SettingsList({ defs, geom, get, onChange, skip = [],
       {required.map(row)}
       {optional.length ? (
         <>
-          <div className="settings-divider"
-            title="Unchecked settings stay at their defaults">Optional</div>
-          {optional.map(optionalRow)}
+          <div className="settings-divider">Optional</div>
+          {optional.map(row)}
         </>
       ) : null}
     </div>

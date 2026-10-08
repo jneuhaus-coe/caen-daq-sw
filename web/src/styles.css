@@ -114,11 +114,20 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
 .bank.off { opacity: .5; border-style: dashed; }
 .bank .grid16 { padding: 0 10px 10px; }
 
-.grid16 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+/* minmax(0, 1fr), not 1fr: a 1fr track never shrinks below its content, so
+   a tile whose controls were a little wide pushed the grid out of its bank. */
+.grid16 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+/* Columns follow the space the bank actually has, not the viewport: a tile
+   needs ~200px for its DC-offset row (lock, label, slider, field), and the
+   viewport breakpoint let 4 columns squeeze tiles to ~155px and spill out. */
+.bank { container-type: inline-size; }
+@container (max-width: 860px) { .grid16 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 440px) { .grid16 { grid-template-columns: minmax(0, 1fr); } }
 .tile {
   /* now a plain container: it holds inputs, so it cannot be a <button> */
   text-align: left; padding: 7px 8px 5px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
 }
 .tile:hover { border-color: #4b5563; }
 .tile.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -139,7 +148,10 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
 }
 
 /* per-channel settings live with the chart, not in a separate inspector */
-.tile-dc { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin-top: 4px; }
+.tile-dc { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin-top: 4px;
+           min-width: 0; }
+.tile-dc label { white-space: nowrap; }
+.tile-dc .field { flex: none; }
 .tile-dc label { color: var(--muted); }
 .tile-dc input {
   width: 62px; font: inherit; font-variant-numeric: tabular-nums;
@@ -149,7 +161,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
 .tile-dc .unit { color: var(--muted); margin-right: auto; }
 /* the slider owns the spare width; the numeric field keeps its fixed 62px */
 .tile-dc input.dc-slider {
-  flex: 1; width: auto; min-width: 40px; padding: 0; border: none;
+  flex: 1; width: auto; min-width: 0; padding: 0; border: none;
   background: transparent; accent-color: #4a7dcf; height: 14px;
 }
 
@@ -263,14 +275,6 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
 .setting-row .unit { color: var(--muted); }
 .setting-row .help { grid-column: 1 / -1; font-size: 11px; color: #6e7681; }
 
-/* Optional settings: [checkbox] [label] [control]. An unchecked row is pinned
-   to its default, so it reads muted but stays legible - the operator should
-   still see WHAT the default is, just not mistake it for a choice they made. */
-.setting-row.optional { grid-template-columns: auto 1fr auto; }
-.setting-row.optional > input[type="checkbox"] { margin: 0; }
-.setting-row.optional.off label { color: var(--muted); }
-.setting-row.optional.off select,
-.setting-row.optional.off .field input { opacity: 0.55; }
 .settings-divider {
   display: flex; align-items: center; gap: 8px; margin-top: 4px;
   font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
@@ -389,7 +393,6 @@ select { min-width: 90px; }
 @media (max-width: 1100px) {
   .body { grid-template-columns: 1fr; }
   aside { position: static; }
-  .grid16 { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* nested collapsibles (each bank inside Bank Settings) */
@@ -537,7 +540,10 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
   font-size: 13px; font-weight: 700; line-height: 1; flex: none;
   display: grid; place-items: center;
 }
-.rec-group { padding: 2px 0; }
+/* Right-aligned, under the acquisition controls it follows on from. An auto
+   margin rather than justify-content: flex-end, which would push an
+   overflowing row off the LEFT edge, out of scroll reach. */
+.rec-group { padding: 2px 0; margin-left: auto; }
 .rec-group.on {
   padding: 2px 8px; border-radius: 8px;
   border: 1px solid #6b2226; background: #2a1416;
@@ -644,7 +650,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   position: relative; z-index: 1; font-weight: 650;
 }
 
-.tile-dc .lock-toggle { font-size: 11px; }
+.tile-dc .lock-toggle { color: var(--muted); }
 .tile-dc.locked label { color: #6e7681; }
 .tile-dc.locked input { opacity: .45; }
 
@@ -772,13 +778,17 @@ main.experiment { overflow-y: auto; }
    the control is greyed out but still shows the board's value; unlocked it
    is an ordinary editable setting. */
 .setting-row.lockable { grid-template-columns: auto 1fr auto; }
-.setting-row.optional.lockable { grid-template-columns: auto auto 1fr auto; }
+/* Same colour as the label beside it - muted together when locked - so it
+   reads as part of the setting, not as a separately highlighted control. */
 .lock-toggle {
-  background: none; border: none; cursor: pointer; padding: 0 2px;
-  font-size: 13px; line-height: 1; opacity: .5;
+  display: inline-grid; place-items: center;
+  background: none; border: none; padding: 0 2px; cursor: pointer;
+  color: inherit; line-height: 0;
 }
-.lock-toggle[aria-pressed="true"] { opacity: .9; }
-.lock-toggle:hover:not(:disabled) { opacity: 1; background: none; border: none; }
+.lock-toggle:hover:not(:disabled) { background: none; border: none; color: var(--text); }
+.setting-row.lockable.locked .lock-toggle { color: var(--muted); }
+/* A row that is not lockable keeps its label in line with the ones that are. */
+.lock-spacer { display: inline-block; width: 16px; }
 .setting-row.lockable.locked .tr-rel-note { opacity: .55; }
 .setting-row.lockable.locked label { color: var(--muted); }
 .setting-row.lockable.locked select,
