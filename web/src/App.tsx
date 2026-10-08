@@ -134,6 +134,17 @@ export function App() {
   // session apply, a reconnect), the tab refetches rather than goes stale.
   const cfgRev = useRef(0);
   const { toasts, push, dismiss } = useToasts();
+  // The sticky settings column sits just under the sticky header, whose
+  // height depends on the width (the header is two rows, and may grow).
+  const headerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => document.documentElement.style
+      .setProperty("--header-h", `${el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [catalog !== null && config !== null]);
 
   const loadOnce = useCallback(async () => {
     setLoadError(null);
@@ -595,56 +606,62 @@ export function App() {
 
   return (
     <div className="app">
-      <header>
-        <h1>DT5742B DAQ</h1>
-        <nav className="view-tabs" role="tablist" aria-label="View">
-          <button role="tab" aria-selected={view === "live"}
-            className={view === "live" ? "on" : ""}
-            onClick={() => setView("live")}>Live</button>
-          <button role="tab" aria-selected={view === "experiment"}
-            className={view === "experiment" ? "on" : ""}
-            title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
-            onClick={() => setView("experiment")}>Experiment Settings</button>
-        </nav>
-        <button className={"lock-all" + (lockOn ? " on" : "")}
-          title={lockOn
-            ? "Settings are LOCKED. Unlock individual settings with their own lock icons; click here to unlock everything."
-            : "Lock every hardware setting against accidental edits. Unlock them one at a time afterwards."}
-          onClick={toggleLockAll}>
-          {lockOn ? "🔒 LOCKED" : "🔓 LOCK"}
-        </button>
-        <ConnectionBadge status={status} serverUp={serverUp}
-          busy={reconnecting} onReconnect={reconnect} />
-        {/* Acquisition lives beside the connection state, away from the
-            Record cluster: enabling it watches, and only Record writes -
-            keeping the two apart is what stops "for N ev" reading as an
-            acquisition option. */}
-        <div className="acq-group">
-          {!running ? (
-            <button className="primary" onClick={start} disabled={!connected}
-              title={connected ? "Watch live — nothing is written to disk"
-                               : "No unit connected"}>
-              Enable Acquisition
-            </button>
-          ) : null}
-          {/* Hidden while recording: disabling acquisition there would end the
-              run, and "Stop recording" is the button you actually want. */}
-          {running && !recording ? (
-            <button onClick={stop}>Disable Acquisition</button>
-          ) : null}
+      <header ref={headerRef}>
+        {/* Row 1: where you are, what is attached, whether it is acquiring.
+            Row 2: the Record cluster. Two rows so nothing wraps on a laptop -
+            one row squeezed every label and button onto two lines. */}
+        <div className="appbar">
+          <h1>DT5742B DAQ</h1>
+          <nav className="view-tabs" role="tablist" aria-label="View">
+            <button role="tab" aria-selected={view === "live"}
+              className={view === "live" ? "on" : ""}
+              onClick={() => setView("live")}>Live</button>
+            <button role="tab" aria-selected={view === "experiment"}
+              className={view === "experiment" ? "on" : ""}
+              title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
+              onClick={() => setView("experiment")}>Experiment Settings</button>
+          </nav>
+          <div className="spacer" />
+          <ConnectionBadge status={status} serverUp={serverUp}
+            busy={reconnecting} onReconnect={reconnect} />
+          {/* Acquisition lives beside the connection state, away from the
+              Record row: enabling it watches, and only Record writes -
+              keeping the two apart is what stops "for N ev" reading as an
+              acquisition option. */}
+          <div className="acq-group">
+            <span className={"acq-state " + acqState}
+              title="Acquisition state, and events read out since it was enabled">
+              <span className="pill state">{acqState}</span>
+              <span className="acq-count mono">
+                {(tele?.events_seen ?? status?.events_seen ?? 0).toLocaleString()} ev
+              </span>
+            </span>
+            {!running ? (
+              <button className="primary" onClick={start} disabled={!connected}
+                title={connected ? "Watch live — nothing is written to disk"
+                                 : "No unit connected"}>
+                Enable Acquisition
+              </button>
+            ) : null}
+            {/* Hidden while recording: disabling acquisition there would end the
+                run, and "Stop recording" is the button you actually want. */}
+            {running && !recording ? (
+              <button onClick={stop}>Disable Acquisition</button>
+            ) : null}
+          </div>
+          <button className="help-btn" onClick={() => setTour(true)}
+            title="Quick use" aria-label="Quick use">?</button>
         </div>
-        <span className={"pill state " + acqState}>{acqState}</span>
-        <span className="pill mono">{tele?.events_seen ?? 0} events</span>
-        <div className="spacer" />
         <div className="run-controls">
           <div className={"rec-group" + (recording ? " on" : "")}>
             {recording ? (
               <>
                 <span className="rec-dot" />
+                <span className="rec-label">Recording</span>
                 <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
                 <span className="rec-count mono">
                   <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
-                  {" · "}{tele?.recorded ?? 0} ev
+                  {" · "}{(tele?.recorded ?? status?.recorded ?? 0).toLocaleString()} ev
                 </span>
                 <button className="danger" onClick={stopRec}>Stop recording</button>
               </>
@@ -670,7 +687,7 @@ export function App() {
                   onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
                 <label className="rec-label" htmlFor="recmax"
                   title="Stop the recording automatically after this many events. Blank = record until stopped. Acquisition keeps running either way.">
-                  for
+                  Stop after
                 </label>
                 <input id="recmax" className="rec-input rec-no" type="number" min={1}
                   placeholder="&#8734; ev" value={recMax} disabled={!connected}
@@ -690,8 +707,6 @@ export function App() {
             )}
           </div>
         </div>
-        <button className="help-btn" onClick={() => setTour(true)}
-          title="Quick use" aria-label="Quick use">?</button>
       </header>
 
       <div className="body">

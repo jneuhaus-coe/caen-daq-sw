@@ -19,12 +19,17 @@ body { background: var(--bg); color: var(--text); font: 13.5px/1.45 system-ui, -
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 .muted { color: var(--muted); font-size: 12px; }
 
+/* Two rows: the app bar (view, unit, acquisition) and the Record row. Nothing
+   in either may wrap - a label broken over two lines reads as two controls. */
 header {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--panel); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
-header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; }
+header button, header label, header .pill, header .conn { white-space: nowrap; }
+.appbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; min-width: 0; }
+header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px;
+            white-space: nowrap; }
 .spacer { flex: 1; }
 .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px;
         background: #21262d; color: var(--muted);
@@ -73,7 +78,8 @@ button:disabled { opacity: .45; cursor: default; }
 
 .body { display: grid; grid-template-columns: 1fr 360px; gap: 14px; padding: 14px; align-items: start; }
 main { min-width: 0; }
-aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 63px; }
+aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
+        top: calc(var(--header-h, 92px) + 14px); }
 
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .card h2, .grid-head h2 {
@@ -85,7 +91,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 /* channel grid */
 .grid-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .grid-head h2 { margin: 0; }
-.legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .legend .lg::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 .lg.live::before { background: var(--green); } .lg.dead::before { background: var(--purple); }
 .lg.clip::before { background: var(--orange); } .lg.off::before { background: #3a4150; }
@@ -510,20 +516,33 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 .hw-lock:disabled .tile .ch { cursor: default; }
 
 /* acquire vs record: two separate actions, visibly separate controls */
-.run-controls { display: flex; align-items: center; gap: 8px; }
+.run-controls {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-top: 1px solid var(--border); background: #12151b;
+  overflow-x: auto;
+}
 .acq-group, .rec-group { display: flex; align-items: center; gap: 6px; }
-.acq-group:empty { display: none; }
+/* State and event count read as one indicator. */
+.acq-state {
+  display: inline-flex; align-items: center; gap: 0;
+  border-radius: 999px; background: #21262d; border: 1px solid transparent;
+}
+.acq-state .pill.state { border-radius: 999px 0 0 999px; }
+.acq-count { font-size: 12px; padding: 0 10px 0 6px; color: var(--muted); white-space: nowrap; }
+.acq-state.acquiring, .acq-state.recording { border-color: #1c5233; }
+.acq-state.acquiring .acq-count, .acq-state.recording .acq-count { color: #7fd6a0; }
 
 .help-btn {
   width: 26px; height: 26px; padding: 0; border-radius: 50%;
   font-size: 13px; font-weight: 700; line-height: 1; flex: none;
   display: grid; place-items: center;
 }
-.rec-group {
-  padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border);
-  background: #12151b;
+.rec-group { padding: 2px 0; }
+.rec-group.on {
+  padding: 2px 8px; border-radius: 8px;
+  border: 1px solid #6b2226; background: #2a1416;
 }
-.rec-group.on { border-color: #6b2226; background: #2a1416; }
+.rec-group .rec-label:not(:first-child) { margin-left: 6px; }
 .rec-label { font-size: 11px; color: var(--muted); }
 .rec-stamp { display: inline-flex; align-items: center; gap: 4px;
              font-size: 11px; color: var(--muted); cursor: pointer; }
