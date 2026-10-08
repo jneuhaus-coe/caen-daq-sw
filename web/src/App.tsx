@@ -596,7 +596,8 @@ export function App() {
   return (
     <div className="app">
       <header>
-        <h1>DT5742B DAQ</h1>
+        <h1>DT5742B DAQ{status?.version &&
+          <span className="app-version">v{status.version}</span>}</h1>
         <nav className="view-tabs" role="tablist" aria-label="View">
           <button role="tab" aria-selected={view === "live"}
             className={view === "live" ? "on" : ""}

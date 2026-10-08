@@ -25,6 +25,8 @@ header {
   position: sticky; top: 0; z-index: 5;
 }
 header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; }
+header h1 .app-version { margin-left: 8px; font-size: 12px; font-weight: 400;
+  letter-spacing: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .spacer { flex: 1; }
 .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px;
         background: #21262d; color: var(--muted);
