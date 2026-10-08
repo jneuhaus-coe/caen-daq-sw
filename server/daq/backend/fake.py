@@ -67,6 +67,9 @@ class FakeBackend(DigitizerBackend):
         self._running = True
         self._last_emit = time.monotonic()
 
+    def armed(self) -> bool:
+        return self._running
+
     def stop(self) -> None:
         self._running = False
         self._pending = 0

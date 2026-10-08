@@ -19,6 +19,7 @@ from . import constants as C
 from . import logsetup
 from . import sounds
 from . import zerocal
+from . import lastused
 
 
 log = logsetup.get("daq.acq")
@@ -68,7 +69,10 @@ class AcquisitionEngine:
         self._backend_factory = backend_factory
         self._backend: DigitizerBackend | None = None
         self._board_info = BoardInfo()
-        self._cfg = default_config()   # only a seed; the board wins once open
+        # Only a seed; the board wins once open - except for what the board
+        # cannot hold (names, output options, the library's BLT limit), which
+        # comes back from the last-used file instead of resetting.
+        self._cfg = lastused.apply(default_config())
         # Bumped on every adopted config (open, write, session). A browser
         # tab compares it against the one it fetched under: a tab pushing a
         # WHOLE config it loaded before a restart once silently reverted
@@ -103,6 +107,13 @@ class AcquisitionEngine:
         self._rec_limit: int | None = None    # auto-close the run at N events
 
         self._thread: threading.Thread | None = None
+        # Which readout thread is the current one. A thread stuck inside the
+        # driver can outlive its acquisition; when its call finally returns
+        # it must not keep reading (or end a run) for a newer one.
+        self._loop_gen = 0
+        # When the readout thread entered its current driver call; None
+        # between calls. status() uses it to notice a read that never returns.
+        self._read_since: float | None = None
         self._running = threading.Event()
         self._lock = threading.Lock()
         # Serialises opening the board. Startup now opens on a worker thread, so
@@ -174,6 +185,9 @@ class AcquisitionEngine:
             with logsetup.step(log, "Reading settings off the unit",
                                level=level) as reading:
                 cfg, errs = backend.read_settings(self._cfg)
+                # A fresh handle answers the LIBRARY's default here, not
+                # anything the unit holds; keep the value we last used.
+                cfg.max_events_blt = self._cfg.max_events_blt
                 for e in errs:
                     log.warning("%sCould not read: %s", "  ", e)
                     self._record_error(f"read settings: {e}")
@@ -208,6 +222,7 @@ class AcquisitionEngine:
         with self._lock:
             self._cfg = cfg
             self._cfg_rev += 1
+        lastused.save(cfg)
 
     def config_rev(self) -> int:
         with self._lock:
@@ -337,8 +352,11 @@ class AcquisitionEngine:
                 starting.done("Not started: the board would not arm")
                 return False
             logsetup.did(log, "Arming the board", "Ok")
+            self._loop_gen += 1
+            gen = self._loop_gen
             self._running.set()
-            self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
+            self._thread = threading.Thread(target=self._loop, args=(gen,),
+                                            name="acq", daemon=True)
             self._thread.start()
             starting.done("Acquisition running")
             return True
@@ -465,6 +483,29 @@ class AcquisitionEngine:
                      "Ok")
         return {"ok": True, "scope_hz": rate_hz, "scope_trigger": trig}
 
+    def set_average(self, mode: str | None = None, seconds: float | None = None,
+                    events: int | None = None) -> dict:
+        """The display average's window: the last `seconds` of events
+        ("time") or the last `events` events ("events"). Omitted values keep
+        their current setting. Display only - nothing recorded is averaged."""
+        cur = self._avg.settings()
+        try:
+            self._avg.configure(mode or cur["mode"],
+                                cur["seconds"] if seconds is None else float(seconds),
+                                cur["events"] if events is None else int(events))
+        except (TypeError, ValueError):
+            pass                    # a junk value keeps the current window
+        new = self._avg.settings()
+        if new != cur:
+            logsetup.did(log, "Setting the display average to the last "
+                         + (f"{new['seconds']:g} s" if new["mode"] == "time"
+                            else f"{new['events']} events"), "Ok")
+        return new
+
+    def clear_average(self) -> None:
+        """Start every channel's display average afresh."""
+        self._avg.clear()
+
     def _scope_gate(self, ev) -> bool:
         """Should this event refresh the single-trace display?
 
@@ -559,6 +600,12 @@ class AcquisitionEngine:
         a slow cadence so the app recovers once the unit is switched back on.
         """
         if self._running.is_set():
+            since = self._read_since
+            if since is not None and time.monotonic() - since > C.READ_STALL_S:
+                self._abandon_readout(
+                    f"a read has been stuck in the driver for "
+                    f"{time.monotonic() - since:.0f}s - switch the unit off "
+                    f"and on if it does not come back")
             return self._opened
         if self._opened and self._backend is not None:
             try:
@@ -569,6 +616,18 @@ class AcquisitionEngine:
             self._mark_lost("board stopped responding")
         self._try_open(force=False)
         return self._opened
+
+    def _abandon_readout(self, why: str) -> None:
+        """The readout thread is stuck in the driver: stop waiting for it.
+        It exits on its own if the call ever returns (its generation is no
+        longer current); everything else - the UI first - learns now that
+        nothing is being acquired."""
+        self._loop_gen += 1
+        self._running.clear()
+        self._read_since = None
+        self._mark_lost(why)
+        if self._writer is not None:
+            self._end_recording_from_loop(why)
 
     def _mark_lost(self, why: str) -> None:
         log.warning("Lost the unit: %s", why)
@@ -764,45 +823,64 @@ class AcquisitionEngine:
         return {"ok": True, "run": run_id}
 
     # ---------- readout loop ----------
-    def _loop(self):
+    def _loop(self, gen: int):
         try:
-            self._read_loop()
+            self._read_loop(gen)
         except Exception as e:
             # This thread has no owner to raise into. Left unhandled, it died in
             # silence: events stopped arriving while the UI went on saying
             # "acquiring", and nothing anywhere said why.
             log.exception("The readout thread stopped unexpectedly")
             self._record_error(f"readout stopped: {e}")
-            self._running.clear()
+            if gen == self._loop_gen:
+                self._running.clear()
         finally:
-            if self._writer is not None:
+            self._read_since = None
+            if gen == self._loop_gen and self._writer is not None:
                 self._end_recording_from_loop(
                     "board stopped responding" if not self._opened
                     else "readout stopped")
 
-    def _read_loop(self):
+    def _read_loop(self, gen: int):
         fails = 0
+        quiet_since = time.monotonic()     # last events, or last armed() check
         # DAQ_PROFILE=1: the engine's half of the per-event time ledger
         # (display feed, stats tap, writer) - the backend logs its own half.
         profile = os.environ.get("DAQ_PROFILE") == "1"
         proc_s, proc_n = 0.0, 0
-        while self._running.is_set():
+        while self._running.is_set() and gen == self._loop_gen:
             self._fire_due_software_trigger()
             try:
+                self._read_since = time.monotonic()
                 events = self._backend.read_events()
+                if not events and time.monotonic() - quiet_since >= C.QUIET_CHECK_S:
+                    # Nothing for a while: legitimately quiet, or a unit that
+                    # was power-cycled and came back disarmed. Ask it.
+                    quiet_since = time.monotonic()
+                    if not self._backend.armed():
+                        if gen == self._loop_gen:
+                            self._mark_lost("the unit stopped acquiring on its own "
+                                            "(switched off and on, or stopped by "
+                                            "other software)")
+                            self._running.clear()
+                        break
                 fails = 0
             except Exception as e:
                 fails += 1
                 self._record_error(f"read: {e}")
                 if fails >= C.READ_FAIL_LIMIT:
-                    self._mark_lost("board stopped responding - acquisition halted")
-                    self._running.clear()
+                    if gen == self._loop_gen:
+                        self._mark_lost("board stopped responding - acquisition halted")
+                        self._running.clear()
                     break
                 time.sleep(0.05)
                 continue
+            finally:
+                self._read_since = None
             if not events:
                 time.sleep(0.002)
                 continue
+            quiet_since = time.monotonic()
             t = time.monotonic()
             tp = time.perf_counter() if profile else 0.0
             for ev in events:
@@ -910,6 +988,7 @@ class AcquisitionEngine:
             "record_length": cfg.record_length,
             "overview_points": C.OVERVIEW_POINTS,
             "avg_window_s": self._avg.window_s,
+            "avg": self._avg.settings(),
             "events_seen": self._events_seen,
             "recording": self._writer is not None,
             "run_id": self._run_id,
@@ -960,6 +1039,7 @@ class AcquisitionEngine:
             "scope_hz": self._scope_hz,
             "scope_trigger": self._scope_trigger,
             "config_rev": self._cfg_rev,
+            "calibrating": self.calibrator.is_active(),
             "recording": self._writer is not None,
             "run_id": self._run_id,
             "run_started": self._run_started,

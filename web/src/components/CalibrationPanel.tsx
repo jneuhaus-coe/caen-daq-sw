@@ -6,10 +6,11 @@ import type { ZeroCal } from "../types";
 
 interface Props {
   connected: boolean;
+  /** The server says a calibration is running - possibly started in another
+   *  window, which this panel's own poll (idle while nothing runs) would
+   *  otherwise never notice. */
+  active?: boolean;
   recording: boolean;
-  /** The settings lock: calibration steers DC offsets, so it locks too. */
-  locked?: boolean;
-  onUnlock?: () => void;
   /** A run began - here or in another window; the app wipes the piles. */
   onStarted?: () => void;
   /** Called when a run finishes: the server changed the config underneath the
@@ -28,7 +29,7 @@ interface Props {
  *  to bring the whole pulse into the window. Never centres anything.
  *  Zero-volt calibration: measures each input's real 0 V reading for the
  *  plots (display only). */
-export function CalibrationPanel({ connected, recording, locked, onUnlock,
+export function CalibrationPanel({ connected, active, recording, 
                                    onStarted, onFinished, onError, zc }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
   const [fitEvents, setFitEvents] = usePersistentState("calFitEvents", "100");
@@ -64,7 +65,7 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [st?.active]);   // re-arm the poll loop when activity flips
+  }, [st?.active, active]);   // re-arm the poll loop when activity flips
 
   const run = async (mode: "shift" | "zero") => {
     try {
@@ -100,12 +101,7 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
     <div className="card">
       <h2>Calibration</h2>
       <div className="calib-btns">
-        {locked ? (
-          <button className="lock-chip"
-            title="Calibration locked - it steers DC offsets. Click to unlock."
-            onClick={onUnlock}>🔒</button>
-        ) : null}
-        <button disabled={!connected || busy || recording || locked} onClick={() => run("shift")}
+        <button disabled={!connected || busy || recording} onClick={() => run("shift")}
           title="Only changes the DC offset, to slide a clipped pulse back into the ADC window. Channels that fit at 0 V of offset stay there. Needs real triggers.">
           Pulse Shift <span className="calib-note">needs triggers</span>
         </button>
@@ -125,7 +121,7 @@ export function CalibrationPanel({ connected, recording, locked, onUnlock,
           <span className="dot" />
           0 V levels: {zcOn ? "board-calibrated" : "nominal"}
         </span>
-        <button disabled={!connected || busy || recording || locked} onClick={() => run("zero")}
+        <button disabled={!connected || busy || recording} onClick={() => run("zero")}
           title="Find the ADC code a 0 V input reads on every channel and TR0. Unplug every input first.">
           {zcOn ? "Re-calibrate 0 V" : "Calibrate 0 V"}
         </button>

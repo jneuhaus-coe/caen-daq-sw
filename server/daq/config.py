@@ -1,6 +1,7 @@
 """Configuration model with the 742's real setting tiers: board / bank(group) /
 channel. Defaults mirror CAEN's WaveDump and are only a seed: once a board is
-open, its own settings are the truth, so nothing is persisted between runs.
+open, its own settings are the truth. The few the board cannot hold are kept
+in the last-used file (lastused.py).
 
 Tiers (verified against WaveDump.c x742 branch):
   board   : sampling freq, post-trigger, correction, trigger modes, output

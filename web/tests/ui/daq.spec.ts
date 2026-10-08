@@ -46,13 +46,15 @@ test("unit settings split: campaign on Experiment, trigger tuning on Live", asyn
   await dlg.getByRole("button", { name: "OK" }).click();
   await expect(page.locator("main + aside .setting-row",
     { hasText: "Sampling frequency" })).toHaveCount(0);
-  // Campaign settings, required first then the gated optionals, live on the
-  // Experiment view.
+  // Campaign settings, required first then the optionals, live on the
+  // Experiment view - every row a plain lockable setting, no checkbox gate.
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
   const grid = page.locator(".exp-grid .settings-grid").first();
   await expect(grid.locator("> *").nth(0)).toContainText("Sampling frequency");
   await expect(grid.locator(".settings-divider")).toBeVisible();
-  await expect(grid.locator(".setting-row.optional").first()).toBeVisible();
+  const opt = grid.locator(".setting-row", { hasText: "Events per readout" });
+  await expect(opt.getByRole("button", { name: "Lock Events per readout" })).toBeVisible();
+  await expect(opt.locator('input[type="number"]')).toBeEnabled();
   await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
@@ -89,25 +91,14 @@ test("moving the TR offset leaves the raw threshold untouched", async ({ page })
   await expect.poll(async () => (await cfg(page)).groups[0].fast_trigger_dc_offset)
     .not.toBe(32768);
   expect((await cfg(page)).groups[0].fast_trigger_threshold).toBe(before);
-});
-
-test("unchecking an optional setting writes its default to the unit", async ({ page }) => {
-  // Customize "Dump header" (default off), then uncheck the row: the value
-  // must return to the default ON THE SERVER, not merely in the form.
-  await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  const row = page.locator(".setting-row.optional", { hasText: "Dump header" });
-  const box = row.locator('input[type="checkbox"]').first();
-  await box.check();                                  // engage
-  await row.locator('input[type="checkbox"]').nth(1).check();  // the value itself
-  await expect.poll(async () => (await cfg(page)).output_header).toBe(true);
-  await box.uncheck();                                // pin back to default
-  await expect.poll(async () => (await cfg(page)).output_header).toBe(false);
+  // Locks persist (server-side display prefs): leave it locked as found.
+  await offRow.getByRole("button", { name: "Lock TR DC offset" }).click();
+  await expect(input).toBeDisabled();
 });
 
 test("a typed out-of-range value is clamped before it reaches the unit", async ({ page }) => {
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  const row = page.locator(".setting-row.optional", { hasText: "Events per readout" });
-  await row.locator('input[type="checkbox"]').first().check();
+  const row = page.locator(".setting-row", { hasText: "Events per readout" });
   const input = row.locator('input[type="number"]');
   await input.fill("5000");
   await input.press("Enter");
@@ -277,7 +268,8 @@ test("sessions: save, perturb, apply restores the unit, delete", async ({ page }
   await expect(page.getByText(/applied and read back/)).toBeVisible();
 
   page.on("dialog", (d) => d.accept());
-  await row.locator("button.danger").click();
+  await row.getByRole("button", { name: /More/ }).click();
+  await row.getByRole("menuitem", { name: "Delete" }).click();
   await expect(row).toHaveCount(0);
 });
 
@@ -541,45 +533,93 @@ test("experiment conditions reach the server and the record dialog", async ({ pa
   await page.locator(".rec-modal button", { hasText: "Cancel" }).click();
 });
 
-test("lock everything, then unlock a single setting", async ({ page }) => {
-  await page.locator(".lock-all").click();
-  await expect(page.locator(".lock-all")).toContainText("LOCKED");
-  // Every settings row is locked and wears its own chip...
+test("locking a setting greys it out without touching the unit", async ({ page }) => {
+  await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
   const row = page.locator(".settings-grid .setting-row",
-    { hasText: "Trigger edge" }).first();
-  await expect(row.locator(".lock-chip")).toBeVisible();
-  await expect(row.locator("select")).toBeDisabled();
-  // ...and clicking the chip unlocks JUST that row.
-  await row.locator(".lock-chip").click();
-  await expect(row.locator(".lock-chip")).toHaveCount(0);
-  await expect(row.locator("select")).toBeEnabled();
-  // Unlock everything again so later tests are unaffected.
-  page.on("dialog", (d) => d.accept());
-  await page.locator(".lock-all").click();
-  await expect(page.locator(".lock-all")).not.toContainText("LOCKED");
+    { hasText: "Dump format" }).first();
+  const select = row.locator("select");
+  const before = (await cfg(page)).output_format;
+  // The lock sits LEFT of the label (house style).
+  await row.getByRole("button", { name: "Lock Dump format" }).click();
+  await expect(select).toBeDisabled();
+  // Protection, not concealment: the value stays shown, nothing is written.
+  await expect(select).toHaveValue(before);
+  expect((await cfg(page)).output_format).toBe(before);
+  // Only the settings that used to carry the "back to default" checkbox
+  // (plus the TR DC offset) have locks; the required ones do not.
+  await expect(page.locator(".settings-grid .setting-row", { hasText: "Sampling frequency" })
+    .getByRole("button", { name: /Lock/ })).toHaveCount(0);
+  // It survives a reload - every window shares the same locks.
+  await page.reload();
+  await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
+  await expect(select).toBeDisabled();
+  // And one click gives the setting back.
+  await row.getByRole("button", { name: "Unlock Dump format" }).click();
+  await expect(select).toBeEnabled();
+  await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
-test("a legacy Configuration B file loads through the Load button", async ({ page }) => {
+test("the average runs over a span or an event count, and Clear empties it", async ({ page }) => {
+  // The averaged picture's truth is the telemetry the server streams.
+  const tele = () => page.evaluate(() => new Promise<any>((res) => {
+    const ws = new WebSocket(`ws://${location.host}/ws/telemetry`);
+    ws.onmessage = (e) => { ws.close(); res(JSON.parse(e.data)); };
+  }));
+  await page.locator(".wave-mode button", { hasText: "Avg" }).click();
+  const ctl = page.locator(".avg-ctl");
+  await ctl.locator("select").selectOption("events");
+  await ctl.locator("input").fill("5");
+  await ctl.locator("input").press("Enter");
+  await expect.poll(async () => (await tele()).avg)
+    .toEqual({ mode: "events", seconds: 1, events: 5 });
+  await expect(page.locator(".grid-head h2")).toContainText("last 5 events");
+  // Persisted with the display prefs, so a restart keeps it.
+  expect((await (await page.request.get("/api/display")).json()).avg.events).toBe(5);
+  // An event window holds its last N once triggers stop...
+  await page.locator(".test-trigger input").fill("12");
+  await page.locator(".test-trigger button", { hasText: "Fire" }).click();
+  await expect.poll(async () => (await tele()).channels["0"]?.count, { timeout: 10_000 })
+    .toBe(5);
+  await expect.poll(async () => (await page.request.get("/api/status").then((r) => r.json()))
+    .sw_triggers_pending ?? 0, { timeout: 10_000 }).toBe(0);
+  // ...until Clear empties it.
+  await page.locator(".wave-clear button").click();
+  await expect.poll(async () => (await tele()).channels["0"]?.count ?? 0).toBe(0);
+  // Back to the default for later tests.
+  await ctl.locator("select").selectOption("time");
+  await expect.poll(async () => (await tele()).avg.mode).toBe("time");
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
+});
+
+test("a legacy Configuration B file imports as a session and applies", async ({ page }) => {
   const legacy = [
     "Module 125", "DRS4FREQ 0",
     "CHNOFFSE 47000 0 0", "CHNOFFSE 18536 4 1",
     "TR0OFFSE 32768", "TRG__TR0 20934",
     "TRGPOLAR 1", "POSTTRIG 0", "LEMO_LEV 0", "GPO_BUSY 1",
   ].join("\n");
-  // The Load button lives on the Experiment view now.
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  // Straight onto the hidden input - clicking Load would open the native
+  // Straight onto the hidden input - clicking Import would open the native
   // chooser, which is the browser's UI, not ours to test.
-  await page.locator('input[type="file"]').setInputFiles({
+  const sessions = page.locator(".card", { has: page.locator("h2", { hasText: "Sessions" }) });
+  await sessions.locator('input[type="file"]').setInputFiles({
     name: "configB.txt", mimeType: "text/plain",
     buffer: Buffer.from(legacy),
   });
-  await expect(page.getByText(/Config loaded and read back/)).toBeVisible();
+  await expect(page.getByText(/Imported as session "configB"/)).toBeVisible();
+  // Importing touches nothing on the unit; Apply does.
+  const row = page.locator(".session-row", { hasText: "configB" });
+  await row.getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByText(/applied and read back/)).toBeVisible();
   const c = await cfg(page);
   expect(c.gpo_output).toBe("busy");
   expect(c.trigger_edge).toBe("falling");
   expect(c.channels[0].dc_offset).toBe(47000);
   expect(c.channels[12].dc_offset).toBe(18536);
+  page.on("dialog", (d) => d.accept());
+  await row.getByRole("button", { name: /More/ }).click();
+  await row.getByRole("menuitem", { name: "Delete" }).click();
+  await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
 test("an update is offered once no run is recording, and a reload keeps the forms", async ({ page }) => {

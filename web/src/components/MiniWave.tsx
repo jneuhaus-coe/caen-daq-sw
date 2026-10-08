@@ -245,7 +245,13 @@ export function MiniWave({
       baselineGuide, clearEpoch, markers, offsetDac, offsetSlope,
       postTriggerPct, vScale, z, waveDac]);
 
-  const markStyle = trigFrac == null ? undefined : { left: `${trigFrac * 100}%` };
+  // Centred on the trigger line - except near either edge, where a centred
+  // label hung half outside the tile (post-trigger 0 puts it at the far right).
+  const markStyle = trigFrac == null ? undefined : {
+    left: `${trigFrac * 100}%`,
+    transform: trigFrac > 0.9 ? "translateX(-100%)"
+      : trigFrac < 0.1 ? "none" : "translateX(-50%)",
+  };
 
   const commitEdit = (which: "min" | "max", raw: string) => {
     setEditing(null);

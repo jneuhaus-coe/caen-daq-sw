@@ -22,37 +22,100 @@ def decimate(wave: np.ndarray, points: int) -> list[float]:
     return trimmed.reshape(points, step).mean(axis=1).astype(float).tolist()
 
 
-class RollingAverage:
-    """Per-channel mean over a rolling *time* window (last `window_s` seconds of
-    triggers), so the displayed average is rate-independent and needs no slider."""
+class _Bucket:
+    __slots__ = ("t0", "t1", "n", "sum")
 
-    def __init__(self, window_s: float = C.AVG_WINDOW_SECONDS):
-        self.window_s = window_s
-        self._buf: dict[int, deque] = {}   # ch -> deque of (t, wave float64)
+    def __init__(self, t: float, like: np.ndarray):
+        self.t0 = self.t1 = t
+        self.n = 0
+        self.sum = np.zeros(like.shape, np.float64)
+
+
+class RollingAverage:
+    """Per-channel mean over a rolling window: the last `window_s` seconds of
+    triggers ("time" - rate-independent), or the last `window_n` events
+    ("events" - holds still when triggers stop).
+
+    Events are summed into at most ~AVG_BUCKETS buckets per channel rather
+    than kept one by one, so memory does not grow with the rate or the window:
+    a 10 s window at 1 kHz once meant 10k stored waveforms per channel. The
+    price is granularity - the window covers its nominal span plus at most
+    one bucket (1/AVG_BUCKETS of it), and `count` reports exactly how many
+    events are in it. Up to AVG_BUCKETS events, every event is its own bucket
+    and the event window is exact."""
+
+    MODES = ("time", "events")
+
+    def __init__(self, window_s: float = C.AVG_WINDOW_SECONDS,
+                 mode: str = "time", window_n: int = C.AVG_WINDOW_EVENTS):
+        self.mode = mode if mode in self.MODES else "time"
+        self.window_s = float(window_s)
+        self.window_n = int(window_n)
+        self._buf: dict[int, deque[_Bucket]] = {}
         self._sum: dict[int, np.ndarray] = {}
+        self._n: dict[int, int] = {}
         self._lock = threading.Lock()
+
+    def configure(self, mode: str, window_s: float, window_n: int) -> None:
+        """Change the window. Starts it empty: buckets sized for the old
+        window would misreport the new one."""
+        with self._lock:
+            self.mode = mode if mode in self.MODES else "time"
+            self.window_s = min(max(float(window_s), C.AVG_SECONDS_MIN), C.AVG_SECONDS_MAX)
+            self.window_n = min(max(int(window_n), 1), C.AVG_EVENTS_MAX)
+            self._clear_locked()
+
+    def settings(self) -> dict:
+        return {"mode": self.mode, "seconds": self.window_s, "events": self.window_n}
+
+    def _full(self, b: _Bucket, t: float) -> bool:
+        if self.mode == "events":
+            return b.n >= max(1, -(-self.window_n // C.AVG_BUCKETS))
+        return t - b.t0 >= self.window_s / C.AVG_BUCKETS
+
+    def _evict(self, ch: int, now: float) -> None:
+        buf = self._buf[ch]
+        if self.mode == "events":
+            while len(buf) > 1 and self._n[ch] - buf[0].n >= self.window_n:
+                self._drop(ch)
+        else:
+            cutoff = now - self.window_s
+            while buf and buf[0].t1 < cutoff:
+                self._drop(ch)
+
+    def _drop(self, ch: int) -> None:
+        b = self._buf[ch].popleft()
+        self._sum[ch] -= b.sum
+        self._n[ch] -= b.n
 
     def add(self, ch: int, wave: np.ndarray, t: float | None = None):
         t = time.monotonic() if t is None else t
-        w = wave.astype(np.float64)
         with self._lock:
             buf = self._buf.get(ch)
             if buf is None:
-                buf = deque()
-                self._buf[ch] = buf
-                self._sum[ch] = np.zeros_like(w)
-            buf.append((t, w))
-            self._sum[ch] += w
-            cutoff = t - self.window_s
-            while buf and buf[0][0] < cutoff:
-                self._sum[ch] -= buf.popleft()[1]
+                buf = self._buf[ch] = deque()
+                self._sum[ch] = np.zeros(wave.shape, np.float64)
+                self._n[ch] = 0
+            if not buf or self._full(buf[-1], t):
+                buf.append(_Bucket(t, wave))
+            b = buf[-1]
+            b.sum += wave
+            b.n += 1
+            b.t1 = t
+            self._sum[ch] += wave
+            self._n[ch] += 1
+            self._evict(ch, t)
+
+    def _clear_locked(self) -> None:
+        self._buf.clear()
+        self._sum.clear()
+        self._n.clear()
 
     def clear(self) -> None:
         """Forget every channel's window - at each arm, so an average never
-        mixes events taken under two different DC offsets."""
+        mixes events taken under two different DC offsets, and on request."""
         with self._lock:
-            self._buf.clear()
-            self._sum.clear()
+            self._clear_locked()
 
     def snapshot(self, ch: int):
         """Return (mean_wave float32, count) or (None, 0)."""
@@ -60,13 +123,12 @@ class RollingAverage:
             buf = self._buf.get(ch)
             if not buf:
                 return None, 0
-            # evict stale even if no new events arrived
-            cutoff = time.monotonic() - self.window_s
-            while buf and buf[0][0] < cutoff:
-                self._sum[ch] -= buf.popleft()[1]
-            if not buf:
+            # A time window empties by itself when triggers stop.
+            self._evict(ch, time.monotonic())
+            n = self._n[ch]
+            if not buf or n <= 0:
                 return None, 0
-            return (self._sum[ch] / len(buf)).astype(np.float32), len(buf)
+            return (self._sum[ch] / n).astype(np.float32), n
 
 
 class TriggerRateMeter:

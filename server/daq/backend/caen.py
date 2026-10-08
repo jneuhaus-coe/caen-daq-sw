@@ -441,6 +441,18 @@ class CaenBackend(DigitizerBackend):
         except Exception:
             return False
 
+    def armed(self) -> bool:
+        """Bit 2 of Acquisition Status (0x8104, UM5698 sec 1.20): the RUN
+        LED. Read by the readout thread only, so it never races ReadData."""
+        val = ct.c_uint32(0)
+        rc = self._lib.CAEN_DGTZ_ReadRegister(self._h, REG_ACQUISITION_STATUS,
+                                              ct.byref(val))
+        if rc == CAEN_DGTZ_CommError:              # transient; see _get
+            rc = self._lib.CAEN_DGTZ_ReadRegister(self._h, REG_ACQUISITION_STATUS,
+                                                  ct.byref(val))
+        self._chk(rc, "ReadRegister(acquisition status)")
+        return bool(val.value & 0x4)
+
     def link_gate(self) -> str | None:
         # The open as a whole waits only when EVERY configured link must. A
         # DAQ_LINK naming an absent A4818 used to defeat the gate entirely,

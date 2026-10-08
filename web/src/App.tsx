@@ -4,13 +4,12 @@ import type { Condition, DisplayPrefs, WaveMode } from "./api";
 import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
-import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
+import type { AvgSettings, BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { SettingControl } from "./components/SettingControl";
 import { Collapsible } from "./components/Collapsible";
-import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
 import { RunsPanel } from "./components/RunsPanel";
 import { Elapsed } from "./components/Elapsed";
@@ -23,11 +22,17 @@ import { ConnectionBadge } from "./components/ConnectionBadge";
 import { STATUS_POLL_MS } from "./types";
 import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
+import { LockToggle } from "./components/LockToggle";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { usePersistentState } from "./persist";
 import { onFlush } from "./flush";
 import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
          zeroCodeAt, zeroLine } from "./volts";
+
+// Settings that start out locked until someone unlocks them. The TR DC
+// offset: the threshold is only defined at offset 0 (UM4270 sec 9.8.3), so a
+// stray edit silently invalidates the trigger level.
+const LOCKED_BY_DEFAULT = new Set(["fast_trigger_dc_offset"]);
 
 // Settings the operator tunes WHILE WATCHING the live plots - trigger and
 // timing. Everything else in the unit catalog is campaign-tier: set once,
@@ -86,9 +91,6 @@ export function App() {
   const [scopeTrigEdge, setScopeTrigEdge] =
     usePersistentState<"rising" | "falling">("scopeTrigEdge", "falling");
   const [testN, setTestN] = usePersistentState("testN", "100");
-  // TR DC offset: a lockable setting in the house style (see CLAUDE.md, UI
-  // conventions) - locked by default, the lock icon toggles it.
-  const [trOffLocked, setTrOffLocked] = useState(true);
   const [trigHelp, setTrigHelp] = useState(false);
   // Blank = record until stopped; a number = auto-close the run at N events.
   const [recMax, setRecMax] = usePersistentState("recMax", "");
@@ -105,12 +107,15 @@ export function App() {
   // Live = watch and operate; Experiment = campaign setup, conditions, and
   // everything you would hate to change by accident mid-campaign.
   const [view, setView] = usePersistentState<"live" | "experiment">("view", "live");
-  // The settings lock: lock everything with one button, unlock individual
-  // settings one at a time - deliberate exceptions, wholesale protection.
-  const [lockOn, setLockOn] = useState(false);
-  const [lockOpen, setLockOpen] = useState<Set<string>>(new Set());
-  const lockRef = useRef({ on: false, open: [] as string[] });
-  lockRef.current = { on: lockOn, open: [...lockOpen] };
+  // Per-setting locks (house style: the icon left of the label). Keyed by
+  // setting ("post_trigger"), bank setting ("bank1:enabled"), channel offset
+  // ("ch:5") or activity ("calibration"); a key not present falls back to
+  // LOCKED_BY_DEFAULT. Saved with the display prefs, so every window and a
+  // reload see the same locks. A lock only stops edits from this UI - it
+  // never writes or resets the value it protects.
+  const [locks, setLocks] = useState<Record<string, boolean>>({});
+  const locksRef = useRef(locks);
+  locksRef.current = locks;
   // Existing run folders feed the run-name dropdown: picking one (with the
   // timestamp off) records INTO it - runs of an unchanged setup stay in one
   // campaign folder instead of scattering one directory per run.
@@ -133,7 +138,22 @@ export function App() {
   // unit; when the status poll shows the revision moved (another window, a
   // session apply, a reconnect), the tab refetches rather than goes stale.
   const cfgRev = useRef(0);
+  // The same for the display prefs (ranges, mode, locks), which every window
+  // shares: another window's lock must show here, and must not be undone by
+  // this window's next save of its own stale copy.
+  const displayRev = useRef<number | null>(null);
   const { toasts, push, dismiss } = useToasts();
+  // The sticky settings column sits just under the sticky header, whose
+  // height depends on the width (the header is two rows, and may grow).
+  const headerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => document.documentElement.style
+      .setProperty("--header-h", `${el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [catalog !== null && config !== null]);
 
   const loadOnce = useCallback(async () => {
     setLoadError(null);
@@ -142,6 +162,7 @@ export function App() {
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
       cfgRev.current = st.config_rev ?? 0;
+      displayRev.current = st.display_rev ?? null;
       // A scope already firing (from before a reload, or another window)
       // is the truth for its controls - not whatever was last typed here.
       if (st.scope_hz != null) {
@@ -159,14 +180,9 @@ export function App() {
       setLoadError(e instanceof Error ? e.message : String(e));
     }
     // Display prefs restore on their own - they never touch the hardware.
-    api.getDisplay().then((d) => {
-      setYRanges(fromPrefs(d));
-      // The display mode restores; the scope's trigger firing does NOT start
-      // on page load - status.scope_hz says whether a scope is already live.
-      setWaveMode(asWaveMode(d.wave_mode));
-      setLockOn(!!d.lock_on);
-      setLockOpen(new Set(Array.isArray(d.lock_open) ? d.lock_open : []));
-    }).catch(() => {});
+    // The display mode restores; the scope's trigger firing does NOT start
+    // on page load - status.scope_hz says whether a scope is already live.
+    api.getDisplay().then(adoptDisplay).catch(() => {});
   }, []);
 
   useEffect(() => { loadOnce(); }, [loadOnce]);
@@ -176,6 +192,22 @@ export function App() {
   useEffect(() => {
     api.runs().then((r) => setRunDirs(r.runs.map((x) => x.id))).catch(() => {});
   }, [runsKey]);
+
+  function adoptDisplay(d: DisplayPrefs) {
+    setYRanges(fromPrefs(d));
+    setWaveMode(asWaveMode(d.wave_mode));
+    const l = asLocks(d.locks);
+    locksRef.current = l;
+    setLocks(l);
+  }
+
+  const asLocks = (v: unknown): Record<string, boolean> => {
+    const out: Record<string, boolean> = {};
+    if (v && typeof v === "object") {
+      for (const [k, b] of Object.entries(v)) if (typeof b === "boolean") out[k] = b;
+    }
+    return out;
+  };
 
   const asWaveMode = (v: DisplayPrefs["wave_mode"]): WaveMode =>
     v === "overlay" || v === "scope" ? v : "avg";
@@ -195,40 +227,28 @@ export function App() {
   };
 
   const saveDisplay = (ranges: Record<number, [number, number]>,
-                       mode: WaveMode) => {
+                       mode: WaveMode, now = false) => {
     window.clearTimeout(displayTimer.current);
     const send = () => {
       pendingDisplay.current = null;
       const y_ranges: Record<string, [number, number]> = {};
       for (const [k, v] of Object.entries(ranges)) y_ranges[k] = v;
       return api.setDisplay({ y_ranges, wave_mode: mode,
-                              lock_on: lockRef.current.on,
-                              lock_open: lockRef.current.open }).catch(() => {});
+                              locks: locksRef.current }).catch(() => {});
     };
     pendingDisplay.current = send;
-    displayTimer.current = window.setTimeout(send, 400);
+    if (now) send();
+    else displayTimer.current = window.setTimeout(send, 400);
   };
 
-  // The lock: keyed by setting ("post_trigger"), channel ("ch:5"), or
-  // activity ("calibration"). Locking all clears every exception - the
-  // whole point is that unlocks are deliberate, one at a time.
-  const isLocked = (key: string) => lockOn && !lockOpen.has(key);
-  const unlockOne = (key: string) => {
-    setLockOpen((prev) => {
-      const next = new Set(prev).add(key);
-      lockRef.current = { on: lockOn, open: [...next] };
-      saveDisplay(yRanges, waveMode);
-      return next;
-    });
-  };
-  const toggleLockAll = () => {
-    if (lockOn && !window.confirm(
-        "Unlock ALL settings? Individual unlocks are usually safer.")) return;
-    const on = !lockOn;
-    setLockOn(on);
-    setLockOpen(new Set());
-    lockRef.current = { on, open: [] };
-    saveDisplay(yRanges, waveMode);
+  const isLocked = (key: string) => locks[key] ?? LOCKED_BY_DEFAULT.has(key);
+  const toggleLock = (key: string) => {
+    const next = { ...locksRef.current, [key]: !isLocked(key) };
+    locksRef.current = next;
+    setLocks(next);
+    // At once, not debounced: a lock is one deliberate click, and a window
+    // closed (or reloaded) inside the debounce would silently drop it.
+    saveDisplay(yRanges, waveMode, true);
   };
 
   const applyYRanges = (next: Record<number, [number, number]>) => {
@@ -267,6 +287,34 @@ export function App() {
     } catch (e) {
       push("err", "Could not start the scope",
            [e instanceof Error ? e.message : String(e)]);
+    }
+  };
+
+  // The display average's window, as the server applies it (telemetry is
+  // the truth; the fields show it, never a value this tab merely asked for).
+  const avg: AvgSettings = tele?.avg
+    ?? { mode: "time", seconds: tele?.avg_window_s ?? 1, events: 100 };
+  // The mode just picked, until telemetry confirms it. Without it a number
+  // typed straight after switching to "events" committed as SECONDS - the
+  // field still followed the old mode for the telemetry round trip.
+  const [avgModePick, setAvgModePick] = useState<AvgSettings["mode"] | null>(null);
+  useEffect(() => {
+    if (avgModePick && tele?.avg?.mode === avgModePick) setAvgModePick(null);
+  }, [tele?.avg?.mode, avgModePick]);
+  const avgMode = avgModePick ?? avg.mode;
+  const avgLabel = avg.mode === "time" ? `${avg.seconds} s` : `${avg.events} events`;
+  const applyAverage = (patch: Partial<AvgSettings>) => {
+    api.setAverage(patch)
+      .catch(failed("Could not change the average"));
+  };
+  // Clear: start the picture afresh. The average is computed on the server
+  // (so this clears it for every window); the overlay's density pile lives
+  // in this page, like the wipe on recording start.
+  const clearWaves = () => {
+    if (waveMode === "avg") {
+      api.clearAverage().catch(failed("Could not clear the average"));
+    } else {
+      setWipeEpoch((e) => e + 1);
     }
   };
 
@@ -358,6 +406,8 @@ export function App() {
   const catalogRef = useRef<Catalog | null>(null);
   catalogRef.current = catalog;
 
+  // A dropped socket clears the telemetry: holding the last frame kept
+  // showing "acquiring" from a server that could no longer say otherwise.
   useEffect(() => openTelemetry(setTele), []);
 
   // Poll status: the board can vanish (unit switched off) or come back at any
@@ -377,6 +427,15 @@ export function App() {
           cfgRev.current = st.config_rev;
           const cfg = await api.getConfig();
           if (!cancelled) { setConfig(cfg); confirmed.current = cfg; }
+        }
+        // Display prefs changed elsewhere. Not while this window still has
+        // an unsent edit of its own - that send comes back round as the next
+        // revision anyway.
+        if (st.display_rev != null && st.display_rev !== displayRev.current
+            && !pendingDisplay.current) {
+          displayRev.current = st.display_rev;
+          const d = await api.getDisplay();
+          if (!cancelled) adoptDisplay(d);
         }
       } catch {
         if (!cancelled) setServerUp(false);
@@ -399,6 +458,11 @@ export function App() {
       setConfig(cfg); confirmed.current = cfg;
     }
   };
+
+  // After an action that wrote the unit behind pushConfig's back (session,
+  // file, reset, calibration): take up the server's revision now, rather
+  // than have the next edit refused as stale until the poll catches up.
+  const resync = () => { api.status().then(adoptStatus).catch(() => {}); };
 
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);                       // optimistic, for input responsiveness
@@ -432,7 +496,12 @@ export function App() {
             push("ok", "Applied and read back from unit", lines);
           }
         })
-        .catch(() => push("err", "Could not reach the DAQ server"));
+        .catch(() => {
+          // Nothing confirmed this value: show what the unit last confirmed,
+          // never the optimistic one.
+          if (confirmed.current) setConfig(confirmed.current);
+          push("err", "Could not reach the DAQ server", ["The setting was not applied."]);
+        });
     };
     pendingConfig.current = send;
     saveTimer.current = window.setTimeout(send, 250);
@@ -554,7 +623,7 @@ export function App() {
   const reconnect = async () => {
     setReconnecting(true);
     try {
-      setStatus(await api.reconnect());
+      await adoptStatus(await api.reconnect());
       setServerUp(true);
     } catch {
       setServerUp(false);
@@ -569,6 +638,9 @@ export function App() {
   const prevRecording = useRef(false);
   useEffect(() => {
     if (recordingNow && !prevRecording.current) setWipeEpoch((e) => e + 1);
+    // Re-list the runs on BOTH edges, whoever caused them: another window,
+    // a bounded run closing itself, a lost unit cutting a run short.
+    if (recordingNow !== prevRecording.current) setRunsKey((k) => k + 1);
     prevRecording.current = recordingNow;
   }, [recordingNow]);
 
@@ -591,61 +663,70 @@ export function App() {
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
   const recording = recordingNow;
-  const acqState = recording ? "recording" : running ? "acquiring" : "idle";
+  // With the server unreachable nothing here is known; say so rather than
+  // repeat the last answer.
+  const acqState = !serverUp ? "unknown"
+    : recording ? "recording" : running ? "acquiring" : "idle";
 
   return (
     <div className="app">
-      <header>
-        <h1>DT5742B DAQ{status?.version &&
-          <span className="app-version">v{status.version}</span>}</h1>
-        <nav className="view-tabs" role="tablist" aria-label="View">
-          <button role="tab" aria-selected={view === "live"}
-            className={view === "live" ? "on" : ""}
-            onClick={() => setView("live")}>Live</button>
-          <button role="tab" aria-selected={view === "experiment"}
-            className={view === "experiment" ? "on" : ""}
-            title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
-            onClick={() => setView("experiment")}>Experiment Settings</button>
-        </nav>
-        <button className={"lock-all" + (lockOn ? " on" : "")}
-          title={lockOn
-            ? "Settings are LOCKED. Unlock individual settings with their own lock icons; click here to unlock everything."
-            : "Lock every hardware setting against accidental edits. Unlock them one at a time afterwards."}
-          onClick={toggleLockAll}>
-          {lockOn ? "🔒 LOCKED" : "🔓 LOCK"}
-        </button>
-        <ConnectionBadge status={status} serverUp={serverUp}
-          busy={reconnecting} onReconnect={reconnect} />
-        {/* Acquisition lives beside the connection state, away from the
-            Record cluster: enabling it watches, and only Record writes -
-            keeping the two apart is what stops "for N ev" reading as an
-            acquisition option. */}
-        <div className="acq-group">
-          {!running ? (
-            <button className="primary" onClick={start} disabled={!connected}
-              title={connected ? "Watch live — nothing is written to disk"
-                               : "No unit connected"}>
-              Enable Acquisition
-            </button>
-          ) : null}
-          {/* Hidden while recording: disabling acquisition there would end the
-              run, and "Stop recording" is the button you actually want. */}
-          {running && !recording ? (
-            <button onClick={stop}>Disable Acquisition</button>
-          ) : null}
+      <header ref={headerRef}>
+        {/* Row 1: where you are, what is attached, whether it is acquiring.
+            Row 2: the Record cluster. Two rows so nothing wraps on a laptop -
+            one row squeezed every label and button onto two lines. */}
+        <div className="appbar">
+          <h1>DT5742B DAQ{status?.version &&
+            <span className="app-version">v{status.version}</span>}</h1>
+          <nav className="view-tabs" role="tablist" aria-label="View">
+            <button role="tab" aria-selected={view === "live"}
+              className={view === "live" ? "on" : ""}
+              onClick={() => setView("live")}>Live</button>
+            <button role="tab" aria-selected={view === "experiment"}
+              className={view === "experiment" ? "on" : ""}
+              title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
+              onClick={() => setView("experiment")}>Experiment Settings</button>
+          </nav>
+          <div className="spacer" />
+          <ConnectionBadge status={status} serverUp={serverUp}
+            busy={reconnecting} onReconnect={reconnect} />
+          {/* Acquisition lives beside the connection state, away from the
+              Record row: enabling it watches, and only Record writes -
+              keeping the two apart is what stops "for N ev" reading as an
+              acquisition option. */}
+          <div className="acq-group">
+            <span className={"acq-state " + acqState}
+              title="Acquisition state, and events read out since it was enabled">
+              <span className="pill state">{acqState}</span>
+              <span className="acq-count mono">
+                {(tele?.events_seen ?? status?.events_seen ?? 0).toLocaleString()} ev
+              </span>
+            </span>
+            {!running ? (
+              <button className="primary" onClick={start} disabled={!connected}
+                title={connected ? "Watch live — nothing is written to disk"
+                                 : "No unit connected"}>
+                Enable Acquisition
+              </button>
+            ) : null}
+            {/* Hidden while recording: disabling acquisition there would end the
+                run, and "Stop recording" is the button you actually want. */}
+            {running && !recording ? (
+              <button onClick={stop}>Disable Acquisition</button>
+            ) : null}
+          </div>
+          <button className="help-btn" onClick={() => setTour(true)}
+            title="Quick use" aria-label="Quick use">?</button>
         </div>
-        <span className={"pill state " + acqState}>{acqState}</span>
-        <span className="pill mono">{tele?.events_seen ?? 0} events</span>
-        <div className="spacer" />
         <div className="run-controls">
           <div className={"rec-group" + (recording ? " on" : "")}>
             {recording ? (
               <>
                 <span className="rec-dot" />
+                <span className="rec-label">Recording</span>
                 <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
                 <span className="rec-count mono">
                   <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
-                  {" · "}{tele?.recorded ?? 0} ev
+                  {" · "}{(tele?.recorded ?? status?.recorded ?? 0).toLocaleString()} ev
                 </span>
                 <button className="danger" onClick={stopRec}>Stop recording</button>
               </>
@@ -671,7 +752,7 @@ export function App() {
                   onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
                 <label className="rec-label" htmlFor="recmax"
                   title="Stop the recording automatically after this many events. Blank = record until stopped. Acquisition keeps running either way.">
-                  for
+                  Stop after
                 </label>
                 <input id="recmax" className="rec-input rec-no" type="number" min={1}
                   placeholder="&#8734; ev" value={recMax} disabled={!connected}
@@ -691,8 +772,6 @@ export function App() {
             )}
           </div>
         </div>
-        <button className="help-btn" onClick={() => setTour(true)}
-          title="Quick use" aria-label="Quick use">?</button>
       </header>
 
       <div className="body">
@@ -708,12 +787,11 @@ export function App() {
                     defs={catalog.unit.filter((d) => !LIVE_UNIT_KEYS.has(d.key))}
                     geom={catalog.geometry}
                     get={(k) => (config as any)[k]} onChange={updateBoard}
-                    locked={isLocked} onUnlock={unlockOne} />
+                    locked={isLocked} onToggleLock={toggleLock} />
                 </div>
                 <Collapsible title="Bank Settings" defaultOpen>
                   <BankPanel catalog={catalog} config={config}
-                    onGroupChange={updateGroup}
-                    locked={isLocked} onUnlock={unlockOne} />
+                    onGroupChange={updateGroup} />
                 </Collapsible>
               </div>
               <div className="exp-col">
@@ -721,9 +799,15 @@ export function App() {
                 <SessionsPanel
                   recording={recording}
                   onSaved={(name) => push("ok", `Session "${name}" saved`)}
+                  onImported={(name, kind, notes) => push(notes.length ? "warn" : "ok",
+                    `Imported as session "${name}"`,
+                    [kind === "config"
+                      ? "Board settings only - Apply leaves the display and conditions alone."
+                      : "Nothing is sent to the unit until you Apply it.", ...notes])}
                   onError={(title, lines) => push("err", title, lines)}
                   onApplied={(cfg, display, errors, isConn, name) => {
                     setConfig(cfg); confirmed.current = cfg;
+                    resync();
                     setYRanges(fromPrefs(display));
                     setWaveMode(asWaveMode(display.wave_mode));
                     if (!isConn) {
@@ -735,57 +819,22 @@ export function App() {
                       push("ok", `Session "${name}" applied and read back from unit`);
                     }
                   }} />
-                <ConfigPanel
-                  onReset={async () => {
-                    try {
-                      const r = await api.resetDefault();
-                      setConfig(r.config); confirmed.current = r.config;
-                      if (r.connected === false) {
-                        push("warn", "No unit connected", ["Nothing was sent."]);
-                      } else if (r.errors?.length) {
-                        push("err", "Unit rejected part of the reset", r.errors);
-                      } else {
-                        push("ok", "Defaults applied and read back from unit");
-                      }
-                    } catch (e) {
-                      failed("Could not reset the settings")(e);
-                    }
-                  }}
-                  onLoaded={({ config: cfg, notes, errors, restart, connected: up, running: isRunning }) => {
-                    setConfig(cfg); confirmed.current = cfg;
-                    if (!up) {
-                      push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
-                    } else if (errors.length) {
-                      push("err", "Unit rejected a setting from the file",
-                           [...errors, ...notes]);
-                    } else {
-                      push(notes.length ? "warn" : "ok",
-                           "Config loaded and read back from unit", notes);
-                    }
-                    if (restart.length && isRunning) {
-                      const what = restart.join(", ");
-                      if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
-                        api.stop().then(() => api.start()).then(setStatus)
-                          .catch(failed("Could not re-arm the unit"));
-                      }
-                    }
-                  }} />
               </div>
             </div>
           </main>
         ) : (
         <main>
           <div className="grid-head">
-            <h2>Channels <span className="sub">
+            <h2 title="Click a channel's title to rename it">Channels <span className="sub">
               {waveMode === "avg"
-                ? `all 16 · avg ${tele?.avg_window_s ?? 1}s window · click a title to rename`
+                ? `average of the last ${avgLabel}`
                 : waveMode === "scope"
-                ? `all 16 · newest single trace, full resolution · click a title to rename`
-                : `all 16 · last ${PERSIST_TRACES} events, density-shaded · click a title to rename`}
+                ? "newest single trace, full resolution"
+                : `last ${PERSIST_TRACES} events, density-shaded`}
             </span></h2>
             <div className="wave-mode" role="group" aria-label="Waveform display mode">
               <button className={waveMode === "avg" ? "on" : ""}
-                title={`Rolling mean of the last ${tele?.avg_window_s ?? 1}s of events`}
+                title={`Rolling mean of the last ${avgLabel}`}
                 onClick={() => changeWaveMode("avg")}>Avg</button>
               <button className={waveMode === "overlay" ? "on" : ""}
                 title={`The last ${PERSIST_TRACES} single events stacked, brightness = how often a path is taken`}
@@ -794,8 +843,56 @@ export function App() {
                 disabled={!connected}
                 title="One full-resolution trace at a time, fed by free-running software triggers - for studying the noise on a line"
                 onClick={() => changeWaveMode("scope")}>Scope</button>
+              {waveMode === "avg" ? (
+                <span className="avg-ctl"
+                  title={"Average over a time span (follows the beam: empties when triggers stop) or over a number of events (holds the last N when triggers stop). Display only - nothing recorded is averaged."}>
+                  over last
+                  <BlurInput type="number" className="avg-n" selectOnFocus
+                    min={avgMode === "time" ? 0.1 : 1}
+                    step={avgMode === "time" ? 0.1 : 1}
+                    value={avgMode === "time" ? avg.seconds : avg.events}
+                    onCommit={(v) => {
+                      const n = Number(v);
+                      if (!Number.isFinite(n) || n <= 0) return;
+                      applyAverage(avgMode === "time" ? { mode: "time", seconds: n }
+                                                      : { mode: "events", events: Math.round(n) });
+                    }} />
+                  <select value={avgMode}
+                    onChange={(e) => {
+                      const mode = e.target.value as AvgSettings["mode"];
+                      setAvgModePick(mode);
+                      applyAverage({ mode });
+                    }}>
+                    <option value="time">s</option>
+                    <option value="events">events</option>
+                  </select>
+                </span>
+              ) : null}
+              {waveMode !== "scope" ? (
+                <span className="wave-clear">
+                  <button onClick={clearWaves}
+                    title={waveMode === "avg"
+                      ? "Empty the average and start it afresh from the next event (every window sees it)"
+                      : "Wipe the overlay and start piling up events afresh"}>
+                    Clear
+                  </button>
+                </span>
+              ) : null}
               {waveMode === "scope" ? (
                 <>
+                  {/* The server is the truth about whether the scope fires:
+                      after a restart, a lost unit or a trigger error the mode
+                      is still shown but nothing is firing - say so. */}
+                  {status && status.scope_hz == null ? (
+                    <span className="scope-idle"
+                      title="Scope mode is selected but its software triggers are not firing (the server restarted, the unit was lost, or a trigger failed).">
+                      ⚠ not firing
+                      <button disabled={!connected}
+                        onClick={() => applyScope(scopeHz, scopeTrigCh, scopeTrigMv, scopeTrigEdge)}>
+                        start
+                      </button>
+                    </span>
+                  ) : null}
                   <label className="scope-rate" title="Software-trigger rate, 0.1-20 Hz">
                     <input type="number" min={0.1} max={20} step={0.1} value={scopeHz}
                       onChange={(e) => setScopeHz(e.target.value)}
@@ -882,8 +979,7 @@ export function App() {
             onDcOffset={(ch, dac) => updateChannel(ch, { dc_offset: dac })}
             onName={(ch, name) => updateChannel(ch, { name })}
             yRanges={yRanges} onYRange={changeYRange} waveMode={waveMode}
-            clearEpoch={wipeEpoch}
-            locked={isLocked} onUnlock={unlockOne} />
+            clearEpoch={wipeEpoch} />
         </main>
         )}
 
@@ -929,7 +1025,7 @@ export function App() {
             // 0 V calibration: 0 is midscale 0x8000, where the threshold is
             // defined.
             const offDef = catalog.bank.find((d) => d.key === "fast_trigger_dc_offset")!;
-            const offLocked = trOffLocked || isLocked("fast_trigger_dc_offset");
+            const offLocked = isLocked("fast_trigger_dc_offset");
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -954,9 +1050,19 @@ export function App() {
                   </p>
                 )}
                 <div className="settings-grid tr0-settings">
-                  <div className="setting-row"
+                  {/* Not lockable - tuned while watching - but in line with
+                      the TR DC offset's label below. */}
+                  <div className="setting-row lockable"
                     title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (UM4270 sec 9.8.3): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. CAEN gives no formula at other offsets - keep the offset at 0.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <label>TR threshold</label>
+                    <span className="lock-spacer" />
+                    <label>
+                      TR threshold
+                      {!offMid ? (
+                        <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
+                          ⚠ offset not 0
+                        </span>
+                      ) : null}
+                    </label>
                     <span className="field">
                       {/* min sets the arrow keys' step base, so it must sit on
                           the step grid: -1.986 made them walk -0.001, 0.004,
@@ -965,39 +1071,17 @@ export function App() {
                         selectOnFocus
                         value={fmtDacVolts(g0.fast_trigger_threshold,
                                            trAbsThresholdV, trThresholdDacForAbs)}
-                        disabled={isLocked("fast_trigger_threshold")}
                         onCommit={(v) => {
                           updateTrBoth("fast_trigger_threshold",
                             trThresholdDacForAbs(Number(v) || 0));
                         }} />
                       <span className="unit">V</span>
                     </span>
-                    {isLocked("fast_trigger_threshold") ? (
-                      <button className="lock-chip"
-                        title="Locked. Click to unlock just the TR threshold."
-                        onClick={() => unlockOne("fast_trigger_threshold")}>🔒</button>
-                    ) : null}
-                    {!offMid ? (
-                      <span className="muted tr-rel-note" title="The threshold is only defined in volts with the TR DC offset at 0 (midscale 0x8000) - UM4270 sec 9.8.3.">
-                        ⚠ offset not 0
-                      </span>
-                    ) : null}
                   </div>
                   <div className={"setting-row lockable" + (offLocked ? " locked" : "")}
                     title={[offDef.help, offDef.caen].filter(Boolean).join("\n\n")}>
-                    <button className="lock-toggle"
-                      aria-label={offLocked ? "Unlock TR DC offset" : "Lock TR DC offset"}
-                      aria-pressed={offLocked}
-                      title={offLocked ? "Locked - click to edit the TR DC offset"
-                                       : "Unlocked - click to lock the TR DC offset"}
-                      onClick={() => {
-                        if (offLocked) {
-                          setTrOffLocked(false);
-                          if (isLocked("fast_trigger_dc_offset")) unlockOne("fast_trigger_dc_offset");
-                        } else {
-                          setTrOffLocked(true);
-                        }
-                      }}>{offLocked ? "🔒" : "🔓"}</button>
+                    <LockToggle locked={offLocked} what="TR DC offset"
+                      onToggle={() => toggleLock("fast_trigger_dc_offset")} />
                     <label>TR DC offset</label>
                     <SettingControl def={offDef} value={g0.fast_trigger_dc_offset}
                       geom={catalog.geometry} disabled={offLocked}
@@ -1027,22 +1111,15 @@ export function App() {
               // sources, each source's own option right under it and only
               // while that source is enabled.
               const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
-              const row = (k: string, label: string, lockable = true) => {
+              const row = (k: string, label: string) => {
                 const d = def(k);
-                const locked = lockable && isLocked(k);
                 return (
                   <div className="setting-row" key={k}
                     title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
                     <label>{label}</label>
                     <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
                       dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
-                      disabled={locked}
                       onChange={(v) => updateBoard(k, v)} />
-                    {locked ? (
-                      <button className="lock-chip"
-                        title="Locked. Click to unlock just this setting."
-                        onClick={() => unlockOne(k)}>🔒</button>
-                    ) : null}
                   </div>
                 );
               };
@@ -1059,8 +1136,8 @@ export function App() {
                     {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
                     {row("fast_trigger", "TR0")}
                     {config.fast_trigger !== "disabled"
-                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
-                    {row("software_trigger", "Software trigger", false)}
+                      ? row("fast_trigger_digitizing", "Digitize TR traces") : null}
+                    {row("software_trigger", "Software trigger")}
                   </div>
                 </>
               );
@@ -1094,10 +1171,8 @@ export function App() {
               </div>
             </div>
           ) : null}
-          <CalibrationPanel zc={zc}
+          <CalibrationPanel zc={zc} active={!!status?.calibrating}
             connected={connected} recording={recording}
-            locked={isLocked("calibration")}
-            onUnlock={() => unlockOne("calibration")}
             onStarted={() => setWipeEpoch((e) => e + 1)}
             onError={(title, lines) => push("err", title, lines)}
             onFinished={async (st) => {
@@ -1105,6 +1180,7 @@ export function App() {
               // the board holds now, exactly as after any other write.
               const cfg = await api.getConfig();
               setConfig(cfg); confirmed.current = cfg;
+              resync();
               const bad = st.report.filter((r) => r.status !== "ok");
               if (st.error) push("err", "Calibration failed", [st.error]);
               else if (st.message === "cancelled") {

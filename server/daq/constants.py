@@ -49,9 +49,14 @@ DEFAULT_DRS4_FREQUENCY = 0  # 5 GS/s, WaveDump default
 # grid (plenty to spot dead/railed channels; keeps the wire light).
 OVERVIEW_POINTS = 256
 
-# Fixed display aggregation: waveforms are averaged over a rolling time window
-# and pushed at a fixed cadence (no user-facing moving-average slider).
+# Display aggregation: waveforms are averaged over a rolling window - a time
+# span or an event count, the operator's choice - and pushed at a fixed
+# cadence. Display only; nothing recorded is averaged.
 AVG_WINDOW_SECONDS = 1.0
+AVG_WINDOW_EVENTS = 100
+AVG_SECONDS_MIN, AVG_SECONDS_MAX = 0.1, 600.0
+AVG_EVENTS_MAX = 100_000
+AVG_BUCKETS = 64          # window granularity; also caps memory per channel
 TELEMETRY_HZ = 12.0
 
 # Trigger-rate strip: fixed rolling window.
@@ -77,6 +82,14 @@ def time_axis_ns(drs4_freq: int, n: int = RECORD_LENGTH):
 # board) at this cadence so the UI recovers on its own.
 READ_FAIL_LIMIT = 10
 RECONNECT_RETRY_S = 5.0
+# While acquiring, a unit power-cycled underneath us can come back DISARMED
+# with reads that simply return nothing - so "acquiring" stayed on screen for
+# ever. After this long with no events the readout thread asks the board
+# whether it is still running (0x8104 bit 2). Cheap: one register read.
+QUIET_CHECK_S = 2.0
+# One read call inside the driver this long means the unit is gone and the
+# call is stuck (the wedged-driver signature); status() stops waiting for it.
+READ_STALL_S = 10.0
 
 # The post-trigger register counts TIME, not percent: ~8.5 ns per step. The API
 # takes a percentage, so the reachable percentages depend on how long the
