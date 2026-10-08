@@ -82,6 +82,14 @@ def time_axis_ns(drs4_freq: int, n: int = RECORD_LENGTH):
 # board) at this cadence so the UI recovers on its own.
 READ_FAIL_LIMIT = 10
 RECONNECT_RETRY_S = 5.0
+# While acquiring, a unit power-cycled underneath us can come back DISARMED
+# with reads that simply return nothing - so "acquiring" stayed on screen for
+# ever. After this long with no events the readout thread asks the board
+# whether it is still running (0x8104 bit 2). Cheap: one register read.
+QUIET_CHECK_S = 2.0
+# One read call inside the driver this long means the unit is gone and the
+# call is stuck (the wedged-driver signature); status() stops waiting for it.
+READ_STALL_S = 10.0
 
 # The post-trigger register counts TIME, not percent: ~8.5 ns per step. The API
 # takes a percentage, so the reachable percentages depend on how long the

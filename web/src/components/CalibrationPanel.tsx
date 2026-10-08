@@ -7,6 +7,10 @@ import { LockToggle } from "./LockToggle";
 
 interface Props {
   connected: boolean;
+  /** The server says a calibration is running - possibly started in another
+   *  window, which this panel's own poll (idle while nothing runs) would
+   *  otherwise never notice. */
+  active?: boolean;
   recording: boolean;
   /** Calibration steers DC offsets, so it locks like a setting does. */
   locked?: boolean;
@@ -29,7 +33,7 @@ interface Props {
  *  to bring the whole pulse into the window. Never centres anything.
  *  Zero-volt calibration: measures each input's real 0 V reading for the
  *  plots (display only). */
-export function CalibrationPanel({ connected, recording, locked, onToggleLock,
+export function CalibrationPanel({ connected, active, recording, locked, onToggleLock,
                                    onStarted, onFinished, onError, zc }: Props) {
   const [st, setSt] = useState<CalibrationStatus | null>(null);
   const [fitEvents, setFitEvents] = usePersistentState("calFitEvents", "100");
@@ -65,7 +69,7 @@ export function CalibrationPanel({ connected, recording, locked, onToggleLock,
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [st?.active]);   // re-arm the poll loop when activity flips
+  }, [st?.active, active]);   // re-arm the poll loop when activity flips
 
   const run = async (mode: "shift" | "zero") => {
     try {

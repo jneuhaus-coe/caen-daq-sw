@@ -807,3 +807,8 @@ main.experiment { overflow-y: auto; }
 .avg-ctl input { width: 62px; font-size: 11px; padding: 2px 4px; }
 .avg-ctl select { min-width: 0; font-size: 11px; padding: 2px 4px; }
 .wave-clear button { font-size: 11px; padding: 2px 10px; border-radius: 5px; }
+.scope-idle {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 10px;
+  font-size: 11px; color: var(--orange); white-space: nowrap;
+}
+.scope-idle button { font-size: 11px; padding: 1px 8px; border-radius: 5px; }

@@ -436,6 +436,53 @@ def test_root_writer_matches_the_radical_layout():
         assert meta["events"] == 3 and meta["output_format"] == "root"
 
 
+def test_power_cycle_while_acquiring_is_noticed():
+    """A unit switched off and on under a running acquisition came back
+    disarmed, reads returned nothing, and the UI said "acquiring" for ever.
+    The readout thread now asks the board (armed) once things go quiet, and
+    status gives up on a read that never comes back."""
+    import threading
+    from daq.backend.fake import FakeBackend
+    saved = (C.QUIET_CHECK_S, C.READ_STALL_S)
+    C.QUIET_CHECK_S, C.READ_STALL_S = 0.2, 0.3
+    stuck, release = threading.Event(), threading.Event()
+
+    class Board(FakeBackend):
+        def read_events(self):
+            if stuck.is_set():
+                release.wait(5)
+                return []
+            return super().read_events()
+
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe() and eng.start()
+        eng._backend._running = False          # the power cycle
+        deadline = time.monotonic() + 3
+        while eng.status()["running"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        st = eng.status()
+        assert not st["running"] and not st["opened"]
+
+        # A read stuck in the driver: status stops waiting for it...
+        eng._last_open_attempt = 0.0
+        assert eng.probe() and eng.start()
+        stuck.set()
+        time.sleep(0.5)
+        eng.probe()
+        assert not eng.status()["running"]
+        # ...and when the call finally returns, that thread just leaves.
+        stuck.clear()
+        release.set()
+        eng._last_open_attempt = 0.0
+        assert eng.probe() and eng.start()
+        assert eng.status()["running"]
+    finally:
+        C.QUIET_CHECK_S, C.READ_STALL_S = saved
+        release.set()
+        eng.close()
+
+
 def test_fake_backend_behaves_like_a_board():
     """The Playwright suite runs the server with DAQ_BACKEND=fake; this guards
     the contract it relies on: the fake opens, settings stick exactly, and
@@ -1148,7 +1195,8 @@ def test_log_lines_carry_no_durations():
 
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
-               test_rolling_average_matches_numpy, test_decimate,
+               test_rolling_average_matches_numpy, test_rolling_average_event_window,
+               test_decimate,
                test_http_api, test_config_write_is_refused_with_no_unit,
                test_a_refused_write_is_reported_even_with_a_full_error_log,
                test_config_values_are_range_checked,
@@ -1163,6 +1211,7 @@ if __name__ == "__main__":
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
+               test_power_cycle_while_acquiring_is_noticed,
                test_pulse_shift_leaves_fitting_channels_at_zero_offset,
                test_pulse_shift_slides_a_clipped_pulse_into_view,
                test_dac_changes_rearm_while_acquiring_and_refuse_while_recording,

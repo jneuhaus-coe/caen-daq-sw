@@ -95,7 +95,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         # `daq stop` confirm the pid in the runtime file is really this server's
         # before it signals it - that record outlives crashes, and pids are
         # recycled, so acting on it unchecked can signal an unrelated process.
-        return {**engine.status(), "app": "dt5742b-daq", "version": __version__,
+        return {**engine.status(), "display_rev": sessions.display_rev(),
+                "app": "dt5742b-daq", "version": __version__,
                 "pid": os.getpid(), "log_file": logsetup.active_log_path(),
                 "ui_assets": ui_assets()}
 

@@ -45,6 +45,16 @@ def _path(name: str) -> str:
 
 
 # ---------- display preferences (the "current" state, autosaved) ----------
+# Bumped on every write and published in /api/status, so every open window
+# picks up another window's locks, ranges and mode instead of overwriting them
+# with its own stale copy. Clock-seeded for the same reason as config_rev.
+_display_rev = int(time.time())
+
+
+def display_rev() -> int:
+    return _display_rev
+
+
 def get_display() -> dict:
     try:
         with open(_display_path()) as f:
@@ -55,6 +65,8 @@ def get_display() -> dict:
 
 
 def set_display(display: dict) -> None:
+    global _display_rev
+    _display_rev += 1
     os.makedirs(runtime.state_dir(), exist_ok=True)
     tmp = _display_path() + ".tmp"
     with open(tmp, "w") as f:

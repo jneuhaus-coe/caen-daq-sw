@@ -167,7 +167,7 @@ export interface DisplayPrefs {
 }
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */
-export function openTelemetry(onData: (t: Telemetry) => void): () => void {
+export function openTelemetry(onData: (t: Telemetry | null) => void): () => void {
   let ws: WebSocket | null = null;
   let retry: number | undefined;
   let closed = false;
@@ -182,7 +182,11 @@ export function openTelemetry(onData: (t: Telemetry) => void): () => void {
         console.error("unreadable telemetry frame", err);
       }
     };
-    ws.onclose = () => { if (!closed) retry = window.setTimeout(connect, 1000); };
+    ws.onclose = () => {
+      if (closed) return;
+      onData(null);            // nothing is known until the next frame
+      retry = window.setTimeout(connect, 1000);
+    };
     ws.onerror = () => ws?.close();
   };
   connect();

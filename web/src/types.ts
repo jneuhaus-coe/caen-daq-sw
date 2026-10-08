@@ -129,6 +129,10 @@ export interface Status {
   scope_trigger?: { channel: number; level_mv: number; edge: string } | null;
   /** Bumped on every accepted config; tabs refetch when it moves. */
   config_rev?: number;
+  /** Bumped on every display-prefs write; tabs refetch when it moves. */
+  display_rev?: number;
+  /** A calibration is running (started from any window). */
+  calibrating?: boolean;
   backend: string;
   board: { model: string; family: string; serial: number; roc_firmware: string; amc_firmware: string; sw_release: string };
   events_seen: number;

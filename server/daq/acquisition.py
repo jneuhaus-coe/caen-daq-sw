@@ -103,6 +103,13 @@ class AcquisitionEngine:
         self._rec_limit: int | None = None    # auto-close the run at N events
 
         self._thread: threading.Thread | None = None
+        # Which readout thread is the current one. A thread stuck inside the
+        # driver can outlive its acquisition; when its call finally returns
+        # it must not keep reading (or end a run) for a newer one.
+        self._loop_gen = 0
+        # When the readout thread entered its current driver call; None
+        # between calls. status() uses it to notice a read that never returns.
+        self._read_since: float | None = None
         self._running = threading.Event()
         self._lock = threading.Lock()
         # Serialises opening the board. Startup now opens on a worker thread, so
@@ -337,8 +344,11 @@ class AcquisitionEngine:
                 starting.done("Not started: the board would not arm")
                 return False
             logsetup.did(log, "Arming the board", "Ok")
+            self._loop_gen += 1
+            gen = self._loop_gen
             self._running.set()
-            self._thread = threading.Thread(target=self._loop, name="acq", daemon=True)
+            self._thread = threading.Thread(target=self._loop, args=(gen,),
+                                            name="acq", daemon=True)
             self._thread.start()
             starting.done("Acquisition running")
             return True
@@ -582,6 +592,12 @@ class AcquisitionEngine:
         a slow cadence so the app recovers once the unit is switched back on.
         """
         if self._running.is_set():
+            since = self._read_since
+            if since is not None and time.monotonic() - since > C.READ_STALL_S:
+                self._abandon_readout(
+                    f"a read has been stuck in the driver for "
+                    f"{time.monotonic() - since:.0f}s - switch the unit off "
+                    f"and on if it does not come back")
             return self._opened
         if self._opened and self._backend is not None:
             try:
@@ -592,6 +608,18 @@ class AcquisitionEngine:
             self._mark_lost("board stopped responding")
         self._try_open(force=False)
         return self._opened
+
+    def _abandon_readout(self, why: str) -> None:
+        """The readout thread is stuck in the driver: stop waiting for it.
+        It exits on its own if the call ever returns (its generation is no
+        longer current); everything else - the UI first - learns now that
+        nothing is being acquired."""
+        self._loop_gen += 1
+        self._running.clear()
+        self._read_since = None
+        self._mark_lost(why)
+        if self._writer is not None:
+            self._end_recording_from_loop(why)
 
     def _mark_lost(self, why: str) -> None:
         log.warning("Lost the unit: %s", why)
@@ -787,45 +815,64 @@ class AcquisitionEngine:
         return {"ok": True, "run": run_id}
 
     # ---------- readout loop ----------
-    def _loop(self):
+    def _loop(self, gen: int):
         try:
-            self._read_loop()
+            self._read_loop(gen)
         except Exception as e:
             # This thread has no owner to raise into. Left unhandled, it died in
             # silence: events stopped arriving while the UI went on saying
             # "acquiring", and nothing anywhere said why.
             log.exception("The readout thread stopped unexpectedly")
             self._record_error(f"readout stopped: {e}")
-            self._running.clear()
+            if gen == self._loop_gen:
+                self._running.clear()
         finally:
-            if self._writer is not None:
+            self._read_since = None
+            if gen == self._loop_gen and self._writer is not None:
                 self._end_recording_from_loop(
                     "board stopped responding" if not self._opened
                     else "readout stopped")
 
-    def _read_loop(self):
+    def _read_loop(self, gen: int):
         fails = 0
+        quiet_since = time.monotonic()     # last events, or last armed() check
         # DAQ_PROFILE=1: the engine's half of the per-event time ledger
         # (display feed, stats tap, writer) - the backend logs its own half.
         profile = os.environ.get("DAQ_PROFILE") == "1"
         proc_s, proc_n = 0.0, 0
-        while self._running.is_set():
+        while self._running.is_set() and gen == self._loop_gen:
             self._fire_due_software_trigger()
             try:
+                self._read_since = time.monotonic()
                 events = self._backend.read_events()
+                if not events and time.monotonic() - quiet_since >= C.QUIET_CHECK_S:
+                    # Nothing for a while: legitimately quiet, or a unit that
+                    # was power-cycled and came back disarmed. Ask it.
+                    quiet_since = time.monotonic()
+                    if not self._backend.armed():
+                        if gen == self._loop_gen:
+                            self._mark_lost("the unit stopped acquiring on its own "
+                                            "(switched off and on, or stopped by "
+                                            "other software)")
+                            self._running.clear()
+                        break
                 fails = 0
             except Exception as e:
                 fails += 1
                 self._record_error(f"read: {e}")
                 if fails >= C.READ_FAIL_LIMIT:
-                    self._mark_lost("board stopped responding - acquisition halted")
-                    self._running.clear()
+                    if gen == self._loop_gen:
+                        self._mark_lost("board stopped responding - acquisition halted")
+                        self._running.clear()
                     break
                 time.sleep(0.05)
                 continue
+            finally:
+                self._read_since = None
             if not events:
                 time.sleep(0.002)
                 continue
+            quiet_since = time.monotonic()
             t = time.monotonic()
             tp = time.perf_counter() if profile else 0.0
             for ev in events:
@@ -984,6 +1031,7 @@ class AcquisitionEngine:
             "scope_hz": self._scope_hz,
             "scope_trigger": self._scope_trigger,
             "config_rev": self._cfg_rev,
+            "calibrating": self.calibrator.is_active(),
             "recording": self._writer is not None,
             "run_id": self._run_id,
             "run_started": self._run_started,

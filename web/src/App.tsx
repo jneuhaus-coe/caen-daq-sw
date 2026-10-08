@@ -139,6 +139,10 @@ export function App() {
   // unit; when the status poll shows the revision moved (another window, a
   // session apply, a reconnect), the tab refetches rather than goes stale.
   const cfgRev = useRef(0);
+  // The same for the display prefs (ranges, mode, locks), which every window
+  // shares: another window's lock must show here, and must not be undone by
+  // this window's next save of its own stale copy.
+  const displayRev = useRef<number | null>(null);
   const { toasts, push, dismiss } = useToasts();
   // The sticky settings column sits just under the sticky header, whose
   // height depends on the width (the header is two rows, and may grow).
@@ -159,6 +163,7 @@ export function App() {
       setCatalog(cat); setConfig(cfg); setStatus(st);
       confirmed.current = cfg;
       cfgRev.current = st.config_rev ?? 0;
+      displayRev.current = st.display_rev ?? null;
       // A scope already firing (from before a reload, or another window)
       // is the truth for its controls - not whatever was last typed here.
       if (st.scope_hz != null) {
@@ -176,13 +181,9 @@ export function App() {
       setLoadError(e instanceof Error ? e.message : String(e));
     }
     // Display prefs restore on their own - they never touch the hardware.
-    api.getDisplay().then((d) => {
-      setYRanges(fromPrefs(d));
-      // The display mode restores; the scope's trigger firing does NOT start
-      // on page load - status.scope_hz says whether a scope is already live.
-      setWaveMode(asWaveMode(d.wave_mode));
-      setLocks(asLocks(d.locks));
-    }).catch(() => {});
+    // The display mode restores; the scope's trigger firing does NOT start
+    // on page load - status.scope_hz says whether a scope is already live.
+    api.getDisplay().then(adoptDisplay).catch(() => {});
   }, []);
 
   useEffect(() => { loadOnce(); }, [loadOnce]);
@@ -192,6 +193,14 @@ export function App() {
   useEffect(() => {
     api.runs().then((r) => setRunDirs(r.runs.map((x) => x.id))).catch(() => {});
   }, [runsKey]);
+
+  function adoptDisplay(d: DisplayPrefs) {
+    setYRanges(fromPrefs(d));
+    setWaveMode(asWaveMode(d.wave_mode));
+    const l = asLocks(d.locks);
+    locksRef.current = l;
+    setLocks(l);
+  }
 
   const asLocks = (v: unknown): Record<string, boolean> => {
     const out: Record<string, boolean> = {};
@@ -390,6 +399,8 @@ export function App() {
   const catalogRef = useRef<Catalog | null>(null);
   catalogRef.current = catalog;
 
+  // A dropped socket clears the telemetry: holding the last frame kept
+  // showing "acquiring" from a server that could no longer say otherwise.
   useEffect(() => openTelemetry(setTele), []);
 
   // Poll status: the board can vanish (unit switched off) or come back at any
@@ -409,6 +420,15 @@ export function App() {
           cfgRev.current = st.config_rev;
           const cfg = await api.getConfig();
           if (!cancelled) { setConfig(cfg); confirmed.current = cfg; }
+        }
+        // Display prefs changed elsewhere. Not while this window still has
+        // an unsent edit of its own - that send comes back round as the next
+        // revision anyway.
+        if (st.display_rev != null && st.display_rev !== displayRev.current
+            && !pendingDisplay.current) {
+          displayRev.current = st.display_rev;
+          const d = await api.getDisplay();
+          if (!cancelled) adoptDisplay(d);
         }
       } catch {
         if (!cancelled) setServerUp(false);
@@ -431,6 +451,11 @@ export function App() {
       setConfig(cfg); confirmed.current = cfg;
     }
   };
+
+  // After an action that wrote the unit behind pushConfig's back (session,
+  // file, reset, calibration): take up the server's revision now, rather
+  // than have the next edit refused as stale until the poll catches up.
+  const resync = () => { api.status().then(adoptStatus).catch(() => {}); };
 
   const pushConfig = (next: BoardConfig) => {
     setConfig(next);                       // optimistic, for input responsiveness
@@ -464,7 +489,12 @@ export function App() {
             push("ok", "Applied and read back from unit", lines);
           }
         })
-        .catch(() => push("err", "Could not reach the DAQ server"));
+        .catch(() => {
+          // Nothing confirmed this value: show what the unit last confirmed,
+          // never the optimistic one.
+          if (confirmed.current) setConfig(confirmed.current);
+          push("err", "Could not reach the DAQ server", ["The setting was not applied."]);
+        });
     };
     pendingConfig.current = send;
     saveTimer.current = window.setTimeout(send, 250);
@@ -586,7 +616,7 @@ export function App() {
   const reconnect = async () => {
     setReconnecting(true);
     try {
-      setStatus(await api.reconnect());
+      await adoptStatus(await api.reconnect());
       setServerUp(true);
     } catch {
       setServerUp(false);
@@ -601,6 +631,9 @@ export function App() {
   const prevRecording = useRef(false);
   useEffect(() => {
     if (recordingNow && !prevRecording.current) setWipeEpoch((e) => e + 1);
+    // Re-list the runs on BOTH edges, whoever caused them: another window,
+    // a bounded run closing itself, a lost unit cutting a run short.
+    if (recordingNow !== prevRecording.current) setRunsKey((k) => k + 1);
     prevRecording.current = recordingNow;
   }, [recordingNow]);
 
@@ -623,7 +656,10 @@ export function App() {
   const running = tele?.running ?? status?.running ?? false;
   const connected = serverUp && !!status?.opened;
   const recording = recordingNow;
-  const acqState = recording ? "recording" : running ? "acquiring" : "idle";
+  // With the server unreachable nothing here is known; say so rather than
+  // repeat the last answer.
+  const acqState = !serverUp ? "unknown"
+    : recording ? "recording" : running ? "acquiring" : "idle";
 
   return (
     <div className="app">
@@ -759,6 +795,7 @@ export function App() {
                   onError={(title, lines) => push("err", title, lines)}
                   onApplied={(cfg, display, errors, isConn, name) => {
                     setConfig(cfg); confirmed.current = cfg;
+                    resync();
                     setYRanges(fromPrefs(display));
                     setWaveMode(asWaveMode(display.wave_mode));
                     if (!isConn) {
@@ -775,6 +812,7 @@ export function App() {
                     try {
                       const r = await api.resetDefault();
                       setConfig(r.config); confirmed.current = r.config;
+                      resync();
                       if (r.connected === false) {
                         push("warn", "No unit connected", ["Nothing was sent."]);
                       } else if (r.errors?.length) {
@@ -788,6 +826,7 @@ export function App() {
                   }}
                   onLoaded={({ config: cfg, notes, errors, restart, connected: up, running: isRunning }) => {
                     setConfig(cfg); confirmed.current = cfg;
+                    resync();
                     if (!up) {
                       push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
                     } else if (errors.length) {
@@ -800,7 +839,7 @@ export function App() {
                     if (restart.length && isRunning) {
                       const what = restart.join(", ");
                       if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
-                        api.stop().then(() => api.start()).then(setStatus)
+                        api.stop().then(() => api.start()).then(adoptStatus)
                           .catch(failed("Could not re-arm the unit"));
                       }
                     }
@@ -862,6 +901,19 @@ export function App() {
               ) : null}
               {waveMode === "scope" ? (
                 <>
+                  {/* The server is the truth about whether the scope fires:
+                      after a restart, a lost unit or a trigger error the mode
+                      is still shown but nothing is firing - say so. */}
+                  {status && status.scope_hz == null ? (
+                    <span className="scope-idle"
+                      title="Scope mode is selected but its software triggers are not firing (the server restarted, the unit was lost, or a trigger failed).">
+                      ⚠ not firing
+                      <button disabled={!connected}
+                        onClick={() => applyScope(scopeHz, scopeTrigCh, scopeTrigMv, scopeTrigEdge)}>
+                        start
+                      </button>
+                    </span>
+                  ) : null}
                   <label className="scope-rate" title="Software-trigger rate, 0.1-20 Hz">
                     <input type="number" min={0.1} max={20} step={0.1} value={scopeHz}
                       onChange={(e) => setScopeHz(e.target.value)}
@@ -1145,7 +1197,7 @@ export function App() {
               </div>
             </div>
           ) : null}
-          <CalibrationPanel zc={zc}
+          <CalibrationPanel zc={zc} active={!!status?.calibrating}
             connected={connected} recording={recording}
             locked={isLocked("calibration")}
             onToggleLock={() => toggleLock("calibration")}
@@ -1156,6 +1208,7 @@ export function App() {
               // the board holds now, exactly as after any other write.
               const cfg = await api.getConfig();
               setConfig(cfg); confirmed.current = cfg;
+              resync();
               const bad = st.report.filter((r) => r.status !== "ok");
               if (st.error) push("err", "Calibration failed", [st.error]);
               else if (st.message === "cancelled") {
