@@ -405,7 +405,6 @@ select { min-width: 90px; }
            text-transform: none; letter-spacing: 0; }
 
 
-/* config actions: Load/Save together, Reset held apart */
 /* sessions: save row + one line per saved session */
 .session-save { display: flex; gap: 8px; margin-bottom: 8px; }
 .session-save input { flex: 1; min-width: 0; }
@@ -436,8 +435,6 @@ select { min-width: 90px; }
 .session-menu button.danger { color: var(--red); }
 .session-import { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 
-.config-btns { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.config-btns .spacer { flex: 1; }
 button.danger { border-color: #6b2226; color: var(--red); }
 button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--red); }
 

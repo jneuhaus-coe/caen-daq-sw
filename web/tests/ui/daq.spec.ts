@@ -534,23 +534,29 @@ test("experiment conditions reach the server and the record dialog", async ({ pa
 });
 
 test("locking a setting greys it out without touching the unit", async ({ page }) => {
+  await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
   const row = page.locator(".settings-grid .setting-row",
-    { hasText: "Trigger edge" }).first();
+    { hasText: "Dump format" }).first();
   const select = row.locator("select");
-  const before = (await cfg(page)).trigger_edge;
+  const before = (await cfg(page)).output_format;
   // The lock sits LEFT of the label (house style).
-  await row.getByRole("button", { name: "Lock Trigger edge" }).click();
+  await row.getByRole("button", { name: "Lock Dump format" }).click();
   await expect(select).toBeDisabled();
   // Protection, not concealment: the value stays shown, nothing is written.
   await expect(select).toHaveValue(before);
-  expect((await cfg(page)).trigger_edge).toBe(before);
+  expect((await cfg(page)).output_format).toBe(before);
+  // Only the settings that used to carry the "back to default" checkbox
+  // (plus the TR DC offset) have locks; the required ones do not.
+  await expect(page.locator(".settings-grid .setting-row", { hasText: "Sampling frequency" })
+    .getByRole("button", { name: /Lock/ })).toHaveCount(0);
   // It survives a reload - every window shares the same locks.
   await page.reload();
   await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
   await expect(select).toBeDisabled();
   // And one click gives the setting back.
-  await row.getByRole("button", { name: "Unlock Trigger edge" }).click();
+  await row.getByRole("button", { name: "Unlock Dump format" }).click();
   await expect(select).toBeEnabled();
+  await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
 test("the average runs over a span or an event count, and Clear empties it", async ({ page }) => {
@@ -585,27 +591,35 @@ test("the average runs over a span or an event count, and Clear empties it", asy
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
-test("a legacy Configuration B file loads through the Load button", async ({ page }) => {
+test("a legacy Configuration B file imports as a session and applies", async ({ page }) => {
   const legacy = [
     "Module 125", "DRS4FREQ 0",
     "CHNOFFSE 47000 0 0", "CHNOFFSE 18536 4 1",
     "TR0OFFSE 32768", "TRG__TR0 20934",
     "TRGPOLAR 1", "POSTTRIG 0", "LEMO_LEV 0", "GPO_BUSY 1",
   ].join("\n");
-  // The Load button lives on the Experiment view now.
   await page.locator(".view-tabs button", { hasText: "Experiment" }).click();
-  // Straight onto the hidden input - clicking Load would open the native
+  // Straight onto the hidden input - clicking Import would open the native
   // chooser, which is the browser's UI, not ours to test.
-  await page.locator('.card:has(h2:text("Config file")) input[type="file"]').setInputFiles({
+  const sessions = page.locator(".card", { has: page.locator("h2", { hasText: "Sessions" }) });
+  await sessions.locator('input[type="file"]').setInputFiles({
     name: "configB.txt", mimeType: "text/plain",
     buffer: Buffer.from(legacy),
   });
-  await expect(page.getByText(/Config loaded and read back/)).toBeVisible();
+  await expect(page.getByText(/Imported as session "configB"/)).toBeVisible();
+  // Importing touches nothing on the unit; Apply does.
+  const row = page.locator(".session-row", { hasText: "configB" });
+  await row.getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByText(/applied and read back/)).toBeVisible();
   const c = await cfg(page);
   expect(c.gpo_output).toBe("busy");
   expect(c.trigger_edge).toBe("falling");
   expect(c.channels[0].dc_offset).toBe(47000);
   expect(c.channels[12].dc_offset).toBe(18536);
+  page.on("dialog", (d) => d.accept());
+  await row.getByRole("button", { name: /More/ }).click();
+  await row.getByRole("menuitem", { name: "Delete" }).click();
+  await page.locator(".view-tabs button", { hasText: "Live" }).click();
 });
 
 test("an update is offered once no run is recording, and a reload keeps the forms", async ({ page }) => {

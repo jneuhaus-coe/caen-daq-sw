@@ -10,7 +10,6 @@ import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
 import { SettingControl } from "./components/SettingControl";
 import { Collapsible } from "./components/Collapsible";
-import { ConfigPanel } from "./components/ConfigPanel";
 import { Toasts, useToasts } from "./components/Toasts";
 import { RunsPanel } from "./components/RunsPanel";
 import { Elapsed } from "./components/Elapsed";
@@ -791,8 +790,7 @@ export function App() {
                 </div>
                 <Collapsible title="Bank Settings" defaultOpen>
                   <BankPanel catalog={catalog} config={config}
-                    onGroupChange={updateGroup}
-                    locked={isLocked} onToggleLock={toggleLock} />
+                    onGroupChange={updateGroup} />
                 </Collapsible>
               </div>
               <div className="exp-col">
@@ -818,43 +816,6 @@ export function App() {
                       push("err", `Session "${name}" applied with errors`, errors);
                     } else {
                       push("ok", `Session "${name}" applied and read back from unit`);
-                    }
-                  }} />
-                <ConfigPanel
-                  onReset={async () => {
-                    try {
-                      const r = await api.resetDefault();
-                      setConfig(r.config); confirmed.current = r.config;
-                      resync();
-                      if (r.connected === false) {
-                        push("warn", "No unit connected", ["Nothing was sent."]);
-                      } else if (r.errors?.length) {
-                        push("err", "Unit rejected part of the reset", r.errors);
-                      } else {
-                        push("ok", "Defaults applied and read back from unit");
-                      }
-                    } catch (e) {
-                      failed("Could not reset the settings")(e);
-                    }
-                  }}
-                  onLoaded={({ config: cfg, notes, errors, restart, connected: up, running: isRunning }) => {
-                    setConfig(cfg); confirmed.current = cfg;
-                    resync();
-                    if (!up) {
-                      push("warn", "No unit connected", ["The file was read, but nothing was sent."]);
-                    } else if (errors.length) {
-                      push("err", "Unit rejected a setting from the file",
-                           [...errors, ...notes]);
-                    } else {
-                      push(notes.length ? "warn" : "ok",
-                           "Config loaded and read back from unit", notes);
-                    }
-                    if (restart.length && isRunning) {
-                      const what = restart.join(", ");
-                      if (confirm(`${what} only take effect when the unit is re-armed.\n\nRestart acquisition now?`)) {
-                        api.stop().then(() => api.start()).then(adoptStatus)
-                          .catch(failed("Could not re-arm the unit"));
-                      }
                     }
                   }} />
               </div>
@@ -1064,7 +1025,6 @@ export function App() {
             // defined.
             const offDef = catalog.bank.find((d) => d.key === "fast_trigger_dc_offset")!;
             const offLocked = isLocked("fast_trigger_dc_offset");
-            const thrLocked = isLocked("fast_trigger_threshold");
             return (
               <div className="card">
                 <h2>TR0 <span className="sub">fast trigger</span></h2>
@@ -1089,10 +1049,11 @@ export function App() {
                   </p>
                 )}
                 <div className="settings-grid tr0-settings">
-                  <div className={"setting-row lockable" + (thrLocked ? " locked" : "")}
+                  {/* Not lockable - tuned while watching - but in line with
+                      the TR DC offset's label below. */}
+                  <div className="setting-row lockable"
                     title={"Trigger level in volts at the TR0 input, relative to its ground (shield), per CAEN's worked examples (UM4270 sec 9.8.3): with the TR DC offset at 0x8000, DAC 0x6666 = 0 V and 13.2 DAC steps per mV - a NIM signal (0 to -800 mV) triggers at half swing with 0x51C6 = -400 mV. CAEN gives no formula at other offsets - keep the offset at 0.\n\nOne DAC step is 0.0758 mV; the field shows as many digits as it takes to name the exact register word.\n\nDAC word: " + g0.fast_trigger_threshold + "\n\nCAEN_DGTZ_SetGroupFastTriggerThreshold"}>
-                    <LockToggle locked={thrLocked} what="TR threshold"
-                      onToggle={() => toggleLock("fast_trigger_threshold")} />
+                    <span className="lock-spacer" />
                     <label>
                       TR threshold
                       {!offMid ? (
@@ -1109,7 +1070,6 @@ export function App() {
                         selectOnFocus
                         value={fmtDacVolts(g0.fast_trigger_threshold,
                                            trAbsThresholdV, trThresholdDacForAbs)}
-                        disabled={thrLocked}
                         onCommit={(v) => {
                           updateTrBoth("fast_trigger_threshold",
                             trThresholdDacForAbs(Number(v) || 0));
@@ -1150,19 +1110,14 @@ export function App() {
               // sources, each source's own option right under it and only
               // while that source is enabled.
               const def = (k: string) => catalog.unit.find((d) => d.key === k)!;
-              const row = (k: string, label: string, lockable = true) => {
+              const row = (k: string, label: string) => {
                 const d = def(k);
-                const locked = lockable && isLocked(k);
                 return (
-                  <div className={"setting-row lockable" + (locked ? " locked" : "")} key={k}
+                  <div className="setting-row" key={k}
                     title={[d.help, d.caen].filter(Boolean).join("\n\n")}>
-                    {lockable
-                      ? <LockToggle locked={locked} what={label} onToggle={() => toggleLock(k)} />
-                      : <span className="lock-spacer" />}
                     <label>{label}</label>
                     <SettingControl def={d} value={(config as any)[k]} geom={catalog.geometry}
                       dependsOn={d.depends_on ? (config as any)[d.depends_on] : undefined}
-                      disabled={locked}
                       onChange={(v) => updateBoard(k, v)} />
                   </div>
                 );
@@ -1180,8 +1135,8 @@ export function App() {
                     {config.external_trigger !== "disabled" ? row("io_level", "TRG-IN level") : null}
                     {row("fast_trigger", "TR0")}
                     {config.fast_trigger !== "disabled"
-                      ? row("fast_trigger_digitizing", "Digitize TR traces", false) : null}
-                    {row("software_trigger", "Software trigger", false)}
+                      ? row("fast_trigger_digitizing", "Digitize TR traces") : null}
+                    {row("software_trigger", "Software trigger")}
                   </div>
                 </>
               );
@@ -1217,8 +1172,6 @@ export function App() {
           ) : null}
           <CalibrationPanel zc={zc} active={!!status?.calibrating}
             connected={connected} recording={recording}
-            locked={isLocked("calibration")}
-            onToggleLock={() => toggleLock("calibration")}
             onStarted={() => setWipeEpoch((e) => e + 1)}
             onError={(title, lines) => push("err", title, lines)}
             onFinished={async (st) => {

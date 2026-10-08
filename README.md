@@ -280,8 +280,11 @@ Settings are written to the unit and read back — what you see is what the
 hardware confirmed, not what was requested. If the unit rounds or refuses a
 value, a toast says so.
 
-**Save** / **Load** in the Config panel write and read a settings file. Load also
-accepts a CAEN `WaveDumpConfig.txt`.
+**Sessions** (Experiment Settings) save the whole setup under a name and
+**Apply** it back. Each session's **More** menu downloads it as a file or
+exports just its board settings; **Import…** adds a session file, this app's
+config file, or a CAEN `WaveDumpConfig.txt` to the list. Nothing reaches the
+unit until you press Apply.
 
 ---
 

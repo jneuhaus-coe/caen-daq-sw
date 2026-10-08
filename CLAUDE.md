@@ -630,19 +630,19 @@ Never let the UI show a setting the hardware did not confirm.
 - **Lockable settings (the house style).** A monochrome line-icon lock
   button (`LockToggle`, `currentColor` - it reads like the label, never as a
   highlighted control) sits to the LEFT of the setting's label and toggles
-  it. Every hardware setting is lockable except the per-channel DC
-  offsets, Digitize TR traces and
-  Software trigger (never were; a `.lock-spacer` keeps their labels in
-  line). Optional campaign settings are plain lockable rows - the old
-  "uncheck to return to default" checkbox is gone. Locked: the control is greyed out but still shows the board's value -
+  it. Locked: the control is greyed out but still shows the board's value -
   protection, not concealment. Locking never writes or resets anything, and
   one click unlocks. CSS: `.setting-row.lockable` (+ `.locked`),
-  `.lock-toggle`. Keys: the setting key, `bank<N>:<key>` for bank settings,
-  `calibration` for the calibrator.
-  Locks live in the display prefs (`locks`), so every window and a reload
-  agree; `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked -
-  today only the TR DC offset. The old global "lock everything" mode is
-  gone.
+  `.lock-toggle`, `.lock-spacer` (keeps a non-lockable label in line).
+  **Which settings are lockable:** the catalog's OPTIONAL settings (not
+  `required`, with a `default`: DRS4 correction, GPO output, Events per
+  readout, Dump format, Dump header - the ones that once had a broken "uncheck
+  to return to default" checkbox) plus the TR DC offset. Nothing else: the
+  old global "lock everything" mode put locks on everything, and that is
+  not a reason for a setting to be lockable. Locks live in the display prefs
+  (`locks`), keyed by setting key, so every window and a reload agree;
+  `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked - today
+  only the TR DC offset.
 
 ## Watching vs recording
 

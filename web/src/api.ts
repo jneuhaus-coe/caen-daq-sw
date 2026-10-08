@@ -34,8 +34,6 @@ export const api = {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...cfg, base_rev: baseRev ?? null }),
     }).then(j<ConfigResult>),
-  resetDefault: () =>
-    fetch("/api/config/default", { method: "POST" }).then(j<ConfigResult>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () =>
     fetch("/api/acq/start", { method: "POST" }).then(j<Status & { started: boolean }>),

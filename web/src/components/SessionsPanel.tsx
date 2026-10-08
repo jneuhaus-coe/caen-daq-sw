@@ -181,8 +181,9 @@ export function SessionsPanel({ recording, onApplied, onError, onSaved, onImport
           e.target.value = "";      // let the same file be picked twice
         }} />
       <p className="muted">
-        The unit keeps its settings across daq restarts on its own; a session
-        is the one click back after a board power-cycle.
+        A power cycle resets the unit, and channel names, correction and
+        dump settings are not stored on it at all. Apply a session to get
+        everything back.
       </p>
     </div>
   );

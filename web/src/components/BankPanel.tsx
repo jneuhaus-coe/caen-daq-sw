@@ -6,14 +6,12 @@ interface Props {
   catalog: Catalog;
   config: BoardConfig;
   onGroupChange: (group: number, key: string, value: any) => void;
-  locked?: (key: string) => boolean;
-  onToggleLock?: (key: string) => void;
 }
 
 /** Each bank collapses independently, enabled or not — the enable lives inside
  *  the bank it belongs to rather than floating above it. */
 export function BankPanel({ catalog, config, onGroupChange,
-                            locked, onToggleLock }: Props) {
+                            }: Props) {
   const gsize = catalog.geometry.group_size;
   return (
     <div className="bank-settings">
@@ -31,8 +29,6 @@ export function BankPanel({ catalog, config, onGroupChange,
             get={(k) => (g as any)[k]}
             onChange={(k, v) => onGroupChange(gi, k, v)}
             skip={["fast_trigger_threshold", "fast_trigger_dc_offset"]}
-            locked={locked} onToggleLock={onToggleLock}
-            lockPrefix={`bank${gi}:`}
           />
         </Collapsible>
       ))}
