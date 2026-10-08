@@ -19,12 +19,17 @@ body { background: var(--bg); color: var(--text); font: 13.5px/1.45 system-ui, -
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 .muted { color: var(--muted); font-size: 12px; }
 
+/* Two rows: the app bar (view, unit, acquisition) and the Record row. Nothing
+   in either may wrap - a label broken over two lines reads as two controls. */
 header {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--panel); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
-header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px; }
+header button, header label, header .pill, header .conn { white-space: nowrap; }
+.appbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; min-width: 0; }
+header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .3px;
+            white-space: nowrap; }
 .spacer { flex: 1; }
 .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px;
         background: #21262d; color: var(--muted);
@@ -73,7 +78,8 @@ button:disabled { opacity: .45; cursor: default; }
 
 .body { display: grid; grid-template-columns: 1fr 360px; gap: 14px; padding: 14px; align-items: start; }
 main { min-width: 0; }
-aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 63px; }
+aside { display: flex; flex-direction: column; gap: 12px; position: sticky;
+        top: calc(var(--header-h, 92px) + 14px); }
 
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .card h2, .grid-head h2 {
@@ -83,9 +89,9 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .card h2 .sub, .grid-head .sub { text-transform: none; letter-spacing: 0; color: #6e7681; font-weight: 500; }
 
 /* channel grid */
-.grid-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.grid-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; white-space: nowrap; }
 .grid-head h2 { margin: 0; }
-.legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .legend .lg::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 .lg.live::before { background: var(--green); } .lg.dead::before { background: var(--purple); }
 .lg.clip::before { background: var(--orange); } .lg.off::before { background: #3a4150; }
@@ -108,11 +114,20 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .bank.off { opacity: .5; border-style: dashed; }
 .bank .grid16 { padding: 0 10px 10px; }
 
-.grid16 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+/* minmax(0, 1fr), not 1fr: a 1fr track never shrinks below its content, so
+   a tile whose controls were a little wide pushed the grid out of its bank. */
+.grid16 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+/* Columns follow the space the bank actually has, not the viewport: a tile
+   needs ~200px for its DC-offset row (lock, label, slider, field), and the
+   viewport breakpoint let 4 columns squeeze tiles to ~155px and spill out. */
+.bank { container-type: inline-size; }
+@container (max-width: 860px) { .grid16 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 440px) { .grid16 { grid-template-columns: minmax(0, 1fr); } }
 .tile {
   /* now a plain container: it holds inputs, so it cannot be a <button> */
   text-align: left; padding: 7px 8px 5px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
 }
 .tile:hover { border-color: #4b5563; }
 .tile.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -133,7 +148,10 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 }
 
 /* per-channel settings live with the chart, not in a separate inspector */
-.tile-dc { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin-top: 4px; }
+.tile-dc { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin-top: 4px;
+           min-width: 0; }
+.tile-dc label { white-space: nowrap; }
+.tile-dc .field { flex: none; }
 .tile-dc label { color: var(--muted); }
 .tile-dc input {
   width: 62px; font: inherit; font-variant-numeric: tabular-nums;
@@ -143,7 +161,7 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .tile-dc .unit { color: var(--muted); margin-right: auto; }
 /* the slider owns the spare width; the numeric field keeps its fixed 62px */
 .tile-dc input.dc-slider {
-  flex: 1; width: auto; min-width: 40px; padding: 0; border: none;
+  flex: 1; width: auto; min-width: 0; padding: 0; border: none;
   background: transparent; accent-color: #4a7dcf; height: 14px;
 }
 
@@ -257,14 +275,6 @@ aside { display: flex; flex-direction: column; gap: 12px; position: sticky; top:
 .setting-row .unit { color: var(--muted); }
 .setting-row .help { grid-column: 1 / -1; font-size: 11px; color: #6e7681; }
 
-/* Optional settings: [checkbox] [label] [control]. An unchecked row is pinned
-   to its default, so it reads muted but stays legible - the operator should
-   still see WHAT the default is, just not mistake it for a choice they made. */
-.setting-row.optional { grid-template-columns: auto 1fr auto; }
-.setting-row.optional input[type="checkbox"]:first-child { margin: 0; }
-.setting-row.optional.off label { color: var(--muted); }
-.setting-row.optional.off select,
-.setting-row.optional.off .field input { opacity: 0.55; }
 .settings-divider {
   display: flex; align-items: center; gap: 8px; margin-top: 4px;
   font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
@@ -383,7 +393,6 @@ select { min-width: 90px; }
 @media (max-width: 1100px) {
   .body { grid-template-columns: 1fr; }
   aside { position: static; }
-  .grid16 { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* nested collapsibles (each bank inside Bank Settings) */
@@ -396,7 +405,6 @@ select { min-width: 90px; }
            text-transform: none; letter-spacing: 0; }
 
 
-/* config actions: Load/Save together, Reset held apart */
 /* sessions: save row + one line per saved session */
 .session-save { display: flex; gap: 8px; margin-bottom: 8px; }
 .session-save input { flex: 1; min-width: 0; }
@@ -411,9 +419,22 @@ select { min-width: 90px; }
 }
 .session-row .session-date { color: var(--muted); font-size: 10.5px; }
 .session-row button { padding: 1px 8px; font-size: 11px; }
+/* More: Download / Export Board Config / Delete, as words in a dropdown. */
+.session-more { position: relative; }
+.session-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
+  display: flex; flex-direction: column; min-width: 170px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.session-row .session-menu button {
+  text-align: left; padding: 5px 9px; font-size: 12px; white-space: nowrap;
+  background: none; border: 1px solid transparent;
+}
+.session-row .session-menu button:hover { background: #21262d; border-color: transparent; }
+.session-menu button.danger { color: var(--red); }
+.session-import { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 
-.config-btns { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.config-btns .spacer { flex: 1; }
 button.danger { border-color: #6b2226; color: var(--red); }
 button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--red); }
 
@@ -510,20 +531,36 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 .hw-lock:disabled .tile .ch { cursor: default; }
 
 /* acquire vs record: two separate actions, visibly separate controls */
-.run-controls { display: flex; align-items: center; gap: 8px; }
+.run-controls {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-top: 1px solid var(--border); background: #12151b;
+  overflow-x: auto;
+}
 .acq-group, .rec-group { display: flex; align-items: center; gap: 6px; }
-.acq-group:empty { display: none; }
+/* State and event count read as one indicator. */
+.acq-state {
+  display: inline-flex; align-items: center; gap: 0;
+  border-radius: 999px; background: #21262d; border: 1px solid transparent;
+}
+.acq-state .pill.state { border-radius: 999px 0 0 999px; }
+.acq-count { font-size: 12px; padding: 0 10px 0 6px; color: var(--muted); white-space: nowrap; }
+.acq-state.acquiring, .acq-state.recording { border-color: #1c5233; }
+.acq-state.acquiring .acq-count, .acq-state.recording .acq-count { color: #7fd6a0; }
 
 .help-btn {
   width: 26px; height: 26px; padding: 0; border-radius: 50%;
   font-size: 13px; font-weight: 700; line-height: 1; flex: none;
   display: grid; place-items: center;
 }
-.rec-group {
-  padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border);
-  background: #12151b;
+/* Right-aligned, under the acquisition controls it follows on from. An auto
+   margin rather than justify-content: flex-end, which would push an
+   overflowing row off the LEFT edge, out of scroll reach. */
+.rec-group { padding: 2px 0; margin-left: auto; }
+.rec-group.on {
+  padding: 2px 8px; border-radius: 8px;
+  border: 1px solid #6b2226; background: #2a1416;
 }
-.rec-group.on { border-color: #6b2226; background: #2a1416; }
+.rec-group .rec-label:not(:first-child) { margin-left: 6px; }
 .rec-label { font-size: 11px; color: var(--muted); }
 .rec-stamp { display: inline-flex; align-items: center; gap: 4px;
              font-size: 11px; color: var(--muted); cursor: pointer; }
@@ -625,21 +662,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   position: relative; z-index: 1; font-weight: 650;
 }
 
-/* the settings lock: one big switch, per-setting exceptions */
-.lock-all {
-  margin-left: 10px; font-size: 12px; padding: 4px 12px; cursor: pointer;
-  border-radius: 6px; border: 1px solid var(--border);
-  background: #12151b; color: var(--muted);
-}
-.lock-all.on { background: #3a2a12; color: #e3b341; border-color: #7a5a1e; }
-.lock-chip {
-  background: none; border: none; cursor: pointer; padding: 0 4px;
-  font-size: 13px; line-height: 1; opacity: .85;
-}
-.lock-chip:hover { opacity: 1; background: none; border: none; }
-.tile { position: relative; }
-.tile-lock { position: absolute; right: 6px; bottom: 34px; z-index: 2; }
-.tile-dc.locked input { pointer-events: none; opacity: .45; }
 
 /* experiment view layout */
 main.experiment { overflow-y: auto; }
@@ -765,11 +787,18 @@ main.experiment { overflow-y: auto; }
    the control is greyed out but still shows the board's value; unlocked it
    is an ordinary editable setting. */
 .setting-row.lockable { grid-template-columns: auto 1fr auto; }
+/* Same colour as the label beside it - muted together when locked - so it
+   reads as part of the setting, not as a separately highlighted control. */
 .lock-toggle {
-  background: none; border: none; cursor: pointer; padding: 0 2px;
-  font-size: 13px; line-height: 1; opacity: .85;
+  display: inline-grid; place-items: center;
+  background: none; border: none; padding: 0 2px; cursor: pointer;
+  color: inherit; line-height: 0;
 }
-.lock-toggle:hover { opacity: 1; background: none; border: none; }
+.lock-toggle:hover:not(:disabled) { background: none; border: none; color: var(--text); }
+.setting-row.lockable.locked .lock-toggle { color: var(--muted); }
+/* A row that is not lockable keeps its label in line with the ones that are. */
+.lock-spacer { display: inline-block; width: 16px; }
+.setting-row.lockable.locked .tr-rel-note { opacity: .55; }
 .setting-row.lockable.locked label { color: var(--muted); }
 .setting-row.lockable.locked select,
 .setting-row.lockable.locked .field input { opacity: 0.55; }
@@ -787,3 +816,18 @@ main.experiment { overflow-y: auto; }
    position: relative makes each row's offsetTop count from the list. */
 .runs { position: relative; }
 .runs.scrolls { overflow-y: auto; padding-right: 4px; }
+
+/* Avg mode's window (span or count) and the Clear button, riding along with
+   the display-mode toggle like the scope's controls. */
+.avg-ctl, .wave-clear {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 10px; font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.avg-ctl input { width: 62px; font-size: 11px; padding: 2px 4px; }
+.avg-ctl select { min-width: 0; font-size: 11px; padding: 2px 4px; }
+.wave-clear button { font-size: 11px; padding: 2px 10px; border-radius: 5px; }
+.scope-idle {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 10px;
+  font-size: 11px; color: var(--orange); white-space: nowrap;
+}
+.scope-idle button { font-size: 11px; padding: 1px 8px; border-radius: 5px; }

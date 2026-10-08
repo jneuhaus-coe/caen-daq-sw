@@ -45,6 +45,16 @@ def _path(name: str) -> str:
 
 
 # ---------- display preferences (the "current" state, autosaved) ----------
+# Bumped on every write and published in /api/status, so every open window
+# picks up another window's locks, ranges and mode instead of overwriting them
+# with its own stale copy. Clock-seeded for the same reason as config_rev.
+_display_rev = int(time.time())
+
+
+def display_rev() -> int:
+    return _display_rev
+
+
 def get_display() -> dict:
     try:
         with open(_display_path()) as f:
@@ -55,6 +65,8 @@ def get_display() -> dict:
 
 
 def set_display(display: dict) -> None:
+    global _display_rev
+    _display_rev += 1
     os.makedirs(runtime.state_dir(), exist_ok=True)
     tmp = _display_path() + ".tmp"
     with open(tmp, "w") as f:
@@ -124,7 +136,7 @@ def save(name: str, config: dict, display: dict,
     if not name:
         return None
     os.makedirs(_dir(), exist_ok=True)
-    record = {"format": "dt5742b-daq/session", "version": 1,
+    record = {"format": SESSION_FORMAT, "version": 1,
               "name": name, "saved_at": time.time(),
               "config": config, "display": display,
               # The experiment context is part of a named state too: applying
@@ -152,3 +164,63 @@ def delete(name: str) -> bool:
         return True
     except OSError:
         return False
+
+
+# ---------- import ----------
+SESSION_FORMAT = "dt5742b-daq/session"
+
+
+def _unique_name(base: str) -> str:
+    base = safe_name(base) or "imported"
+    name, n = base, 2
+    while os.path.exists(_path(name)):
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def import_text(text: str, filename: str = "") -> dict:
+    """Add a file to the session list - never to the unit; Apply does that.
+
+    A session file (Download's output) comes back whole. Anything else is
+    read as a board config in any format the config loader knows (this
+    app's JSON, WaveDumpConfig.txt, the legacy format) and becomes a session
+    holding ONLY that config: no display or conditions, so applying it
+    leaves the plots and the experiment facts alone. Raises ValueError when
+    the file is neither."""
+    from . import configfile
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    try:
+        d = json.loads(text)
+    except ValueError:
+        d = None
+    if (isinstance(d, dict) and d.get("format") == SESSION_FORMAT
+            and isinstance(d.get("config"), dict)):
+        record = {**d, "name": _unique_name(d.get("name") or stem),
+                  "saved_at": time.time(), "imported_from": filename}
+        notes: list[str] = []
+        kind = "session"
+    else:
+        try:
+            cfg, notes = configfile.from_text(text)
+        except Exception as e:
+            raise ValueError(f"not a session or a config file this app knows: {e}")
+        # The WaveDump reader is lenient - it skips keys it does not know -
+        # so any text "parses". A file in which it recognised nothing at all
+        # is not a config, and saving it would add a session of defaults.
+        lines = [ln.split("#")[0].strip() for ln in text.splitlines()]
+        lines = [ln for ln in lines if ln and not ln.startswith("[")]
+        ignored = sum(1 for n in notes if n.startswith("ignored unknown key"))
+        if not text.lstrip().startswith("{") and ignored >= len(lines):
+            raise ValueError("not a session or a config file this app knows: "
+                             "nothing in it is a setting")
+        record = {"format": SESSION_FORMAT, "version": 1,
+                  "name": _unique_name(stem), "saved_at": time.time(),
+                  "config": cfg.to_dict(), "display": None, "conditions": None,
+                  "imported_from": filename}
+        kind = "config"
+    os.makedirs(_dir(), exist_ok=True)
+    tmp = _path(record["name"]) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(record, f, indent=2)
+    os.replace(tmp, _path(record["name"]))
+    return {"name": record["name"], "kind": kind, "notes": notes}

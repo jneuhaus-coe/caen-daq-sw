@@ -4,6 +4,7 @@ enabled channels + a rolling rate window) at a fixed cadence."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -75,8 +76,17 @@ class _UiFiles(StaticFiles):
         return response
 
 
+def _apply_avg_prefs(engine: AcquisitionEngine, display: dict) -> None:
+    """The display average's window lives with the display prefs, so a
+    restart or an applied session comes back to the same averaging."""
+    avg = display.get("avg") if isinstance(display, dict) else None
+    if isinstance(avg, dict):
+        engine.set_average(avg.get("mode"), avg.get("seconds"), avg.get("events"))
+
+
 def create_app(engine: AcquisitionEngine) -> FastAPI:
     app = FastAPI(title="DT5742B DAQ")
+    _apply_avg_prefs(engine, sessions.get_display())
 
     @app.get("/api/status")
     def status():
@@ -86,7 +96,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         # `daq stop` confirm the pid in the runtime file is really this server's
         # before it signals it - that record outlives crashes, and pids are
         # recycled, so acting on it unchecked can signal an unrelated process.
-        return {**engine.status(), "app": "dt5742b-daq", "version": __version__,
+        return {**engine.status(), "display_rev": sessions.display_rev(),
+                "app": "dt5742b-daq", "version": __version__,
                 "pid": os.getpid(), "log_file": logsetup.active_log_path(),
                 "ui_assets": ui_assets()}
 
@@ -181,8 +192,25 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
 
     @app.post("/api/display")
     def set_display(payload: dict):
-        """Autosaved UI state (waveform Y ranges). Never touches the board."""
-        sessions.set_display(payload or {})
+        """Autosaved UI state (waveform Y ranges, locks). Never touches the
+        board. MERGED into what is stored, so a window that does not know a
+        key (the average window, set through /api/average) cannot drop it."""
+        sessions.set_display({**sessions.get_display(), **(payload or {})})
+        return {"ok": True}
+
+    @app.post("/api/average")
+    def set_average(payload: dict | None = None):
+        """The display average: {"mode": "time"|"events", "seconds": 1,
+        "events": 100}, any subset. Display only; persisted with the
+        display prefs."""
+        p = payload or {}
+        avg = engine.set_average(p.get("mode"), p.get("seconds"), p.get("events"))
+        sessions.set_display({**sessions.get_display(), "avg": avg})
+        return {"ok": True, "avg": avg}
+
+    @app.post("/api/average/clear")
+    def clear_average():
+        engine.clear_average()
         return {"ok": True}
 
     @app.get("/api/conditions")
@@ -202,6 +230,44 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     @app.get("/api/sessions")
     def list_sessions():
         return {"sessions": sessions.listing()}
+
+    @app.post("/api/session-import")
+    async def import_session(request: Request, filename: str = ""):
+        """Add a file to the session list (never to the unit): a session
+        file, or a board config in any format Load accepts."""
+        text = (await request.body()).decode("utf-8", errors="replace")
+        try:
+            r = sessions.import_text(text, filename)
+        except ValueError as e:
+            logsetup.did(log, f"Importing {filename or 'a file'} as a session",
+                         f"Refused: {e}", level=logging.WARNING)
+            raise HTTPException(400, str(e))
+        logsetup.did(log, f"Importing {filename or 'a file'} as a session",
+                     f"Saved as {r['name']!r}")
+        return {"ok": True, **r}
+
+    @app.get("/api/sessions/{name}/file")
+    def download_session(name: str):
+        """The session record itself - Import takes it back, here or on
+        another machine."""
+        s = sessions.load(name)
+        if s is None:
+            raise HTTPException(404, "no such session")
+        return Response(json.dumps(s, indent=2), media_type="application/json",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{s.get("name") or name}.session.json"'})
+
+    @app.get("/api/sessions/{name}/config")
+    def export_session_config(name: str):
+        """Just the session's board config, in the config-file format (what
+        Load and other copies of this app read)."""
+        s = sessions.load(name)
+        if s is None:
+            raise HTTPException(404, "no such session")
+        body = configfile.to_json(BoardConfig.from_dict(s["config"]))
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{s.get("name") or name}-board-config.json"'})
 
     @app.post("/api/sessions/{name}")
     def save_session(name: str):
@@ -225,7 +291,10 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         with logsetup.step(log, f"Applying session {name!r}") as applying:
             cfg, errs = engine.set_config(BoardConfig.from_dict(s["config"]))
             if isinstance(s.get("display"), dict):
-                sessions.set_display(s["display"])
+                # A session saved before the average was configurable keeps
+                # the current window rather than dropping it from the prefs.
+                sessions.set_display({"avg": engine.set_average(), **s["display"]})
+                _apply_avg_prefs(engine, s["display"])
             if isinstance(s.get("conditions"), list):
                 sessions.set_conditions(s["conditions"])
             st = engine.status()

@@ -11,6 +11,13 @@ import time
 import numpy as np
 from fastapi.testclient import TestClient
 
+# Every engine here adopts configs, and adopting one saves the last-used file
+# - so without this the suite would write test channel names over the
+# operator's real ones. Set before daq is imported; tests that point the
+# state dir elsewhere restore this, not the real one.
+_STATE = tempfile.mkdtemp(prefix="daq-smoke-state-")
+os.environ["LOCALAPPDATA" if os.name == "nt" else "XDG_STATE_HOME"] = _STATE
+
 from daq.acquisition import AcquisitionEngine
 from daq.config import default_config, BoardConfig
 from daq.stats import RollingAverage, TriggerRateMeter, decimate
@@ -55,6 +62,24 @@ def test_rolling_average_matches_numpy():
         avg.add(0, w, t=now)  # all within the (real-clock) window
     mean, count = avg.snapshot(0)
     assert count == 3 and np.allclose(mean, np.mean(waves, axis=0))
+
+
+def test_rolling_average_event_window():
+    # "events" mode: exactly the last N while N fits in the buckets, and it
+    # holds still when triggers stop (no time eviction).
+    avg = RollingAverage(mode="events", window_n=3)
+    for k in range(10):
+        avg.add(0, np.full(4, k, dtype=np.float32), t=float(k))
+    mean, count = avg.snapshot(0)
+    assert count == 3 and np.allclose(mean, 8.0)
+    # Past the bucket count the window is N plus at most one bucket.
+    avg.configure("events", 1.0, 1000)
+    for k in range(5000):
+        avg.add(0, np.full(4, k, dtype=np.float32), t=0.0)
+    _, count = avg.snapshot(0)
+    assert 1000 <= count <= 1000 + -(-1000 // 64)
+    avg.clear()
+    assert avg.snapshot(0) == (None, 0)
 
 
 def test_decimate():
@@ -416,6 +441,85 @@ def test_root_writer_matches_the_radical_layout():
 
         meta = json.load(open(os.path.join(d, "run_metadata.json")))
         assert meta["events"] == 3 and meta["output_format"] == "root"
+
+
+def test_power_cycle_while_acquiring_is_noticed():
+    """A unit switched off and on under a running acquisition came back
+    disarmed, reads returned nothing, and the UI said "acquiring" for ever.
+    The readout thread now asks the board (armed) once things go quiet, and
+    status gives up on a read that never comes back."""
+    import threading
+    from daq.backend.fake import FakeBackend
+    saved = (C.QUIET_CHECK_S, C.READ_STALL_S)
+    C.QUIET_CHECK_S, C.READ_STALL_S = 0.2, 0.3
+    stuck, release = threading.Event(), threading.Event()
+
+    class Board(FakeBackend):
+        def read_events(self):
+            if stuck.is_set():
+                release.wait(5)
+                return []
+            return super().read_events()
+
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe() and eng.start()
+        eng._backend._running = False          # the power cycle
+        deadline = time.monotonic() + 3
+        while eng.status()["running"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        st = eng.status()
+        assert not st["running"] and not st["opened"]
+
+        # A read stuck in the driver: status stops waiting for it...
+        eng._last_open_attempt = 0.0
+        assert eng.probe() and eng.start()
+        stuck.set()
+        time.sleep(0.5)
+        eng.probe()
+        assert not eng.status()["running"]
+        # ...and when the call finally returns, that thread just leaves.
+        stuck.clear()
+        release.set()
+        eng._last_open_attempt = 0.0
+        assert eng.probe() and eng.start()
+        assert eng.status()["running"]
+    finally:
+        C.QUIET_CHECK_S, C.READ_STALL_S = saved
+        release.set()
+        eng.close()
+
+
+def test_settings_the_unit_cannot_hold_survive_a_daq_restart():
+    """Names, output options and the library's BLT limit live nowhere on the
+    unit; they used to reset on every daq restart. Now a new engine (a new
+    process) seeds them from the last-used file - and a fresh handle's
+    library-default BLT limit does not override the one in use."""
+    from daq.backend.fake import FakeBackend
+
+    class Board(FakeBackend):
+        def read_settings(self, cfg):
+            out, errs = super().read_settings(cfg)
+            out.max_events_blt = 1023        # what a fresh library handle says
+            return out, errs
+
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe()
+        cfg = eng.get_config()
+        cfg.channels[3].name = "Upstream"
+        cfg.output_format, cfg.correction_level, cfg.max_events_blt = "binary", "auto", 5
+        eng.set_config(cfg)
+    finally:
+        eng.close()
+    eng = AcquisitionEngine(Board)
+    try:
+        assert eng.probe()
+        c = eng.get_config()
+        assert c.channels[3].name == "Upstream"
+        assert (c.output_format, c.correction_level, c.max_events_blt) == ("binary", "auto", 5)
+    finally:
+        eng.close()
 
 
 def test_fake_backend_behaves_like_a_board():
@@ -831,6 +935,25 @@ def test_sessions_and_display_roundtrip():
             assert a["connected"] is False and a["ok"] is False   # no unit
             assert a["display"]["y_ranges"]["3"] == [-0.5, 0.25]  # still lands
 
+            # Download -> Import gives the session back, under a fresh name
+            # rather than over the original.
+            f = c.get("/api/sessions/cosmics nov/file")
+            assert "cosmics nov.session.json" in f.headers["content-disposition"]
+            r = c.post("/api/session-import?filename=cosmics nov.session.json",
+                       content=f.content).json()
+            assert r["kind"] == "session" and r["name"] == "cosmics nov-2"
+            # Export Board Config is a config file, so Import reads it as a
+            # config-only session: applying it leaves the display alone.
+            cf = c.get("/api/sessions/cosmics nov/config")
+            assert json.loads(cf.content)["format"] == "dt5742b-daq/config"
+            r = c.post("/api/session-import?filename=beam.json", content=cf.content).json()
+            assert r["kind"] == "config" and r["name"] == "beam"
+            c.post("/api/display", json={"y_ranges": {"3": [-0.1, 0.1]}})
+            c.post("/api/sessions/beam/apply")
+            assert c.get("/api/display").json()["y_ranges"]["3"] == [-0.1, 0.1]
+            assert c.post("/api/session-import?filename=x.txt",
+                          content=b"\x00not a config").status_code == 400
+
             assert c.delete("/api/sessions/cosmics nov").json()["ok"]
             assert c.post("/api/sessions/cosmics nov/apply").status_code == 404
         finally:
@@ -1130,7 +1253,8 @@ def test_log_lines_carry_no_durations():
 
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
-               test_rolling_average_matches_numpy, test_decimate,
+               test_rolling_average_matches_numpy, test_rolling_average_event_window,
+               test_decimate,
                test_http_api, test_config_write_is_refused_with_no_unit,
                test_a_refused_write_is_reported_even_with_a_full_error_log,
                test_config_values_are_range_checked,
@@ -1145,6 +1269,8 @@ if __name__ == "__main__":
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
+               test_power_cycle_while_acquiring_is_noticed,
+               test_settings_the_unit_cannot_hold_survive_a_daq_restart,
                test_pulse_shift_leaves_fitting_channels_at_zero_offset,
                test_pulse_shift_slides_a_clipped_pulse_into_view,
                test_dac_changes_rearm_while_acquiring_and_refuse_while_recording,

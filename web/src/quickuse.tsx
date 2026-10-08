@@ -53,7 +53,7 @@ export const QUICK_USE: TourStep[] = [
     ),
   },
   {
-    target: ".run-controls",
+    target: "header",
     placement: "below-left",
     title: "3. Watch, then record",
     body: (

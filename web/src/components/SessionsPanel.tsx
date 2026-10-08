@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { DisplayPrefs, SessionInfo } from "../api";
 import type { BoardConfig } from "../types";
@@ -9,23 +9,47 @@ interface Props {
               errors: string[], connected: boolean, name: string) => void;
   onError: (title: string, lines?: string[]) => void;
   onSaved: (name: string) => void;
+  onImported: (name: string, kind: "session" | "config", notes: string[]) => void;
 }
 
 /** Named snapshots of the whole operator-facing state: board config (channel
- *  names included) plus the display ranges. Hardware settings already survive
- *  daq restarts on the unit itself; a session is the one click back to a known
- *  state after a board power-cycle - and a name ("cosmics-nov") for it.
+ *  names included) plus the display ranges and the experiment conditions.
+ *  Hardware settings already survive daq restarts on the unit itself; a
+ *  session is the one click back to a known state after a board power-cycle
+ *  - and a name ("cosmics-nov") for it.
+ *
+ *  Each row: Apply, and a More menu (Download the session, Export just its
+ *  board config, Delete). Import, once for the card, adds a file to the list
+ *  - never to the unit.
  *
  *  Apply is deliberately blocked while recording: rewriting offsets under a
  *  run corrupts the data it is collecting. */
-export function SessionsPanel({ recording, onApplied, onError, onSaved }: Props) {
+export function SessionsPanel({ recording, onApplied, onError, onSaved, onImported }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = () =>
     api.listSessions().then((r) => setSessions(r.sessions)).catch(() => {});
   useEffect(() => { refresh(); }, []);
+
+  // The menu closes on a click anywhere else, or Escape.
+  useEffect(() => {
+    if (menuFor == null) return;
+    const down = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuFor(null);
+    };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuFor(null); };
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      document.removeEventListener("keydown", key);
+    };
+  }, [menuFor]);
 
   const save = async () => {
     const n = name.trim();
@@ -65,6 +89,26 @@ export function SessionsPanel({ recording, onApplied, onError, onSaved }: Props)
     }
   };
 
+  // A real download: the server's Content-Disposition names the file.
+  const download = (url: string) => {
+    const a = document.createElement("a");
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const importFile = async (file: File) => {
+    try {
+      const r = await api.importSession(await file.text(), file.name);
+      await refresh();
+      onImported(r.name, r.kind, r.notes ?? []);
+    } catch (e) {
+      onError(`Could not import ${file.name}`,
+              [e instanceof Error ? e.message : String(e)]);
+    }
+  };
+
   return (
     <div className="card">
       <h2>Sessions</h2>
@@ -73,7 +117,7 @@ export function SessionsPanel({ recording, onApplied, onError, onSaved }: Props)
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
         <button disabled={busy || !name.trim()} onClick={save}
-          title="Snapshot the current settings and display under this name">
+          title="Snapshot the current settings, display and experiment conditions under this name">
           Save session
         </button>
       </div>
@@ -91,17 +135,55 @@ export function SessionsPanel({ recording, onApplied, onError, onSaved }: Props)
                   : "Write this session to the unit and restore its display"}>
                 Apply
               </button>
-              <button className="danger" onClick={() => remove(s.name)}
-                title="Delete this session">&times;</button>
+              <div className="session-more" ref={menuFor === s.name ? menuRef : undefined}>
+                <button aria-haspopup="menu" aria-expanded={menuFor === s.name}
+                  onClick={() => setMenuFor(menuFor === s.name ? null : s.name)}>
+                  More &#9662;
+                </button>
+                {menuFor === s.name ? (
+                  <div className="session-menu" role="menu">
+                    <button role="menuitem"
+                      title="Save this session as a file - Import brings it back, here or on another DAQ"
+                      onClick={() => { setMenuFor(null); download(api.sessionFileUrl(s.name)); }}>
+                      Download
+                    </button>
+                    <button role="menuitem"
+                      title="Save only this session's board settings, as a config file"
+                      onClick={() => { setMenuFor(null); download(api.sessionConfigUrl(s.name)); }}>
+                      Export Board Config
+                    </button>
+                    <button role="menuitem" className="danger"
+                      onClick={() => { setMenuFor(null); remove(s.name); }}>
+                      Delete
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
       ) : (
         <p className="muted">No sessions saved yet.</p>
       )}
+      <div className="session-import">
+        <button onClick={() => fileRef.current?.click()}
+          title="Add a file to this list: a downloaded session, or a board config (this app's, a WaveDumpConfig.txt, or the legacy format). Nothing is sent to the unit until you Apply it.">
+          Import…
+        </button>
+        <span className="muted">a session or a board config file</span>
+      </div>
+      <input ref={fileRef} type="file"
+        accept=".json,.txt,.conf,text/plain,application/json"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importFile(f);
+          e.target.value = "";      // let the same file be picked twice
+        }} />
       <p className="muted">
-        The unit keeps its settings across daq restarts on its own; a session
-        is the one click back after a board power-cycle.
+        A power cycle resets the unit, and channel names, correction and
+        dump settings are not stored on it at all. Apply a session to get
+        everything back.
       </p>
     </div>
   );

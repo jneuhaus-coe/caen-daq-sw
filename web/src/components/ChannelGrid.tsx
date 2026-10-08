@@ -17,9 +17,6 @@ interface Props {
   onYRange: (ch: number, range: [number, number] | null, all: boolean) => void;
   waveMode: "avg" | "overlay" | "scope";
   clearEpoch: number;
-  /** The settings lock, keyed "ch:<n>" per channel offset. */
-  locked?: (key: string) => boolean;
-  onUnlock?: (key: string) => void;
   /** Per-board 0 V calibration; display only. Absent = UM4270 nominal. */
   zc?: ZeroCal | null;
 }
@@ -34,7 +31,7 @@ const RAIL_LO = 5, RAIL_HI = 4090;  // 12-bit corrected range clip guards
 
 export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                               yRanges, onYRange, waveMode, clearEpoch,
-                              locked, onUnlock, zc }: Props) {
+                              zc }: Props) {
   const g = catalog.geometry;
   const gsize = g.group_size;
   // undefined = follow the bank's enabled flag; set = the user overrode it
@@ -141,16 +138,7 @@ export function ChannelGrid({ catalog, config, tele, onDcOffset, onName,
                         zeroCode={zeroCodeAt(line, shownDac, g)}
                         clearEpoch={clearEpoch} />
 
-                      {(() => {
-                        const chLocked = locked?.(`ch:${ch}`) ?? false;
-                        if (!chLocked) return null;
-                        return (
-                          <button className="lock-chip tile-lock"
-                            title="DC offset locked. Click to unlock just this channel."
-                            onClick={() => onUnlock?.(`ch:${ch}`)}>🔒</button>
-                        );
-                      })()}
-                      <div className={"tile-dc" + ((locked?.(`ch:${ch}`) ?? false) ? " locked" : "")}
+                      <div className="tile-dc"
                         title={`${dcHelp}\n\nDAC word: ${shownDac}`}>
                         <label>DC offset</label>
                         {/* Coarse placement by slider (0.01 V steps, previewed

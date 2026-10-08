@@ -6,6 +6,8 @@ interface Props {
   steps: Step[];
   value: number;                 // current percent
   onChange: (pct: number) => void;
+  /** Locked: the same field and arrows, greyed - never a bare number. */
+  disabled?: boolean;
 }
 
 /** A setting the hardware can only take certain values of.
@@ -17,7 +19,7 @@ interface Props {
  *  Shown in time, because a percentage that goes 24 -> 29 -> 33 reads as broken
  *  while the underlying register steps are perfectly regular. Where the trigger
  *  actually lands is shown on the channel charts, scope-style. */
-export function StepControl({ steps, value, onChange }: Props) {
+export function StepControl({ steps, value, onChange, disabled }: Props) {
   const i = nearestIndex(steps, value, "pct");
   const cur = steps[i];
 
@@ -30,7 +32,7 @@ export function StepControl({ steps, value, onChange }: Props) {
     <span className="step-input">
         <span className="field">
           <BlurInput
-            type="number" selectOnFocus
+            type="number" selectOnFocus disabled={disabled}
             value={cur ? cur.ns : 0}
             format={(raw) => String(steps[nearestIndex(steps, Number(raw || 0), "ns")].ns)}
             onCommit={(v) => {
@@ -41,10 +43,10 @@ export function StepControl({ steps, value, onChange }: Props) {
           <span className="unit">ns</span>
         </span>
         <span className="steppers">
-          <button className="stepper" disabled={i >= steps.length - 1}
+          <button className="stepper" disabled={disabled || i >= steps.length - 1}
             onClick={() => step(1)} title="Next reachable setting"
             aria-label="increase">&#9652;</button>
-          <button className="stepper" disabled={i <= 0}
+          <button className="stepper" disabled={disabled || i <= 0}
             onClick={() => step(-1)} title="Previous reachable setting"
             aria-label="decrease">&#9662;</button>
       </span>

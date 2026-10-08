@@ -242,6 +242,17 @@ driver is missing.
   anything that must see an offset take effect (the calibrator) stops,
   writes, re-arms, then measures; a slider tweak mid-acquisition looks
   applied but is not, until the next re-arm.
+- **A power cycle under a running acquisition must end "acquiring".** It
+  used not to: the unit came back disarmed, reads failed too slowly or not
+  at all, and the UI said acquiring indefinitely. Now the readout thread,
+  after `QUIET_CHECK_S` with no events, reads 0x8104 bit 2 (RUN, UM5698 sec
+  1.20) via `backend.armed()` - on its own thread, so it never races
+  ReadData - and a disarmed board is treated as lost (reopen re-reads its
+  settings). A read stuck in the driver past `READ_STALL_S` is abandoned
+  by status(); the loop's generation counter keeps that thread from acting
+  if its call ever returns. Verified on serial 53364 that a quiet, armed
+  board reads RUN=1 (no false loss); the power-cycle path itself is covered
+  only by the fake-backend smoke test.
 - **The Windows CAEN USB driver can wedge, and the signature is distinctive:**
   `OpenDigitizer` returns `-1` on a board Device Manager shows healthy, an
   occasional open *hangs* inside the driver instead of returning (one took 66 s
@@ -307,7 +318,7 @@ server/daq/
   backend/
     base.py        DigitizerBackend ABC + Event/BoardInfo  <-- the hardware seam
     caen.py        real board via ctypes
-  stats.py         time-windowed RollingAverage + fixed-window TriggerRateMeter + decimate
+  stats.py         RollingAverage (time or event window) + TriggerRateMeter + decimate
   runs.py          recorded runs on disk: create/list/zip/delete
   writer.py        Writer interface + WaveDump-compatible writer
   acquisition.py   threaded readout engine + telemetry snapshots
@@ -616,14 +627,22 @@ Never let the UI show a setting the hardware did not confirm.
 
 ## UI conventions
 
-- **Lockable settings (the house style).** A lock icon button sits to the
-  LEFT of the setting's label and toggles it. Locked: the control is greyed
-  out but still shows the board's value - protection, not concealment.
-  Unlocked: an ordinary editable setting. CSS: `.setting-row.lockable`
-  (+ `.locked`), `.lock-toggle`. The TR DC offset (TR0 card) is the first
-  setting built this way and is **locked by default**. The older settings
-  still use the global "lock everything" mode with per-setting unlock chips
-  on the right; move them to this pattern only when asked.
+- **Lockable settings (the house style).** A monochrome line-icon lock
+  button (`LockToggle`, `currentColor` - it reads like the label, never as a
+  highlighted control) sits to the LEFT of the setting's label and toggles
+  it. Locked: the control is greyed out but still shows the board's value -
+  protection, not concealment. Locking never writes or resets anything, and
+  one click unlocks. CSS: `.setting-row.lockable` (+ `.locked`),
+  `.lock-toggle`, `.lock-spacer` (keeps a non-lockable label in line).
+  **Which settings are lockable:** the catalog's OPTIONAL settings (not
+  `required`, with a `default`: DRS4 correction, GPO output, Events per
+  readout, Dump format, Dump header - the ones that once had a broken "uncheck
+  to return to default" checkbox) plus the TR DC offset. Nothing else: the
+  old global "lock everything" mode put locks on everything, and that is
+  not a reason for a setting to be lockable. Locks live in the display prefs
+  (`locks`), keyed by setting key, so every window and a reload agree;
+  `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked - today
+  only the TR DC offset.
 
 ## Watching vs recording
 
@@ -660,8 +679,17 @@ downloaded or deleted.
   DOM — a DOM-only test would pass while the write silently failed. One
   worker, file order: the tests share the one fake board's state. CI runs it
   on ubuntu with `DAQ_TEST_SERVER_CMD` overriding the local uv launch.
-- Nothing is persisted between runs of the process: the unit holds the settings
-  and is read at open. Save/Load write and read an explicit file instead.
+- **Board registers are not persisted by us** - the unit holds them across
+  daq restarts (not a power cycle) and is read at open. **What the unit
+  cannot hold is** (`lastused.py`, `<state dir>/last_used.json`, saved on
+  every adopted config): channel names, correction level, dump format and
+  header, and Events per readout - libCAENDigitizer keeps that limit in its
+  own memory (0x800C reads a constant 10), so a new process or reopened
+  handle reads the library default; open() keeps the last-used value over
+  it. These used to reset to defaults on every daq restart. Sessions are
+  the named, explicit snapshots on top of that. The smoke suite points the
+  state dir at a temp dir at import, or its engines would overwrite the
+  operator's real names.
 - The `Writer` interface is byte-compatible-WaveDump for v1; ROOT/HDF5 are meant
   to slot in behind it.
 

@@ -83,6 +83,13 @@ class DigitizerBackend(abc.ABC):
         hardware that can be powered off or unplugged underneath us."""
         return True
 
+    def armed(self) -> bool:
+        """Is the board itself acquiring right now? Asked by the readout
+        thread when events stop arriving: a unit power-cycled under a running
+        acquisition comes back disarmed, and nothing else says so. Raises
+        when the unit cannot be reached at all."""
+        return True
+
     def link_gate(self) -> str | None:
         """Why the hardware must not be called right now (the unit is absent
         or still booting), or None. Answered WITHOUT touching the hardware, and

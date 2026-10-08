@@ -1,4 +1,4 @@
-import type { BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
+import type { AvgSettings, BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
 
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -34,8 +34,6 @@ export const api = {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...cfg, base_rev: baseRev ?? null }),
     }).then(j<ConfigResult>),
-  resetDefault: () =>
-    fetch("/api/config/default", { method: "POST" }).then(j<ConfigResult>),
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () =>
     fetch("/api/acq/start", { method: "POST" }).then(j<Status & { started: boolean }>),
@@ -53,6 +51,13 @@ export const api = {
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
   stop: () => fetch("/api/acq/stop", { method: "POST" }).then(j<Status>),
+  setAverage: (avg: Partial<AvgSettings>) =>
+    fetch("/api/average", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(avg),
+    }).then(j<{ ok: boolean; avg: AvgSettings }>),
+  clearAverage: () =>
+    fetch("/api/average/clear", { method: "POST" }).then(j<{ ok: boolean }>),
   trigger: (count: number, rateHz: number) =>
     fetch("/api/trigger", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -102,6 +107,14 @@ export const api = {
   deleteSession: (name: string) =>
     fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" })
       .then(j<{ ok: boolean }>),
+  /** Adds a file to the list - a session file, or a board config in any
+   *  format Load reads. Never touches the unit; Apply does. */
+  importSession: (text: string, filename: string) =>
+    fetch(`/api/session-import?filename=${encodeURIComponent(filename)}`, {
+      method: "POST", headers: { "Content-Type": "text/plain" }, body: text,
+    }).then(j<{ ok: boolean; name: string; kind: "session" | "config"; notes: string[] }>),
+  sessionFileUrl: (name: string) => `/api/sessions/${encodeURIComponent(name)}/file`,
+  sessionConfigUrl: (name: string) => `/api/sessions/${encodeURIComponent(name)}/config`,
 };
 
 export interface SessionInfo { name: string; saved_at: number | null; }
@@ -152,17 +165,15 @@ export interface Condition {
 
 /** UI state that persists across restarts, keyed however the UI likes.
  *  y_ranges: per-channel waveform display range in volts, [min, max].
- *  lock_on/lock_open: the settings lock - everything locked, individually
- *  unlocked exceptions listed by key. */
+ *  locks: per-setting UI locks by key; a missing key takes its default. */
 export interface DisplayPrefs {
   y_ranges?: Record<string, [number, number]>;
   wave_mode?: WaveMode;
-  lock_on?: boolean;
-  lock_open?: string[];
+  locks?: Record<string, boolean>;
 }
 
 /** Subscribe to telemetry; auto-reconnects. Returns an unsubscribe fn. */
-export function openTelemetry(onData: (t: Telemetry) => void): () => void {
+export function openTelemetry(onData: (t: Telemetry | null) => void): () => void {
   let ws: WebSocket | null = null;
   let retry: number | undefined;
   let closed = false;
@@ -177,7 +188,11 @@ export function openTelemetry(onData: (t: Telemetry) => void): () => void {
         console.error("unreadable telemetry frame", err);
       }
     };
-    ws.onclose = () => { if (!closed) retry = window.setTimeout(connect, 1000); };
+    ws.onclose = () => {
+      if (closed) return;
+      onData(null);            // nothing is known until the next frame
+      retry = window.setTimeout(connect, 1000);
+    };
     ws.onerror = () => ws?.close();
   };
   connect();
