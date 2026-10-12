@@ -102,6 +102,9 @@ class AcquisitionEngine:
         # Recording is independent of acquiring: you watch first, then record.
         self._writer = None
         self._run_id: str | None = None
+        # The live run's identity, for the Recording bar: experiment,
+        # number, label - spelled out, so nothing parses it out of the id.
+        self._run: dict | None = None
         self._run_started: float | None = None
         self._recorded = 0
         self._rec_limit: int | None = None    # auto-close the run at N events
@@ -711,19 +714,22 @@ class AcquisitionEngine:
             return str(e)
 
     # ---------- recording ----------
-    def start_recording(self, name: str, timestamp: bool = True,
+    def start_recording(self, experiment: str,
                         run_number: int | None = None,
                         max_events: int | None = None,
                         note: str = "",
-                        into_existing: bool = False) -> dict:
-        """Begin writing to a new run directory, starting acquisition if the
-        operator has not already. Watching and recording are separate actions.
+                        label: str = "") -> dict:
+        """Begin writing a new run into its experiment, starting acquisition if
+        the operator has not already. Watching and recording are separate
+        actions.
 
-        The run number is the analysis-facing identity (run_<N>.root): given
-        explicitly it is taken as-is; otherwise it is one past the highest
-        number already in the data directory. With `max_events` the recording
-        closes itself after exactly that many events - the bounded capture for
-        "give me N triggers to look at" - while acquisition keeps running."""
+        A run is <experiment>/run_<NNN>[_<label>]/. The number counts per
+        experiment: given explicitly it is taken as-is, otherwise it is one
+        past the highest there. A number whose folder exists is refused, never
+        renamed around - delete that folder and the same number records again.
+        With `max_events` the recording closes itself after exactly that many
+        events - the bounded capture for "give me N triggers to look at" -
+        while acquisition keeps running."""
         if self._writer is not None:
             return {"ok": False, "error": "already recording"}
         if not self._opened:
@@ -732,11 +738,14 @@ class AcquisitionEngine:
             # A run recorded while the servo is moving baselines is garbage
             # with a straight face; refuse rather than let it happen.
             return {"ok": False, "error": "calibration in progress - wait for it"}
+        if not runs.clean(experiment):
+            return {"ok": False, "error": "type an experiment name first"}
         if run_number is None:
-            run_number = runs.next_run_number()
+            run_number = runs.next_run_number(experiment)
+        label = runs.clean(label)
         self._rec_limit = max(1, int(max_events)) if max_events else None
-        with logsetup.step(log, f"Starting a recording named {name!r} "
-                                f"(run {run_number})") as rec:
+        with logsetup.step(log, f"Starting run {run_number} of {experiment!r}"
+                                + (f" ({label})" if label else "")) as rec:
             # Acquisition must actually be running, or this opens a run that can
             # never receive an event and reports it as a success.
             if not self._running.is_set() and not self.start():
@@ -745,63 +754,42 @@ class AcquisitionEngine:
                         "error": "acquisition would not start - see the errors below"}
             with self._lock:
                 cfg = self._cfg
-            if into_existing:
-                # A CAMPAIGN folder: the setup has not changed, so the new
-                # run_<N>.root joins the earlier ones instead of scattering
-                # one-directory-per-run. Only the numbered ROOT files can
-                # share a directory - the WaveDump layout's wave_<ch>
-                # filenames would overwrite the earlier run.
-                path = runs.path_of(name)
-                if path is None:
-                    rec.done(f"Not started: no run folder named {name!r}")
-                    return {"ok": False,
-                            "error": f"no run folder named {name!r}"}
-                if cfg.output_format != "root":
-                    rec.done("Not started: only ROOT runs can share a folder")
-                    return {"ok": False,
-                            "error": "only ROOT output can add runs to an "
-                                     "existing folder - WaveDump filenames "
-                                     "would overwrite the earlier run"}
-                if os.path.exists(os.path.join(path, f"run_{run_number}.root")):
-                    rec.done(f"Not started: run {run_number} is already there")
-                    return {"ok": False,
-                            "error": f"run_{run_number}.root already exists "
-                                     f"in {name!r} - pick another number"}
-                run_id = name
-            else:
-                try:
-                    run_id, path = runs.create(name, timestamp)
-                except FileExistsError as e:
-                    rec.done(f"Not started: a run named {e.args[0]!r} already exists")
-                    return {"ok": False,
-                            "error": f"a run named {e.args[0]!r} already exists - "
-                                     f"rename it, switch the timestamp on, or "
-                                     f"pick it from the list to add this run "
-                                     f"to that folder"}
-                except OSError as e:
-                    rec.done(f"Not started: could not create the run directory: {e}")
-                    self._record_error(f"record: {e}")
-                    return {"ok": False, "error": f"could not create the run directory: {e}"}
+            try:
+                run_id, path = runs.create(experiment, run_number, label)
+            except FileExistsError as e:
+                rec.done(f"Not started: {e.args[0]} already exists")
+                return {"ok": False,
+                        "error": f"run {run_number} already exists ({e.args[0]}) - "
+                                 f"pick another number, or delete that folder "
+                                 f"to record it again"}
+            except ValueError as e:
+                rec.done(f"Not started: {e}")
+                return {"ok": False, "error": str(e)}
+            except OSError as e:
+                rec.done(f"Not started: could not create the run directory: {e}")
+                self._record_error(f"record: {e}")
+                return {"ok": False, "error": f"could not create the run directory: {e}"}
+            exp_name, folder = run_id.split("/")
             # The experiment conditions travel with the run, snapshotted BY
             # VALUE the moment recording starts.
             from . import sessions
-            writer = make_writer(path, run_id, cfg.output_format, run_number,
-                                 note, sessions.get_conditions())
+            writer = make_writer(path, folder, cfg.output_format, run_number,
+                                 note, sessions.get_conditions(),
+                                 experiment_name=exp_name, run_label=label)
             try:
                 writer.open(cfg)
                 logsetup.did(log, "Creating the run directory", path)
             except Exception as e:
                 # The directory exists but holds nothing; leaving it behind puts
-                # an empty run in the listing that was never recorded. NEVER
-                # when reusing a campaign folder - it holds earlier runs.
-                if not into_existing:
-                    runs.discard_empty(run_id)
+                # an empty run in the listing that was never recorded.
+                runs.discard_empty(run_id)
                 rec.done(f"Not started: could not open the run files: {e}")
                 self._record_error(f"record: {e}")
                 return {"ok": False, "error": str(e)}
             rec.done(f"Recording to {run_id}")
         self._recorded = 0
         self._run_started = time.time()
+        self._run = {"experiment": exp_name, "number": run_number, "label": label}
         self._run_id = run_id
         self._writer = writer          # last: the loop starts writing here
         return {"ok": True, "run": run_id}
@@ -819,6 +807,7 @@ class AcquisitionEngine:
                 self._record_error(f"record close: {e}")
             closing.done(f"Wrote {self._recorded} events")
         self._run_id = None
+        self._run = None
         self._run_started = None
         return {"ok": True, "run": run_id}
 
@@ -932,6 +921,7 @@ class AcquisitionEngine:
         log.error("Recording %r stopped after %d events: %s",
                   run_id, self._recorded, why)
         self._run_id = None
+        self._run = None
         self._run_started = None
 
     def _record_error(self, msg: str):
@@ -992,6 +982,7 @@ class AcquisitionEngine:
             "events_seen": self._events_seen,
             "recording": self._writer is not None,
             "run_id": self._run_id,
+            "run": self._run,
             "run_started": self._run_started,
             "recorded": self._recorded,
             "enabled_channels": chans,
@@ -1042,10 +1033,15 @@ class AcquisitionEngine:
             "calibrating": self.calibrator.is_active(),
             "recording": self._writer is not None,
             "run_id": self._run_id,
+            "run": self._run,
             "run_started": self._run_started,
             "recorded": self._recorded,
             "data_dir": runs.DATA_ROOT,
-            "next_run_number": runs.next_run_number(),
+            # Each experiment and the run numbers its folders hold, read off
+            # disk every poll: the UI suggests the next number from it and
+            # flags a clash, and a run deleted in Explorer frees its number
+            # within a second.
+            "experiments": runs.experiments(),
             "errors": list(self._errors),
             # The per-board 0 V calibration for the open unit (display only).
             "zerocal": zerocal.summary(bi.serial) if self._opened

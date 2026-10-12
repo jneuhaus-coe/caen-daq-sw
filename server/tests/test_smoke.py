@@ -34,7 +34,7 @@ def _engine_without_a_unit() -> AcquisitionEngine:
     """An engine whose every open fails, exactly like a machine with no board.
 
     The default factory loads the real libCAENDigitizer, so on a machine with a
-    unit attached these "hardware-free" tests would open — or hang on — actual
+    unit attached these "hardware-free" tests would open â€” or hang on â€” actual
     hardware. Discovered the hard way: a wedged CAEN USB driver left this suite
     blocked inside OpenDigitizer with no output at all.
     """
@@ -157,18 +157,24 @@ def test_config_values_are_range_checked():
 def test_runs_are_listed_newest_first_whatever_they_are_called():
     """The listing sorted by directory name under a heading that says newest
     first, so a run recorded without a timestamp landed wherever its letters
-    fell."""
+    fell. Runs from before experiments (straight under the data directory)
+    list alongside experiments' runs, by time, not by layout."""
     from daq import runs
     with tempfile.TemporaryDirectory() as d:
         old_root, runs.DATA_ROOT = runs.DATA_ROOT, d
         try:
-            for name, started in (("aaa-old", 1000), ("zzz-newest", 3000),
-                                  ("mmm-middle", 2000)):
+            for name, started in (("aaa-old", 1000), ("zzz-exp/run_002_x", 3000),
+                                  ("mmm-middle", 2000), ("zzz-exp/run_001", 1500)):
                 os.makedirs(os.path.join(d, name))
                 with open(os.path.join(d, name, "run_metadata.json"), "w") as f:
                     json.dump({"started": started, "channels": {}}, f)
-            assert [r["id"] for r in runs.listing()] == \
-                ["zzz-newest", "mmm-middle", "aaa-old"]
+            got = runs.listing()
+            assert [r["id"] for r in got] == \
+                ["zzz-exp/run_002_x", "mmm-middle", "zzz-exp/run_001", "aaa-old"]
+            assert (got[0]["experiment"], got[0]["number"], got[0]["label"]) == \
+                ("zzz-exp", 2, "x")
+            assert got[1]["experiment"] == ""          # a legacy run
+            assert runs.experiments() == {"zzz-exp": [1, 2]}
         finally:
             runs.DATA_ROOT = old_root
 
@@ -187,7 +193,7 @@ def test_wavedump_file_can_turn_a_bank_off():
 
 def test_rate_meter_total_and_last_bucket():
     """Count is a per-run total, and the headline rate is the last COMPLETE
-    bucket — the still-filling one always reads low."""
+    bucket â€” the still-filling one always reads low."""
     m = TriggerRateMeter(bin_s=0.05, window_s=0.5)
     for _ in range(3):
         m.add(4)
@@ -316,23 +322,45 @@ GPO_BUSY 1
     assert not only_b1.groups[0].enabled and only_b1.groups[1].enabled
 
 
-def test_run_numbers_are_inferred_and_never_reused():
-    """Next number = one past the highest anywhere in the data dir, read from
-    both metadata and run_<N>.root filenames - so files copied in from another
-    machine still count, and deleting mid-range runs reuses nothing."""
+def test_run_numbers_count_per_experiment_and_folders_decide():
+    """Numbers count per experiment, and a number is taken exactly while a
+    run_<NNN> folder for it exists - whatever its label. Deleting that folder
+    (in Explorer, mid-shift) frees the number for a redo."""
     from daq import runs
     old_root = runs.DATA_ROOT
     with tempfile.TemporaryDirectory() as d:
         runs.DATA_ROOT = d
         try:
-            assert runs.next_run_number() == 1
-            os.makedirs(os.path.join(d, "copied-in"))
-            open(os.path.join(d, "copied-in", "run_7.root"), "wb").close()
-            assert runs.next_run_number() == 8
-            os.makedirs(os.path.join(d, "metadata-only"))
-            with open(os.path.join(d, "metadata-only", "run_metadata.json"), "w") as f:
-                json.dump({"run_number": 12}, f)
-            assert runs.next_run_number() == 13
+            assert runs.next_run_number("flash") == 1
+            rid, path = runs.create("flash", 1)
+            assert rid == "flash/run_001" and os.path.isdir(path)
+            rid3, path3 = runs.create("flash", 3, "10 GeV electrons")
+            assert rid3 == "flash/run_003_10-GeV-electrons"
+            assert runs.next_run_number("flash") == 4
+            assert runs.next_run_number("cosmics") == 1     # its own count
+            try:                                 # same number, other label
+                runs.create("flash", 3, "redo")
+                raise AssertionError("a taken number was accepted")
+            except FileExistsError as e:
+                assert e.args[0] == rid3
+            os.rmdir(path3)                       # deleted by hand
+            assert runs.next_run_number("flash") == 2
+            assert runs.create("flash", 3, "redo")[0] == "flash/run_003_redo"
+            # One experiment folder whatever the case it is typed in.
+            assert runs.create("FLASH", 4)[0] == "flash/run_004"
+            # A legacy run folder is not an experiment to record into.
+            os.makedirs(os.path.join(d, "old-run"))
+            open(os.path.join(d, "old-run", "run_metadata.json"), "w").close()
+            for bad in ("old-run", "  ", "///"):
+                try:
+                    runs.create(bad, 1)
+                    raise AssertionError(f"{bad!r} was accepted")
+                except ValueError:
+                    pass
+            # Ids resolve inside the data root only.
+            assert runs.path_of("flash/run_001") == path
+            for bad in ("flash/../old-run", "../x", "flash/notarun", "a/b/c"):
+                assert runs.path_of(bad) is None, bad
         finally:
             runs.DATA_ROOT = old_root
 
@@ -656,7 +684,7 @@ def test_conditions_round_trip_and_snapshot_into_runs():
             with open(os.path.join(d, "run_metadata.json")) as f:
                 meta = json.load(f)
             assert meta["experiment"][0]["value"] == "DSB1 1911"
-            assert meta["runs"]["9"]["experiment"][1]["key"] == "XCET 40"
+            assert meta["experiment"][1]["key"] == "XCET 40"
         finally:
             sessions._conditions_path = orig
 
@@ -667,25 +695,18 @@ def test_run_note_lands_in_the_metadata_sidecar():
     it. The one fact about a run no register readback can supply."""
     from daq.writer import write_run_metadata, stamp_run_end
     with tempfile.TemporaryDirectory() as d:
-        write_run_metadata(d, default_config(), "beam", 7, "LuAG, 3 GeV e-")
+        write_run_metadata(d, default_config(), "run_007_LuAG", 7, "LuAG, 3 GeV e-",
+                           experiment_name="flash", run_label="LuAG")
+        stamp_run_end(d, 250)
         with open(os.path.join(d, "run_metadata.json")) as f:
             meta = json.load(f)
         assert meta["note"] == "LuAG, 3 GeV e-"
-        assert meta["run_number"] == 7
+        assert meta["run_number"] == 7 and meta["events"] == 250
+        # A run folder copied out of its experiment still says where it is from.
+        assert meta["experiment_name"] == "flash" and meta["run_label"] == "LuAG"
         # Trigger provenance rides with every run - reconstructing which
         # threshold selected a run's events from session history is misery.
         assert meta["trigger"]["groups"][0]["fast_trigger_threshold"] == 20000
-        # A campaign folder: a second recording into the same directory keeps
-        # BOTH runs' notes and event counts, while the top level tracks the
-        # latest - which is also what single-run folders always showed.
-        write_run_metadata(d, default_config(), "beam", 8, "same setup, 5 GeV")
-        stamp_run_end(d, 250, 8)
-        with open(os.path.join(d, "run_metadata.json")) as f:
-            meta = json.load(f)
-        assert meta["runs"]["7"]["note"] == "LuAG, 3 GeV e-"
-        assert meta["runs"]["8"]["note"] == "same setup, 5 GeV"
-        assert meta["runs"]["8"]["events"] == 250
-        assert meta["note"] == "same setup, 5 GeV" and meta["events"] == 250
 
 
 def test_scope_mode_free_runs_and_ships_full_resolution_traces():
@@ -848,7 +869,7 @@ def test_dac_changes_rearm_while_acquiring_and_refuse_while_recording():
             assert got.channels[0].dc_offset == 30000
             assert eng.status()["running"]           # re-armed, still going
 
-            assert eng.start_recording("guard", timestamp=False)["ok"]
+            assert eng.start_recording("guard")["ok"]
             before = len(eng.status()["errors"])
             cfg2 = eng.get_config()
             cfg2.channels[0].dc_offset = 29000
@@ -896,7 +917,7 @@ def test_recording_stops_itself_at_max_events():
         eng = AcquisitionEngine(lambda: make_backend("fake"))
         try:
             assert eng.probe() is True
-            r = eng.start_recording("bounded", timestamp=False, max_events=3)
+            r = eng.start_recording("bounded", max_events=3)
             assert r["ok"]
             eng.fire_software_triggers(10, rate_hz=1000)
             deadline = time.time() + 5
@@ -904,7 +925,8 @@ def test_recording_stops_itself_at_max_events():
                 time.sleep(0.05)
             st = eng.status()
             assert st["recording"] is False and st["running"] is True
-            meta = json.load(open(os.path.join(d, "bounded", "run_metadata.json")))
+            meta = json.load(open(os.path.join(d, "bounded", "run_001",
+                                   "run_metadata.json")))
             assert meta["events"] == 3
         finally:
             eng.close()
@@ -985,7 +1007,7 @@ def test_runtime_record_roundtrips_and_clears():
 
 def test_stale_and_foreign_servers_are_not_attached_to():
     """The runtime file is a hint, not an authority. A dead port, and a port held
-    by some other program, must both read as 'no server' — never as one to
+    by some other program, must both read as 'no server' â€” never as one to
     attach to and drive."""
     import http.server
     import threading
@@ -1134,7 +1156,7 @@ def test_update_restarts_only_servers_it_may_own():
 
 def test_bind_probe_matches_uvicorn_so_a_restart_can_reuse_its_port():
     """Closing a server leaves its connections in TIME_WAIT, and a bind without
-    SO_REUSEADDR fails there — so a plain probe reports "port already in use" for
+    SO_REUSEADDR fails there â€” so a plain probe reports "port already in use" for
     a port uvicorn (which sets SO_REUSEADDR) would take happily. That refuses the
     server a port it could have had, for minutes after every restart."""
     import socket
@@ -1265,7 +1287,7 @@ if __name__ == "__main__":
                test_power_cycle_never_calls_the_driver_at_the_wrong_moment,
                test_software_trigger_is_refused_with_no_unit,
                test_legacy_config_format_imports,
-               test_run_numbers_are_inferred_and_never_reused,
+               test_run_numbers_count_per_experiment_and_folders_decide,
                test_amplitude_corrections_and_true_times,
                test_root_writer_matches_the_radical_layout,
                test_fake_backend_behaves_like_a_board,
