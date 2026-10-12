@@ -5,10 +5,29 @@ const VISIBLE_RUNS = 5;
 import type { Status } from "../types";
 
 interface RunInfo {
+  /** "<experiment>/<run folder>", or a bare folder for a run from before
+   *  experiments. */
   id: string; started: number;
   files: number; bytes: number; channels: number[]; events: number | null;
   /** The operator's note from record time - what was tested, beam energy. */
   note?: string;
+  experiment: string;      // "" = from before experiments
+  number: number | null;
+  label: string;
+}
+
+/** Runs grouped by experiment, groups ordered by their newest run - the
+ *  experiment being taken now sits on top. Runs from before experiments
+ *  come last, under their own heading. */
+function groupRuns(runs: RunInfo[]): [string, RunInfo[]][] {
+  const groups = new Map<string, RunInfo[]>();
+  for (const r of runs) {                 // already newest first
+    const g = groups.get(r.experiment);
+    if (g) g.push(r); else groups.set(r.experiment, [r]);
+  }
+  const out = [...groups.entries()].filter(([e]) => e !== "");
+  const legacy = groups.get("");
+  return legacy ? [...out, ["", legacy]] : out;
 }
 
 /** Recorded runs: what is on the server, downloadable, and deletable.
@@ -20,12 +39,12 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
   const [confirming, setConfirming] = useState<string | null>(null);
   // Past VISIBLE_RUNS the list scrolls. Rows differ in height (a note adds
   // a line, the delete confirmation opens), so the cap is measured off the
-  // fifth row itself rather than guessed in pixels.
+  // fifth run row itself rather than guessed in pixels.
   const listRef = useRef<HTMLUListElement | null>(null);
   const [maxH, setMaxH] = useState<number | undefined>(undefined);
   useLayoutEffect(() => {
     const ul = listRef.current;
-    const rows = ul ? (ul.children as HTMLCollectionOf<HTMLElement>) : null;
+    const rows = ul ? ul.querySelectorAll<HTMLElement>("li.run") : null;
     if (!ul || !rows || rows.length <= VISIBLE_RUNS) { setMaxH(undefined); return; }
     const last = rows[VISIBLE_RUNS - 1];
     setMaxH(last.offsetTop + last.offsetHeight);
@@ -50,7 +69,7 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
   const remove = async (id: string) => {
     setBusy(true);
     try {
-      const res = await fetch(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const res = await fetch(`/api/runs/${runPath(id)}`, { method: "DELETE" });
       if (res.ok) {
         setConfirming(null); setTyped(""); await load();
         return;
@@ -79,14 +98,28 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
       ) : (
         <ul className={"runs" + (maxH ? " scrolls" : "")} ref={listRef}
           style={maxH ? { maxHeight: maxH } : undefined}>
-          {runs.map((r) => {
+          {groupRuns(runs).map(([exp, members]) => [
+            <li key={`exp:${exp}`} className="run-group">
+              <span className="run-group-name mono">{exp || "Earlier runs"}</span>
+              <span className="sub">{members.length} run{members.length === 1 ? "" : "s"}</span>
+              <span className="spacer" />
+              {exp ? (
+                <a className="mini btn" href={`/api/experiments/${encodeURIComponent(exp)}/download`}
+                  download={`${exp}.zip`}
+                  title="Download every finished run of this experiment as one zip">
+                  Download all
+                </a>
+              ) : null}
+            </li>,
+            ...members.map((r) => {
             const live = status?.run_id === r.id;
+            // The run's folder name - exactly what Explorer shows, inside
+            // its experiment's folder.
+            const folder = r.experiment ? r.id.slice(r.experiment.length + 1) : r.id;
             return (
               <li key={r.id} className={"run" + (live ? " live" : "")}>
                 <div className="run-main">
-                  {/* The directory name is the run's only name - the same
-                      string the download and the metadata carry. */}
-                  <span className="run-name mono">{r.id}</span>
+                  <span className="run-name mono" title={r.id}>{folder}</span>
                   <span className="run-meta mono">
                     {when(r.started)} · {r.channels.length} ch ·{" "}
                     {r.events != null ? `${r.events} ev` : "? ev"} · {size(r.bytes)}
@@ -99,8 +132,9 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
                   <span className="run-live">recording</span>
                 ) : (
                   <span className="run-actions">
-                    <a className="mini btn" href={`/api/runs/${encodeURIComponent(r.id)}/download`}
-                      download={`${r.id}.zip`} title="Download this run as a zip">Download</a>
+                    <a className="mini btn" href={`/api/runs/${runPath(r.id)}/download`}
+                      download={`${r.id.replace("/", "_")}.zip`}
+                      title="Download this run as a zip - it unzips into its experiment's folder">Download</a>
                     <button className="mini danger" disabled={busy}
                       onClick={() => { setConfirming(r.id); setTyped(""); setErr(""); }}
                       title="Delete this run from the server">Delete</button>
@@ -132,11 +166,16 @@ export function RunsPanel({ status, refreshKey }: { status: Status | null; refre
                 ) : null}
               </li>
             );
-          })}
+          })])}
         </ul>
       )}
     </div>
   );
+}
+
+/** A run id in a URL: each segment escaped, the "/" between them kept. */
+function runPath(id: string) {
+  return id.split("/").map(encodeURIComponent).join("/");
 }
 
 function size(b: number) {

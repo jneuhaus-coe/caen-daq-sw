@@ -61,7 +61,9 @@ export const QUICK_USE: TourStep[] = [
         <ol className="tour-steps">
           <li><b>Enable Acquisition</b> — live view, nothing written to disk.</li>
           <li>Check the traces and the trigger rate look right.</li>
-          <li>Type a <b>Run name</b> and press <b>Record</b>.</li>
+          <li>Check <b>Experiment</b>, <b>Run #</b> (it advances by itself) and
+            the optional <b>Label</b> against what was called out, then
+            press <b>Record</b>.</li>
           <li><b>Stop recording</b> when done — the live view keeps running.</li>
         </ol>
         <p className="muted">
@@ -77,13 +79,13 @@ export const QUICK_USE: TourStep[] = [
     body: (
       <>
         <p>
-          Every run you have recorded, newest first, with its time, channel
-          count, event count and size.
+          Every run you have recorded, grouped by experiment, newest first, with
+          its time, channel count, event count and size.
         </p>
         <p>
-          <b>Download</b> gives you a zip of the whole run — one file per channel
-          plus the settings it was taken with. The folder shown at the top is
-          where they live on the DAQ machine.
+          <b>Download</b> gives you a zip of one run, its data plus the settings
+          it was taken with; <b>Download all</b> zips the whole experiment. The
+          folder shown at the top is where they live on the DAQ machine.
         </p>
         <p className="muted">
           Delete asks you to type DELETE, and the run being recorded cannot be

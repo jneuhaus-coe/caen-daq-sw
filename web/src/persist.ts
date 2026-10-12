@@ -25,6 +25,9 @@ function read<T>(kind: Persistence, key: string, fallback: T): T {
     const value = JSON.parse(raw);
     // A stored value of the wrong shape (an older build's) is ignored, not
     // trusted: a string where a boolean belongs would reach the controls.
+    // A null default means "nothing set yet" (the run-number override), so
+    // there the stored value is the only shape there is.
+    if (fallback === null) return value as T;
     return typeof value === typeof fallback ? (value as T) : fallback;
   } catch {
     return fallback;

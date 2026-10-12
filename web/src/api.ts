@@ -37,16 +37,14 @@ export const api = {
   reconnect: () => fetch("/api/board/reconnect", { method: "POST" }).then(j<Status>),
   start: () =>
     fetch("/api/acq/start", { method: "POST" }).then(j<Status & { started: boolean }>),
-  recStart: (name: string, timestamp: boolean, runNumber?: number | null,
-             maxEvents?: number | null, note?: string, intoExisting?: boolean) =>
+  recStart: (experiment: string, runNumber?: number | null,
+             maxEvents?: number | null, note?: string, label?: string) =>
     fetch("/api/rec/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, timestamp, run_number: runNumber ?? null,
+      body: JSON.stringify({ experiment, run_number: runNumber ?? null,
                              max_events: maxEvents ?? null, note: note ?? "",
-                             into_existing: intoExisting ?? false }),
+                             label: label ?? "" }),
     }).then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),
-  runs: () =>
-    fetch("/api/runs").then(j<{ runs: { id: string }[]; data_dir: string }>),
   recStop: () =>
     fetch("/api/rec/stop", { method: "POST" })
       .then(j<{ ok: boolean; error?: string; run?: string; status: Status }>),

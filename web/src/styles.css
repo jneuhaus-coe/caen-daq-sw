@@ -564,8 +564,6 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 }
 .rec-group .rec-label:not(:first-child) { margin-left: 6px; }
 .rec-label { font-size: 11px; color: var(--muted); }
-.rec-stamp { display: inline-flex; align-items: center; gap: 4px;
-             font-size: 11px; color: var(--muted); cursor: pointer; }
 .rec-input {
   width: 180px; padding: 4px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: #0d1117; color: var(--text);
@@ -576,6 +574,15 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
    counts and stole the width that clipped the digit, so they are gone, and
    the field fits seven digits with room to spare. */
 .rec-input.rec-no { width: 96px; font-variant-numeric: tabular-nums; }
+/* A run number whose folder already exists: Record would be refused. */
+.rec-input.rec-no.clash { border-color: var(--red); background: #2a1416; }
+.rec-input.rec-tag { width: 150px; padding-right: 22px; }
+.rec-label-field { position: relative; display: inline-flex; align-items: center; }
+.rec-clear {
+  position: absolute; right: 3px; padding: 0 5px; border: none; background: none;
+  color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer;
+}
+.rec-clear:hover { color: var(--text); }
 .rec-input.rec-no::-webkit-outer-spin-button,
 .rec-input.rec-no::-webkit-inner-spin-button,
 .test-trigger input::-webkit-outer-spin-button,
@@ -589,9 +596,11 @@ button.danger:hover:not(:disabled) { background: #3d1518; border-color: var(--re
 @keyframes rec-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .rec-group.on .rec-dot { animation: none; } }
 button.record { display: inline-flex; align-items: center; gap: 6px; }
-.rec-name { font-size: 11.5px; font-weight: 650; max-width: 210px;
+.rec-name { font-size: 11.5px; font-weight: 650; max-width: 380px;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rec-count { font-size: 11px; color: var(--muted); }
+/* The number is what the coordinator calls out - make it the thing you see. */
+.rec-runno { color: #ffb4ae; font-size: 12.5px; }
 
 /* recorded runs */
 .run-dir { word-break: break-all; margin: -4px 0 8px; font-size: 10.5px; }
@@ -622,6 +631,13 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   border: 1px solid #6b2226; background: #1b0f11; color: var(--text);
 }
 .run-confirm code { background: #1b0f11; padding: 0 4px; border-radius: 3px; }
+
+/* an experiment's heading in the run list */
+.run-group { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.run-group:first-child { margin-top: 0; }
+.run-group-name { font-size: 11.5px; font-weight: 650; color: var(--text); }
+.run-group .sub { font-size: 10.5px; color: var(--muted); }
+.run-group .spacer { flex: 1; }
 
 /* the run's record-time note, one line with the full text on hover */
 .run-note {
@@ -723,7 +739,7 @@ main.experiment { overflow-y: auto; }
 .rec-modal .muted { font-size: 11px; margin: 6px 0 10px; }
 /* Where this recording will land - a new folder, or joining a campaign. */
 .rec-dest { font-size: 11px; color: var(--muted); margin: -4px 0 8px; }
-.rec-dest.into { color: var(--orange, #d29922); }
+.rec-dest.blocked { color: var(--red); }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* guided tour: dim everything, cut a hole over the thing being explained */

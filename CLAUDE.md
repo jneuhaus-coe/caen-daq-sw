@@ -652,16 +652,38 @@ it starts acquisition if it is not already running. Stopping a recording leaves
 acquisition running, so the usual loop (watch, verify, then record) never has to
 stop looking.
 
-A run is a directory under `DAQ_DATA_DIR` (default `~/daq-runs` in the guest —
-never the repo, which may be a read-only mount): one wave file per channel plus
-`run_metadata.json` with the channel names and settings. One file per channel is
-WaveDump's own layout (`wave_%d.txt` / `.dat`, verified against WaveDump.c).
-**The directory name is the run's only name** — what the listing shows, what the
-metadata records, what the downloaded zip is called. An optional ISO-ish
-`-YYYY-MM-DD-HHMMSS` suffix keeps same-named runs apart; without it a clash is
-an error rather than a silent rename.
-Downloads are a zip of that directory. The run being recorded cannot be
-downloaded or deleted.
+**Experiment = folder, run = folder inside it** (`runs.py`, decided with the
+operators 2026-10-12): `DAQ_DATA_DIR/<experiment>/run_<NNN>[_<label>]/`
+(default `~/daq-runs` - never the repo, which may be a read-only mount). Each
+run folder holds its data plus its OWN `run_metadata.json`, so any format
+works the same: WaveDump's one-file-per-channel layout (`wave_%d.txt` / `.dat`,
+verified against WaveDump.c) or `run_<N>.root`. This replaced per-run
+timestamped top-level folders (ten `iowa-flash-<time>` dirs for one
+experiment) and the ROOT-only "campaign folder" that shared one metadata
+file. The coming analysis tab is expected to build on experiment = root folder.
+- **A run's identity is experiment + number.** The label is optional,
+  descriptive only, and never replaces the number. Numbers count **per
+  experiment**, padded to 3 in the folder (`run_002`). The ROOT file stays
+  `run_<N>.root`, unpadded and unlabelled, by decision: nobody could rule out
+  a downstream script keyed on that name, and the metadata travels with it.
+- **The folders on disk decide which numbers are taken**: a number is taken
+  exactly while a `run_<NNN>*` folder for it exists, whatever its label. An
+  operator who deletes a bad run 3 (in Explorer or the run list) can record
+  run 3 again with no restart - `/api/status` re-reads the experiments every
+  poll (`experiments: {name: [numbers]}`). This deliberately replaced "max
+  over the whole data directory, never reused".
+- A clash is refused, never renamed around. Case-insensitive match onto an
+  existing experiment, because Windows folders are.
+- Run ids on the API are `<experiment>/<run folder>`, hence the `:path`
+  routes. Folders from before experiments (a top-level dir with its own
+  `run_metadata.json`) are never moved: they list as "Earlier runs" with a
+  bare-name id, and cannot be recorded into.
+- Metadata: `experiment_name` is the folder; `experiment` remains the
+  operator's key=value conditions list (older name, kept for analysis).
+- Downloads zip one run as `<experiment>/<run folder>/...`, so unzipping
+  several rebuilds the tree; `/api/experiments/<name>/download` zips the lot,
+  minus the run being recorded. The run being recorded cannot be downloaded
+  or deleted.
 
 ## Conventions / scope
 
