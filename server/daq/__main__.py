@@ -162,6 +162,13 @@ def _serve(args, with_tray: bool, mode: str) -> int:
     backend_kind = os.environ.get("DAQ_BACKEND", "caen")
     if backend_kind != "caen":
         log.warning("DAQ_BACKEND=%s: this is NOT real hardware", backend_kind)
+    if backend_kind == "fake":
+        # Something for Quick Look to open in demos and the UI suite.
+        from .quicklook import demo
+        try:
+            demo.seed()
+        except Exception as e:
+            log.warning("Could not write the synthetic Quick Look campaign: %s", e)
     engine = AcquisitionEngine(lambda: make_backend(backend_kind))
     if not args.no_open:
         _open_board_in_background(engine, BOARD_OPEN_WAIT_S)

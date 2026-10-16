@@ -27,6 +27,9 @@ from . import sessions
 from . import runtime
 from . import zerocal
 from . import constants as C
+from .quicklook.engine import QuickLook
+from .quicklook import folder as ql_folder
+from .quicklook import service as ql_service
 
 log = logsetup.get("daq.api")
 
@@ -499,6 +502,31 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
             os._exit(0)
         threading.Thread(target=_exit, daemon=True).start()
         return {"ok": True, "message": "digitizer closed; server exiting"}
+
+    # ---------- Quick Look: read-only analysis of recorded runs ----------
+    ql = QuickLook()
+
+    def _recording_folder():
+        st = engine.status()
+        return runs.path_of(st["run_id"]) if st.get("recording") and st.get("run_id") else None
+
+    @app.get("/api/ql/folders")
+    def ql_folders():
+        return {"folders": ql_folder.listing(), "data_dir": runs.DATA_ROOT}
+
+    @app.get("/api/ql/folder")
+    def ql_describe(path: str):
+        p = ql_folder.resolve(path)
+        if p is None:
+            raise HTTPException(404, f"No folder named {path}")
+        return ql_folder.describe(p, _recording_folder())
+
+    @app.post("/api/ql/analyse")
+    def ql_analyse(payload: dict):
+        r = ql_service.analyse(ql, payload or {}, _recording_folder())
+        if not r.get("ok"):
+            raise HTTPException(404, r.get("error") or "Not found")
+        return r
 
     @app.websocket("/ws/telemetry")
     async def telemetry(ws: WebSocket):
