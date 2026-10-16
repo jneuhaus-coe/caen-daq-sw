@@ -78,7 +78,17 @@ finds the server already running and opens another window onto it. It never
 starts a second server and never disturbs the one that is running.
 
 Runs are written to `%USERPROFILE%\daq-runs` on Windows and `~/daq-runs` on
-Linux; set `DAQ_DATA_DIR` to move them.
+Linux; set `DAQ_DATA_DIR` to move them. Each experiment is a folder, and each
+run is a folder inside it, holding its data and its `run_metadata.json`:
+
+```
+daq-runs/iowa-flash/run_002_10GeV-electrons/run_2.root
+                                           /run_metadata.json
+```
+
+Run numbers count per experiment. Folders from older versions, with one run
+directly under `daq-runs`, are left where they are and listed as
+"Earlier runs".
 
 If the installer warns that a different `daq` comes first on your PATH, deal with
 it — that older copy is what will actually run, and every future update will look
@@ -244,10 +254,21 @@ like signal, not noise or a flat line.
 
 ### 3. Record
 
-Type a **Run name**, leave **Include timestamp** ticked, press **Record**.
+Check the three fields against what was called out (for example "run 2, flash"),
+then press **Record**:
 
-The indicator turns red and shows the run name, elapsed time and event count.
-Acquisition keeps running the whole time.
+- **Experiment**: the folder every run goes into. It is remembered, so it is
+  usually already right.
+- **Run #**: moves to the next free number by itself. Type over it if the
+  coordinator says otherwise.
+- **Label**: optional words for the folder name, such as `10GeV-electrons`. It
+  stays set for the next run, so clear it (×) when conditions change.
+
+A red **Run #** means that run already exists. To take it again, delete that
+run's folder (from the run list or in Explorer) and press Record.
+
+The indicator turns red and shows `experiment · Run N · label`, the elapsed time
+and the event count. Acquisition keeps running the whole time.
 
 ### 4. Stop
 
@@ -257,9 +278,11 @@ halts readout entirely.
 
 ### 5. Collect the data
 
-**Recorded Runs** lists every run with its time, channel count, event count and
-size. **Download** gives you a zip of the whole run. The panel also shows the
-folder on the server where runs live.
+**Recorded Runs** lists every run, grouped by experiment, with its time, channel
+count, event count and size. **Download** gives you a zip of one run, and
+**Download all** gives you the whole experiment. Both unzip into the same
+`experiment/run_NNN/` folders, so several downloads add up to one tree. The
+panel also shows the folder on the server where runs live.
 
 ### 6. Check before you leave: Quick Look
 
@@ -267,11 +290,11 @@ The **Quick Look** tab gives preliminary results from recorded runs, so you can
 spot a run that needs redoing while you can still redo it. It only reads: it
 never changes, moves or adds anything in a run folder.
 
-- Pick a **folder**, tick the runs you want. The **check** column flags clipped
+- Pick a **folder** (an experiment), tick the runs you want. The **check** column flags clipped
   events and pedestal jumps.
 - **Tags** come from each run's Experiment Conditions automatically. **+ Tag from
-  name** makes one from the run notes - click the part that changes (the "8" in
-  "8GeV") and check every run's value.
+  name** makes one from the run notes or the run labels - click the part that
+  changes (the "8" in "8GeV") and check every run's value.
 - **Channels**: click one to feed it from TR0 (or another input) or to strike it.
 - Pick an analysis, then read the sentence above the plot - every highlighted
   word is a menu.

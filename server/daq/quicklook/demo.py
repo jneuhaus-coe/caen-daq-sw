@@ -1,15 +1,17 @@
-"""A synthetic test-beam campaign for the fake backend and the tests.
+"""A synthetic test-beam experiment for the fake backend and the tests.
 
 NOT physics: just enough structure for Quick Look to have something to show
 - a 4x4 pixel array whose pulses scale with beam energy, electrons narrow
 and pions wide, ch 8 dead with its pixel cabled into TR0 (the last real
 campaign's setup), one run with clipped events and one with a pedestal
-step. Written through the real RootWriter, so the reader is tested against
-exactly what the DAQ writes.
+step. Written through the real RootWriter into the real experiment layout
+(<experiment>/run_<NNN>_<label>/), so the reader is tested against exactly
+what the DAQ writes.
 """
 from __future__ import annotations
 
 import os
+import shutil
 
 import numpy as np
 
@@ -46,6 +48,7 @@ def _counts(mv):
 
 def write_campaign(root: str, events: int = 200, seed: int = 7) -> str:
     from ..config import default_config
+    from ..runs import run_folder
     from ..writer import make_writer
     from ..backend.base import Event
 
@@ -60,9 +63,13 @@ def write_campaign(root: str, events: int = 200, seed: int = 7) -> str:
     t = np.arange(L, dtype=np.float32) * 0.2           # 5 GS/s
     rows, cols = np.divmod(np.arange(16), 4)
     for number, (particle, energy, note) in enumerate(RUNS, start=1):
-        w = make_writer(path, FOLDER, "root", number, note,
+        name = run_folder(number, f"{energy}GeV-{particle}")
+        run_dir = os.path.join(path, name)
+        os.makedirs(run_dir, exist_ok=True)
+        w = make_writer(run_dir, name, "root", number, note,
                         [{"key": "bias_V", "value": "42.0"},
-                         {"key": "angle", "value": "0"}])
+                         {"key": "angle", "value": "0"}],
+                        experiment_name=FOLDER, run_label=f"{energy}GeV-{particle}")
         w.open(cfg)
         e_like = particle == "e"
         spread = 0.85 if e_like else 1.4
@@ -103,16 +110,21 @@ def write_campaign(root: str, events: int = 200, seed: int = 7) -> str:
 
 
 def seed() -> str:
-    """Create the demo campaign once, under the state directory - NOT the
+    """Create the demo experiment once, under the state directory - NOT the
     data directory, where it would advance the real run numbering - and
     list it in Quick Look. Returns its path."""
     from .. import runtime
+    from ..runs import run_folder
     from . import folder
     root = os.path.join(runtime.state_dir(), "demo-runs")
     path = os.path.join(root, FOLDER)
-    if not os.path.isfile(os.path.join(path, f"run_{len(RUNS)}.root")):
-        with logsetup.step(log, f"Writing the synthetic Quick Look campaign "
+    last = os.path.join(path, run_folder(len(RUNS), "60GeV-pi"), f"run_{len(RUNS)}.root")
+    if not os.path.isfile(last):
+        with logsetup.step(log, f"Writing the synthetic Quick Look experiment "
                                 f"'{FOLDER}' (fake backend only)") as s:
+            # Ours alone, under the state dir: an older build's flat layout
+            # would otherwise list beside the new run folders.
+            shutil.rmtree(path, ignore_errors=True)
             write_campaign(root)
             s.done(f"Wrote {len(RUNS)} synthetic runs")
     folder.EXTRA.append((path, f"{FOLDER} (synthetic)"))

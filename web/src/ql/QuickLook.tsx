@@ -72,8 +72,8 @@ export function QuickLook({ onError }: { onError: (title: string, lines?: string
   const usable = (r: QlRun) => r.state === "ok" || r.state === "unfinished";
   const selected = runs.filter((r) => usable(r) && !prefs.deselected.includes(r.key)).map((r) => r.key);
   const tags = useMemo(() => allTags(runs, prefs.tags), [runs, prefs.tags]);
-  const values = useMemo(() => tagValues(runs, prefs.tags, prefs.overrides, folder?.folder ?? ""),
-    [runs, prefs.tags, prefs.overrides, folder]);
+  const values = useMemo(() => tagValues(runs, prefs.tags, prefs.overrides),
+    [runs, prefs.tags, prefs.overrides]);
   const tagNames = ["run", ...tags.map((t) => t.name)];
   const numericTags = ["run", ...tags.filter((t) => t.kind === "number").map((t) => t.name)];
 
@@ -406,8 +406,8 @@ export function QuickLook({ onError }: { onError: (title: string, lines?: string
                 {tags.map((t) => t.source === "meta" ? (
                   <span key={t.name} className="ql-chip" title="From the Experiment Conditions in each run's metadata">{t.name} <span className="src">meta</span></span>
                 ) : (
-                  <button key={t.name} className="ql-chip" title="Read from the run notes - click to edit"
-                    onClick={() => setTagDialog({ def: prefs.tags.find((d) => d.name === t.name) ?? null })}>{t.name} <span className="src">{t.source === "folder" ? "folder" : "note"}</span></button>
+                  <button key={t.name} className="ql-chip" title={t.source === "folder" ? "Read from the run folder names - click to edit" : "Read from the run notes - click to edit"}
+                    onClick={() => setTagDialog({ def: prefs.tags.find((d) => d.name === t.name) ?? null })}>{t.name} <span className="src">{t.source === "folder" ? "run folder" : "note"}</span></button>
                 ))}
                 <button className="mini dashed" onClick={() => setTagDialog({ def: null })}>+ Tag from name</button>
               </div>
@@ -595,7 +595,7 @@ export function QuickLook({ onError }: { onError: (title: string, lines?: string
       </main>
 
       {tagDialog && folder ? (
-        <TagBuilder runs={runs} folder={folder.folder} initial={tagDialog.def} overrides={prefs.overrides}
+        <TagBuilder runs={runs} initial={tagDialog.def} overrides={prefs.overrides}
           taken={tags.map((t) => t.name)}
           onClose={() => setTagDialog(null)}
           onDelete={(name) => {

@@ -83,6 +83,13 @@ export interface ChannelTelemetry {
   last_vpp?: number;
 }
 
+/** The live run's identity: <experiment>/run_<NNN>[_<label>]. */
+export interface RunIdent {
+  experiment: string;
+  number: number;
+  label: string;
+}
+
 export interface Telemetry {
   running: boolean;
   sample_period_ns: number;
@@ -94,6 +101,7 @@ export interface Telemetry {
   events_seen: number;
   recording: boolean;
   run_id: string | null;
+  run?: RunIdent | null;
   run_started: number | null;
   recorded: number;
   enabled_channels: number[];
@@ -118,10 +126,13 @@ export interface Status {
   running: boolean;
   recording: boolean;
   run_id: string | null;
+  run?: RunIdent | null;
   run_started: number | null;
   recorded: number;
   data_dir: string;
-  next_run_number?: number;
+  /** Every experiment folder and the run numbers its run folders hold, read
+   *  off disk on every poll. */
+  experiments?: Record<string, number[]>;
   sw_triggers_pending?: number;
   /** Scope mode's free-running software-trigger rate; null/absent = off. */
   scope_hz?: number | null;

@@ -8,6 +8,8 @@ export type RunState = "ok" | "recording" | "unfinished" | "unsupported";
 export interface QlRun {
   key: string;
   file: string | null;
+  /** The run's folder name (run_002_10GeV-electrons), or its file name in a flat folder. */
+  name: string;
   number: number | null;
   note: string;
   experiment: Record<string, string>;

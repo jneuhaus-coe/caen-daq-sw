@@ -335,9 +335,11 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         # The operator's note about this specific run - free text, capped so a
         # pasted logbook cannot balloon the sidecar.
         note = str(p.get("note") or "").strip()[:2000]
-        r = engine.start_recording((p.get("name") or "").strip(),
-                                   bool(p.get("timestamp", True)), rn, me, note,
-                                   into_existing=bool(p.get("into_existing")))
+        # "name" is what a window from before experiments sends; it still
+        # records, into the experiment of that name, until it reloads.
+        experiment = str(p.get("experiment") or p.get("name") or "").strip()
+        r = engine.start_recording(experiment, rn, me, note,
+                                   label=str(p.get("label") or "").strip())
         return {**r, "status": engine.status()}
 
     @app.post("/api/rec/stop")
@@ -349,7 +351,8 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
     def list_runs():
         return {"data_dir": runs.DATA_ROOT, "runs": runs.listing()}
 
-    @app.get("/api/runs/{run_id}/download")
+    # Run ids are "<experiment>/<run folder>", hence the :path converters.
+    @app.get("/api/runs/{run_id:path}/download")
     def download_run(run_id: str, background: BackgroundTasks):
         if engine.status()["run_id"] == run_id:
             raise HTTPException(409, "that run is still recording")
@@ -365,9 +368,25 @@ def create_app(engine: AcquisitionEngine) -> FastAPI:
         # setting both here would be two owners of one unlink.
         background.add_task(os.unlink, tmp)
         return FileResponse(tmp, media_type="application/zip",
-                            filename=f"{run_id}.zip", background=background)
+                            filename=f"{runs.zip_name(run_id)}.zip",
+                            background=background)
 
-    @app.delete("/api/runs/{run_id}")
+    @app.get("/api/experiments/{name}/download")
+    def download_experiment(name: str, background: BackgroundTasks):
+        # The run being recorded is left out rather than refusing the whole
+        # experiment: the earlier runs are finished and worth having mid-shift.
+        try:
+            tmp = runs.zip_experiment_to_temp(name, skip=engine.status()["run_id"])
+        except OSError as e:
+            log.error("Could not zip experiment %r: %s", name, e)
+            raise HTTPException(500, f"could not build the zip: {e}")
+        if tmp is None:
+            raise HTTPException(404, "no such experiment")
+        background.add_task(os.unlink, tmp)
+        return FileResponse(tmp, media_type="application/zip",
+                            filename=f"{name}.zip", background=background)
+
+    @app.delete("/api/runs/{run_id:path}")
     def delete_run(run_id: str):
         if engine.status()["run_id"] == run_id:
             logsetup.did(log, f"Deleting run {run_id!r}", "Refused: still recording",

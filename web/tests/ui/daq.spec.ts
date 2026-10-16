@@ -444,49 +444,57 @@ test("the TR0 card appears when the fast trigger is digitized", async ({ page })
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
-test("recording a run writes run_N.root and the number advances", async ({ page }) => {
-  // Fresh test state starts at run 1; the placeholder shows the inference.
-  await expect(page.locator("#runno")).toHaveAttribute("placeholder", "1");
-
+test("runs count per experiment, and the bar names the run", async ({ page }) => {
+  const status = async () => (await page.request.get("/api/status")).json();
+  // A new experiment starts at run 1 - a real value in the field, not a hint.
   await page.locator("#runname").fill("ui-suite");
+  await expect(page.locator("#runno")).toHaveValue("1");
+
   // Record first opens the run-notes dialog; the note lands in the metadata.
   await page.locator(".rec-group button.record").click();
+  await expect(page.locator(".rec-modal h3")).toContainText("Run 1 · ui-suite");
+  await expect(page.locator(".rec-dest")).toContainText("ui-suite/run_001/");
   await page.locator(".rec-modal textarea").fill("LuAG crystal, 3 GeV electrons");
   await page.locator(".rec-modal button.record").click();
-  await expect(page.locator(".rec-group.on")).toBeVisible();
+  // The bar says which run is being recorded, the way it was called out.
+  await expect(page.locator(".rec-group.on .rec-name")).toContainText("ui-suite · Run 1");
   // The fake board emits ~5 events/s; a moment later there is data to keep.
-  await expect
-    .poll(async () => (await (await page.request.get("/api/status")).json()).recorded)
-    .toBeGreaterThan(0);
+  await expect.poll(async () => (await status()).recorded).toBeGreaterThan(0);
   await page.locator("button.danger", { hasText: "Stop recording" }).click();
   // The click resolves before the server has closed the writer; the metadata
   // event count exists only once recording has actually ended.
-  await expect
-    .poll(async () => (await (await page.request.get("/api/status")).json()).recording)
-    .toBe(false);
+  await expect.poll(async () => (await status()).recording).toBe(false);
 
   const runs = await (await page.request.get("/api/runs")).json();
   expect(runs.runs.length).toBe(1);
+  expect(runs.runs[0].id).toBe("ui-suite/run_001");
   expect(runs.runs[0].events).toBeGreaterThan(0);
   expect(runs.runs[0].note).toBe("LuAG crystal, 3 GeV electrons");
-  // ...and the listing shows it.
+  // ...and the listing shows it, under its experiment.
+  await expect(page.locator(".run-group-name").first()).toHaveText("ui-suite");
   await expect(page.locator(".run-note").first())
     .toHaveText("LuAG crystal, 3 GeV electrons");
-  // The number advanced, and an explicit override is respected next.
-  await expect(page.locator("#runno")).toHaveAttribute("placeholder", "2");
+
+  // The number moved on by itself; an override and a label are respected.
+  await expect(page.locator("#runno")).toHaveValue("2");
   await page.locator("#runno").fill("42");
-  await page.locator("#runname").fill("ui-suite-2");
+  await page.locator("#runlabel").fill("10GeV electrons");
   // An empty note is fine - the dialog never blocks a shift in a hurry.
   await page.locator(".rec-group button.record").click();
   await page.locator(".rec-modal button.record").click();
-  await expect(page.locator(".rec-group.on")).toBeVisible();
+  await expect(page.locator(".rec-group.on .rec-name"))
+    .toContainText("ui-suite · Run 42 · 10GeV-electrons");
   await page.locator("button.danger", { hasText: "Stop recording" }).click();
-  await expect
-    .poll(async () => (await (await page.request.get("/api/status")).json()).recording)
-    .toBe(false);
-  await expect
-    .poll(async () => (await (await page.request.get("/api/status")).json()).next_run_number)
-    .toBe(43);
+  await expect.poll(async () => (await status()).recording).toBe(false);
+  await expect.poll(async () => (await status()).experiments["ui-suite"]).toEqual([1, 42]);
+  await expect(page.locator("#runno")).toHaveValue("43");
+  // The label stays for the next run - usually the same conditions.
+  await expect(page.locator("#runlabel")).toHaveValue("10GeV electrons");
+  await page.locator(".rec-clear").click();
+
+  // Another experiment counts from 1 on its own.
+  await page.locator("#runname").fill("ui-suite-2");
+  await expect(page.locator("#runno")).toHaveValue("1");
 });
 
 test("a bounded recording closes itself at N events", async ({ page }) => {
@@ -501,36 +509,37 @@ test("a bounded recording closes itself at N events", async ({ page }) => {
   expect(st.running).toBe(true);
   await page.getByRole("button", { name: /Disable Acquisition/ }).click();
   const runs = await (await page.request.get("/api/runs")).json();
-  expect(runs.runs.find((r: any) => r.id.startsWith("bounded")).events).toBe(3);
+  expect(runs.runs.find((r: any) => r.id === "bounded/run_001").events).toBe(3);
+  await page.locator("#recmax").fill("");
 });
 
-test("a second run joins an existing folder when picked without timestamp", async ({ page }) => {
+test("a taken run number is refused until its folder is gone", async ({ page }) => {
   const status = async () => (await page.request.get("/api/status")).json();
-  // Timestamp off, so the folder carries the bare campaign name.
-  await page.locator(".rec-stamp input").uncheck();
-  await page.locator("#runname").fill("campaign");
+  await page.locator("#runname").fill("redo");
   await page.locator(".rec-group button.record").click();
-  await expect(page.locator(".rec-dest")).toContainText("new run folder");
-  await page.locator(".rec-modal button.record").click();
-  await expect(page.locator(".rec-group.on")).toBeVisible();
-  await page.locator("button.danger", { hasText: "Stop recording" }).click();
-  await expect.poll(async () => (await status()).recording).toBe(false);
-  const dirs0 = (await (await page.request.get("/api/runs")).json()).runs.length;
-
-  // Same name, timestamp still off: the dialog announces it JOINS the
-  // folder, and no new directory appears - the campaign stays together.
-  await page.locator(".rec-group button.record").click();
-  await expect(page.locator(".rec-dest")).toContainText("existing folder");
   await page.locator(".rec-modal button.record").click();
   await expect(page.locator(".rec-group.on")).toBeVisible();
   await page.locator("button.danger", { hasText: "Stop recording" }).click();
   await expect.poll(async () => (await status()).recording).toBe(false);
 
-  const runs = (await (await page.request.get("/api/runs")).json()).runs;
-  expect(runs.length).toBe(dirs0);
-  const camp = runs.find((r: { id: string }) => r.id === "campaign");
-  expect(camp.files).toBeGreaterThanOrEqual(3);   // 2 x run_N.root + metadata
-  await page.locator(".rec-stamp input").check(); // leave it as found
+  // Run 1 again: flagged in the row, and the dialog will not record it.
+  await page.locator("#runno").fill("1");
+  await expect(page.locator("#runno.clash")).toBeVisible();
+  await page.locator(".rec-group button.record").click();
+  await expect(page.locator(".rec-dest")).toContainText("already exists");
+  await expect(page.locator(".rec-modal button.record")).toBeDisabled();
+  await page.locator(".rec-modal button", { hasText: "Cancel" }).click();
+
+  // Delete the folder (the operator does it in Explorer; the server sees
+  // the same disk) and the same number records, with no reload.
+  expect((await page.request.delete("/api/runs/redo/run_001")).ok()).toBe(true);
+  await expect(page.locator("#runno.clash")).toHaveCount(0);
+  await page.locator(".rec-group button.record").click();
+  await page.locator(".rec-modal button.record").click();
+  await expect(page.locator(".rec-group.on .rec-name")).toContainText("redo · Run 1");
+  await page.locator("button.danger", { hasText: "Stop recording" }).click();
+  await expect.poll(async () => (await status()).recording).toBe(false);
+  await page.getByRole("button", { name: /Disable Acquisition/ }).click();
 });
 
 test("experiment conditions reach the server and the record dialog", async ({ page }) => {
@@ -545,6 +554,7 @@ test("experiment conditions reach the server and the record dialog", async ({ pa
   }).toBe(true);
   // ...and the confirm-setup digest shows it before anything records.
   await page.locator(".view-tabs button", { hasText: "Live" }).click();
+  await page.locator("#runname").fill("ui-suite");
   await page.locator(".rec-group button.record").click();
   await expect(page.locator(".cond-pill", { hasText: "XCET 40" })).toBeVisible();
   await page.locator(".rec-modal button", { hasText: "Cancel" }).click();
@@ -665,13 +675,13 @@ test("an update is offered once no run is recording, and a reload keeps the form
   await page.locator("#runname").fill("cosmics");
   await page.locator("#runno").fill("7");
   await page.locator("#recmax").fill("5000");
-  await page.locator(".rec-stamp input").uncheck();
+  await page.locator("#runlabel").fill("10GeV-electrons");
   await banner.getByRole("button", { name: "Reload" }).click();
   await expect(page.locator(".hw-lock")).toBeEnabled({ timeout: 15_000 });
   await expect(page.locator("#runname")).toHaveValue("cosmics");
   await expect(page.locator("#runno")).toHaveValue("7");
   await expect(page.locator("#recmax")).toHaveValue("5000");
-  await expect(page.locator(".rec-stamp input")).not.toBeChecked();
+  await expect(page.locator("#runlabel")).toHaveValue("10GeV-electrons");
 
   // "Later" puts it away.
   await banner.getByRole("button", { name: "Later" }).click();

@@ -39,36 +39,28 @@ class Writer(abc.ABC):
 def write_run_metadata(directory: str, cfg, run_name: str,
                        run_number: int | None = None,
                        note: str = "",
-                       experiment: list | None = None) -> None:
+                       experiment: list | None = None,
+                       experiment_name: str = "",
+                       run_label: str = "") -> None:
     """Channel names and settings go in a sidecar next to the data, whatever
     the format - the data files' own layouts are fixed by compatibility.
     Names are stored bare, without the UI's "CH n - " prefix. The note is the
     operator's own words from record time - what was tested, beam energy -
     the context no register readback can supply.
 
-    A CAMPAIGN folder holds several run_<N>.root files, so the sidecar keeps
-    a per-run entry under "runs" (note, started, events) while the top-level
-    fields always describe the LATEST recording - which is what the listing
-    shows, and exactly right for the single-run folders too."""
-    path = os.path.join(directory, "run_metadata.json")
-    try:
-        with open(path) as f:
-            existing = json.load(f)
-        per_run = existing.get("runs") if isinstance(existing, dict) else None
-        per_run = dict(per_run) if isinstance(per_run, dict) else {}
-    except (OSError, ValueError):
-        per_run = {}
-    if run_number is not None:
-        per_run[str(run_number)] = {"note": note, "started": time.time(),
-                                    "experiment": experiment or []}
+    Every run has a folder of its own, so the sidecar describes exactly one
+    run. It names its experiment and label too: a run folder copied out of
+    its experiment still says where it came from."""
     meta = {
-        "runs": per_run,
         # The operator's key=value experiment facts, snapshotted BY VALUE at
         # record time - editing the conditions later never rewrites what was
         # true for this run. The DAQ carries these; it never interprets them.
         "experiment": experiment or [],
+        # The experiment FOLDER this run belongs to - not the conditions above.
+        "experiment_name": experiment_name,
         "run_name": run_name,
         "run_number": run_number,
+        "run_label": run_label,
         "note": note,
         "started": time.time(),
         # Where each channel lands in the ROOT file's channel[18] array -
@@ -101,8 +93,7 @@ def write_run_metadata(directory: str, cfg, run_name: str,
         json.dump(meta, f, indent=2)
 
 
-def stamp_run_end(directory: str, events: int,
-                  run_number: int | None = None) -> None:
+def stamp_run_end(directory: str, events: int) -> None:
     """Final event count into the sidecar, so a listing can show it without
     opening every data file. Losing it only costs the listing an event count,
     so it must never take a close down - but it is worth a line in the log,
@@ -113,9 +104,6 @@ def stamp_run_end(directory: str, events: int,
             meta = json.load(f)
         meta["events"] = events
         meta["ended"] = time.time()
-        entry = (meta.get("runs") or {}).get(str(run_number))
-        if entry is not None:            # the campaign folder's per-run record
-            entry["events"] = events
         with open(path, "w") as f:
             json.dump(meta, f, indent=2)
     except (OSError, ValueError) as e:
@@ -131,9 +119,11 @@ class NullWriter(Writer):
 class WaveDumpWriter(Writer):
     def __init__(self, directory: str, run_name: str = "",
                  run_number: int | None = None, note: str = "",
-                 experiment: list | None = None):
+                 experiment: list | None = None,
+                 experiment_name: str = "", run_label: str = ""):
         self._note = note
         self._experiment = experiment
+        self._ident = {"experiment_name": experiment_name, "run_label": run_label}
         self._files = {}
         self._cfg = None
         self._ascii = True
@@ -155,7 +145,7 @@ class WaveDumpWriter(Writer):
                 path = os.path.join(self._dir, f"wave_{ch}.{ext}")
                 self._files[ch] = open(path, mode)
             write_run_metadata(self._dir, cfg, self._run_name, self._run_number,
-                               self._note, self._experiment)
+                               self._note, self._experiment, **self._ident)
             self._cfg = cfg         # last: close() takes this as "there is a run"
         except OSError:
             # Do not leave half a run open: the caller discards the directory,
@@ -211,7 +201,7 @@ class WaveDumpWriter(Writer):
                           "last events may be missing: %s", ch, e)
         self._files = {}
         if self._cfg is not None:
-            stamp_run_end(self._dir, self._events, self._run_number)
+            stamp_run_end(self._dir, self._events)
 
 
 class RootWriter(Writer):
@@ -254,12 +244,14 @@ class RootWriter(Writer):
 
     def __init__(self, directory: str, run_name: str = "",
                  run_number: int | None = None, note: str = "",
-                 experiment: list | None = None):
+                 experiment: list | None = None,
+                 experiment_name: str = "", run_label: str = ""):
         self._dir = directory
         self._run_name = run_name
         self._run_number = run_number
         self._note = note
         self._experiment = experiment
+        self._ident = {"experiment_name": experiment_name, "run_label": run_label}
         self._file = None
         self._tree = None
         self._cfg = None
@@ -295,7 +287,7 @@ class RootWriter(Writer):
         dt = C.sample_period_ns(cfg.drs4_frequency)
         self._times = np.tile(np.arange(n, dtype=np.float32) * dt, (2, 1))
         write_run_metadata(self._dir, cfg, self._run_name, self._run_number,
-                           self._note, self._experiment)
+                           self._note, self._experiment, **self._ident)
 
     @staticmethod
     def root_slot(ch: int) -> int:
@@ -362,13 +354,14 @@ class RootWriter(Writer):
                 self._file.close()
                 self._file = None
         if self._cfg is not None:
-            stamp_run_end(self._dir, self._events, self._run_number)
+            stamp_run_end(self._dir, self._events)
 
 
 def make_writer(directory: str, run_name: str = "",
                 output_format: str = "ascii",
                 run_number: int | None = None, note: str = "",
-                experiment: list | None = None) -> Writer:
-    if (output_format or "").lower() == "root":
-        return RootWriter(directory, run_name, run_number, note, experiment)
-    return WaveDumpWriter(directory, run_name, run_number, note, experiment)
+                experiment: list | None = None,
+                experiment_name: str = "", run_label: str = "") -> Writer:
+    cls = RootWriter if (output_format or "").lower() == "root" else WaveDumpWriter
+    return cls(directory, run_name, run_number, note, experiment,
+               experiment_name, run_label)

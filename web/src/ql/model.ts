@@ -5,7 +5,7 @@ import type { ChanSel, ChannelSetting, Cut, Err, Kind, Processing, Quantity, QlR
 
 export const N_CH = 16;
 
-/** A tag read out of each run's note (or the folder name) with a pattern.
+/** A tag read out of each run's note (or its run folder name) with a pattern.
  *  Tags from the Experiment Conditions need no definition: every key in
  *  the metadata is one automatically. */
 export interface TagDef {
@@ -168,25 +168,25 @@ function safeRegex(p: string): RegExp | null {
   try { return new RegExp(p, "i"); } catch { return null; }
 }
 
-export function evalTag(def: TagDef, run: QlRun, folder: string): string | null {
+export function evalTag(def: TagDef, run: QlRun): string | null {
   const re = safeRegex(def.pattern);
   if (!re) return null;
-  const m = re.exec(def.source === "folder" ? folder : run.note);
+  const m = re.exec(def.source === "folder" ? run.name : run.note);
   if (!m) return null;
   return (m[1] ?? m[0]).trim();
 }
 
 /** Every tag's value for every run: hand fixes first, then the pattern or
  *  the metadata. Missing values are absent, never "". */
-export function tagValues(runs: QlRun[], defs: TagDef[], overrides: FolderPrefs["overrides"],
-                          folder: string): Record<string, Record<string, string>> {
+export function tagValues(runs: QlRun[], defs: TagDef[], overrides: FolderPrefs["overrides"]):
+                          Record<string, Record<string, string>> {
   const tags = allTags(runs, defs);
   const out: Record<string, Record<string, string>> = {};
   for (const r of runs) {
     const v: Record<string, string> = {};
     for (const t of tags) {
       const def = defs.find((d) => d.name === t.name);
-      const val = def ? evalTag(def, r, folder) : r.experiment[t.name];
+      const val = def ? evalTag(def, r) : r.experiment[t.name];
       if (val !== undefined && val !== null && val !== "") v[t.name] = val;
     }
     if (r.number !== null) v["run"] = String(r.number);

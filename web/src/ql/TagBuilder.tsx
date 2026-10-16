@@ -2,12 +2,12 @@ import { useMemo, useState } from "react";
 import type { QlRun } from "./types";
 import { evalTag, suggestPattern, tokenize, type FolderPrefs, type TagDef } from "./model";
 
-/** Make (or edit) a tag from the varying part of the run notes: click the
+/** Make (or edit) a tag from the varying part of the run notes or run folder
+ *  names (run_002_10GeV-electrons): click the
  *  piece that changes, check every run's value, fix the misses by hand.
  *  Hand fixes belong to this view only - run files are never modified. */
-export function TagBuilder({ runs, folder, initial, overrides, taken, onSave, onDelete, onClose }: {
+export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, onClose }: {
   runs: QlRun[];
-  folder: string;
   initial: TagDef | null;
   overrides: FolderPrefs["overrides"];
   taken: string[];
@@ -34,7 +34,7 @@ export function TagBuilder({ runs, folder, initial, overrides, taken, onSave, on
   });
 
   const sample = runs.find((r) => r.key === sampleKey) ?? sample0;
-  const text = source === "folder" ? folder : (sample?.note ?? "");
+  const text = (source === "folder" ? sample?.name : sample?.note) ?? "";
   const tokens = useMemo(() => tokenize(text), [text]);
   const def: TagDef = { name: name.trim(), source, pattern, kind };
   let badPattern = false;
@@ -50,10 +50,10 @@ export function TagBuilder({ runs, folder, initial, overrides, taken, onSave, on
   };
 
   const rows = runs.filter((r) => r.state !== "unsupported").map((r) => {
-    const src = source === "folder" ? folder : r.note;
+    const src = source === "folder" ? r.name : r.note;
     let m: RegExpExecArray | null = null;
     if (pattern && !badPattern) { try { m = new RegExp(pattern, "i").exec(src); } catch { m = null; } }
-    const auto = pattern && !badPattern ? evalTag(def, r, folder) : null;
+    const auto = pattern && !badPattern ? evalTag(def, r) : null;
     return { r, src, m, auto };
   });
   const misses = rows.filter((x) => x.auto === null && !(fixes[x.r.key] ?? "").trim()).length;
@@ -77,24 +77,22 @@ export function TagBuilder({ runs, folder, initial, overrides, taken, onSave, on
             <button role="radio" aria-checked={source === "note"} className={source === "note" ? "on" : ""}
               onClick={() => { setSource("note"); setPicked(null); }}>Run note</button>
             <button role="radio" aria-checked={source === "folder"} className={source === "folder" ? "on" : ""}
-              onClick={() => { setSource("folder"); setPicked(null); }}>Folder name</button>
+              onClick={() => { setSource("folder"); setPicked(null); }}>Run folder</button>
           </div>
         </div>
 
         <div className="ql-step-label">1 · Click the part that changes from run to run</div>
         <div className="ql-tokens">
-          {source === "note" ? (
-            <select aria-label="Example run" value={sample?.key ?? ""}
-              onChange={(e) => { setSampleKey(e.target.value); setPicked(null); }}>
-              {runs.filter((r) => r.state !== "unsupported").map((r) => (
-                <option key={r.key} value={r.key}>run {r.number ?? r.key}</option>
-              ))}
-            </select>
-          ) : null}
+          <select aria-label="Example run" value={sample?.key ?? ""}
+            onChange={(e) => { setSampleKey(e.target.value); setPicked(null); }}>
+            {runs.filter((r) => r.state !== "unsupported").map((r) => (
+              <option key={r.key} value={r.key}>run {r.number ?? r.key}</option>
+            ))}
+          </select>
           {tokens.length ? tokens.map((tk, i) => (
             <button key={i} className={"ql-tok" + (picked === i ? " on" : "")} aria-pressed={picked === i}
               onClick={() => pick(i)}>{tk}</button>
-          )) : <span className="muted">This run has no note.</span>}
+          )) : <span className="muted">{source === "folder" ? "This run has no folder name." : "This run has no note."}</span>}
         </div>
         <div className="muted">
           {pattern ? <>Matched by {describe || "the pattern"}. </> : null}
@@ -120,7 +118,7 @@ export function TagBuilder({ runs, folder, initial, overrides, taken, onSave, on
         <div className="ql-step-label">3 · Check every run. Fix misses by hand; this changes this view only.</div>
         <div className="ql-tagb-table">
           <table className="ql-table">
-            <thead><tr><th>Run</th><th>{source === "folder" ? "Folder" : "Note"}</th><th>{name.trim() || "value"}</th></tr></thead>
+            <thead><tr><th>Run</th><th>{source === "folder" ? "Run folder" : "Note"}</th><th>{name.trim() || "value"}</th></tr></thead>
             <tbody>
               {rows.map(({ r, src, m, auto }) => {
                 const fixed = fixes[r.key];

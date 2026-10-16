@@ -4,7 +4,8 @@ import type { Condition, DisplayPrefs, WaveMode } from "./api";
 import { ConditionsPanel } from "./components/ConditionsPanel";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
-import type { AvgSettings, BoardConfig, Catalog, Status, Telemetry, ZeroCal } from "./types";
+import type { AvgSettings, BoardConfig, Catalog, RunIdent, Status, Telemetry, ZeroCal } from "./types";
+import { cleanName, existingExperiment, runFolder } from "./runid";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { BankPanel } from "./components/BankPanel";
 import { SettingsList } from "./components/SettingsList";
@@ -65,10 +66,17 @@ export function App() {
   // Form values survive a reload - the one an update asks for included. The
   // remembered last-used values are "local" (every window); a window's own
   // drafts are "session" (that window only).
-  const [runName, setRunName] = usePersistentState("runName", "");
-  // Empty = let the server infer the next number from the data directory.
-  const [runNo, setRunNo] = usePersistentState("runNo", "", "session");
-  const [stampRun, setStampRun] = usePersistentState("stampRun", true);
+  // The experiment every Record goes into ("runName" is its old storage key:
+  // a name remembered from before experiments carries over as one).
+  const [experiment, setExperiment] = usePersistentState("runName", "");
+  // null = follow the suggestion (one past the highest run in the experiment,
+  // read off disk every poll); a string = the operator's override, kept as
+  // typed - even empty, so clearing the field to retype does not snap back.
+  const [runNo, setRunNo] = usePersistentState<string | null>("runNoOverride", null, "session");
+  // Optional, beside the number, never instead of it. Kept after a run: the
+  // next one is usually the same conditions, and the record dialog shows it
+  // before every run so a stale label is caught there.
+  const [runLabel, setRunLabel] = usePersistentState("runLabel", "");
   const [tour, setTour] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);   // bump to re-list runs
@@ -117,10 +125,6 @@ export function App() {
   const [locks, setLocks] = useState<Record<string, boolean>>({});
   const locksRef = useRef(locks);
   locksRef.current = locks;
-  // Existing run folders feed the run-name dropdown: picking one (with the
-  // timestamp off) records INTO it - runs of an unchanged setup stay in one
-  // campaign folder instead of scattering one directory per run.
-  const [runDirs, setRunDirs] = useState<string[]>([]);
   // Bumped to wipe every channel's persistence pile: on recording start and
   // on calibration start, so each pile tells one coherent story - a
   // calibration's profile stays on screen for review until the next thing
@@ -187,12 +191,6 @@ export function App() {
   }, []);
 
   useEffect(() => { loadOnce(); }, [loadOnce]);
-
-  // Keep the run-name dropdown in step with what is on disk; runsKey bumps
-  // whenever a recording starts or stops.
-  useEffect(() => {
-    api.runs().then((r) => setRunDirs(r.runs.map((x) => x.id))).catch(() => {});
-  }, [runsKey]);
 
   function adoptDisplay(d: DisplayPrefs) {
     setYRanges(fromPrefs(d));
@@ -588,25 +586,36 @@ export function App() {
     setRecDialog(true);
   };
 
-  // Timestamp OFF and the name matches a folder on disk: this recording
-  // joins that folder (run_<N>.root added alongside) instead of failing on
-  // the clash or minting yet another directory.
-  const intoExisting = !stampRun && runDirs.includes(runName.trim());
+  // What a Record would create, worked out from the server's view of the
+  // disk: the experiment as spelled there, its taken numbers, the number
+  // in force (the override, else one past the highest) and whether that
+  // number already has a folder - so a clash shows before Record, and
+  // deleting the folder in Explorer clears it within a poll.
+  const expName = existingExperiment(status?.experiments, experiment);
+  const takenNos = status?.experiments?.[expName] ?? [];
+  const suggestedNo = (takenNos.length ? Math.max(...takenNos) : 0) + 1;
+  const runNoText = typeof runNo === "string" ? runNo : String(suggestedNo);
+  const runNoVal = /^\d+$/.test(runNoText.trim()) && Number(runNoText) >= 1
+    ? Number(runNoText) : null;
+  const runClash = runNoVal != null && takenNos.includes(runNoVal);
+  const recBlock = !expName ? "Type an experiment name first"
+    : runNoVal == null ? "The run number must be a whole number, 1 or more"
+    : runClash ? `Run ${runNoVal} already exists in ${expName} - pick another number, or delete that run's folder to record it again`
+    : "";
 
   const startRec = async () => {
+    if (recBlock) return;
     setRecDialog(false);
     try {
-      const n = runNo.trim() === "" ? null : Number(runNo);
       const m = recMax.trim() === "" ? null : Number(recMax);
-      const r = await api.recStart(runName, stampRun,
-                                   Number.isFinite(n as number) ? n : null,
+      const r = await api.recStart(experiment, runNoVal,
                                    Number.isFinite(m as number) ? m : null,
-                                   recNote.trim(), intoExisting);
+                                   recNote.trim(), runLabel.trim());
       setStatus(r.status);
       if (!r.ok) push("err", "Could not start recording", [r.error ?? "no reason given"]);
       else {
         push("ok", "Recording", [`${r.run}`]);
-        setRunNo("");            // the next number is inferred again
+        setRunNo(null);          // back to following the next free number
         setRecNote("");          // a note describes one run, never the next
         setRunsKey((k) => k + 1);
       }
@@ -733,7 +742,8 @@ export function App() {
               <>
                 <span className="rec-dot" />
                 <span className="rec-label">Recording</span>
-                <span className="rec-name mono">{tele?.run_id ?? status?.run_id}</span>
+                <RecordingName run={tele?.run ?? status?.run ?? null}
+                  id={tele?.run_id ?? status?.run_id ?? null} />
                 <span className="rec-count mono">
                   <Elapsed since={tele?.run_started ?? status?.run_started ?? null} />
                   {" · "}{(tele?.recorded ?? status?.recorded ?? 0).toLocaleString()} ev
@@ -742,24 +752,41 @@ export function App() {
               </>
             ) : (
               <>
-                <label className="rec-label" htmlFor="runname">Run name</label>
-                <input id="runname" className="rec-input" placeholder="e.g. cosmics" value={runName}
-                  disabled={!connected} list="run-dirs"
-                  title="Pick an existing folder (with the timestamp off) to add this run to it, or type a new name for a new folder"
-                  onChange={(e) => setRunName(e.target.value)}
+                <label className="rec-label" htmlFor="runname">Experiment</label>
+                <input id="runname" className="rec-input" placeholder="e.g. iowa-flash" value={experiment}
+                  disabled={!connected} list="experiments"
+                  title="The folder every run goes into. Pick one to continue it, or type a new name to start one."
+                  onChange={(e) => setExperiment(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
-                <datalist id="run-dirs">
-                  {runDirs.map((d) => <option key={d} value={d} />)}
+                <datalist id="experiments">
+                  {Object.keys(status?.experiments ?? {}).sort()
+                    .map((d) => <option key={d} value={d} />)}
                 </datalist>
                 <label className="rec-label" htmlFor="runno"
-                  title="The analysis-facing run number (run_N.root). Prefilled with one past the highest number in the data directory; type to override.">
+                  title="Counts per experiment. Follows one past the highest run there; type to override. A number whose folder exists is refused - delete that folder to record it again.">
                   Run #
                 </label>
-                <input id="runno" className="rec-input rec-no" type="number" min={1}
-                  placeholder={String(status?.next_run_number ?? "")}
-                  value={runNo} disabled={!connected}
+                <input id="runno" className={"rec-input rec-no" + (runClash ? " clash" : "")}
+                  type="number" min={1} value={runNoText} disabled={!connected}
+                  title={runClash ? recBlock : undefined}
+                  onFocus={(e) => e.target.select()}
                   onChange={(e) => setRunNo(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
+                <label className="rec-label" htmlFor="runlabel"
+                  title="Optional words for the folder name, after the number: run_003_10GeV-electrons. Stays set for the next run.">
+                  Label
+                </label>
+                <span className="rec-label-field">
+                  <input id="runlabel" className="rec-input rec-tag" placeholder="optional"
+                    value={runLabel} disabled={!connected}
+                    onChange={(e) => setRunLabel(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
+                  {runLabel ? (
+                    <button className="rec-clear" disabled={!connected}
+                      onClick={() => setRunLabel("")} title="Clear the label"
+                      aria-label="Clear the label">&times;</button>
+                  ) : null}
+                </span>
                 <label className="rec-label" htmlFor="recmax"
                   title="Stop the recording automatically after this many events. Blank = record until stopped. Acquisition keeps running either way.">
                   Stop after
@@ -768,14 +795,10 @@ export function App() {
                   placeholder="&#8734; ev" value={recMax} disabled={!connected}
                   onChange={(e) => setRecMax(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") openRecDialog(); }} />
-                <label className="rec-stamp" title="Append the date and time, so runs of the same name never collide">
-                  <input type="checkbox" checked={stampRun} disabled={!connected}
-                    onChange={(e) => setStampRun(e.target.checked)} />
-                  Include timestamp
-                </label>
                 <button className="record" onClick={openRecDialog}
-                  disabled={!connected}
-                  title="Start writing this run to disk (asks for a run note first)">
+                  disabled={!connected || !expName}
+                  title={!expName ? "Type an experiment name first"
+                                  : "Start writing this run to disk (asks for a run note first)"}>
                   <span className="rec-dot" />Record
                 </button>
               </>
@@ -1224,15 +1247,19 @@ export function App() {
         <div className="modal-backdrop" onClick={() => setRecDialog(false)}>
           <div className="modal rec-modal" onClick={(e) => e.stopPropagation()}
             role="dialog" aria-label="Run notes">
+            {/* The verify step: read this back against what the coordinator
+                called - experiment, number, label - before it records. */}
             <h3>
-              Run {runNo.trim() || status?.next_run_number || "?"}
-              {runName.trim() ? ` · ${runName.trim()}` : ""}
+              Run {runNoVal ?? "?"}
+              {expName ? ` · ${expName}` : ""}
+              {cleanName(runLabel) ? ` · ${cleanName(runLabel)}` : ""}
               {recMax.trim() ? ` · ${recMax.trim()} events` : ""}
             </h3>
-            <p className={"rec-dest " + (intoExisting ? "into" : "")}>
-              {intoExisting
-                ? `Adds run_${runNo.trim() || status?.next_run_number}.root to the existing folder`
-                : "Creates a new run folder"}
+            <p className={"rec-dest" + (recBlock ? " blocked" : "")}>
+              {recBlock || <>
+                Creates <span className="mono">{expName}/{runFolder(runNoVal!, runLabel)}/</span>
+                {status?.experiments?.[expName] ? "" : " - a new experiment"}
+              </>}
             </p>
             {/* Confirm-setup digest: the server's truth at this moment - the
                 last look before these become this run's permanent record. */}
@@ -1275,7 +1302,8 @@ export function App() {
             </p>
             <div className="modal-btns">
               <button onClick={() => setRecDialog(false)}>Cancel</button>
-              <button className="record" onClick={startRec}>
+              <button className="record" onClick={startRec} disabled={!!recBlock}
+                title={recBlock || undefined}>
                 <span className="rec-dot" />Record
               </button>
             </div>
@@ -1284,5 +1312,18 @@ export function App() {
       ) : null}
       {tour ? <Tour steps={QUICK_USE} onClose={() => setTour(false)} /> : null}
     </div>
+  );
+}
+
+/** The live run, said the way the coordinator says it: "iowa-flash · Run 2 ·
+ *  10GeV-electrons". The bare id is the fallback for a server too old to
+ *  send the parts. */
+function RecordingName({ run, id }: { run: RunIdent | null; id: string | null }) {
+  if (!run) return <span className="rec-name mono">{id}</span>;
+  return (
+    <span className="rec-name mono" title={id ?? undefined}>
+      {run.experiment} · <b className="rec-runno">Run {run.number}</b>
+      {run.label ? ` · ${run.label}` : ""}
+    </span>
   );
 }
