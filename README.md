@@ -261,6 +261,25 @@ halts readout entirely.
 size. **Download** gives you a zip of the whole run. The panel also shows the
 folder on the server where runs live.
 
+### 6. Check before you leave: Quick Look
+
+The **Quick Look** tab gives preliminary results from recorded runs, so you can
+spot a run that needs redoing while you can still redo it. It only reads: it
+never changes, moves or adds anything in a run folder.
+
+- Pick a **folder**, tick the runs you want. The **check** column flags clipped
+  events and pedestal jumps.
+- **Tags** come from each run's Experiment Conditions automatically. **+ Tag from
+  name** makes one from the run notes - click the part that changes (the "8" in
+  "8GeV") and check every run's value.
+- **Channels**: click one to feed it from TR0 (or another input) or to strike it.
+- Pick an analysis, then read the sentence above the plot - every highlighted
+  word is a menu.
+- Plots appear within seconds from each run's first events and sharpen when the
+  full pass finishes. It runs at low priority; recording is never slowed.
+- **Download CSV / PNG** for the plot; **Export settings** saves the channel map,
+  tags and cuts to a file you can load again.
+
 ---
 
 ## What the settings mean
@@ -412,6 +431,7 @@ server/
     writer.py        Writer interface + WaveDump-compatible writer
     acquisition.py   threaded readout engine, recording, telemetry
     server.py        FastAPI REST + WebSocket + static
+    quicklook/       Quick Look: read-only analysis of recorded ROOT runs
     static/          built web UI (generated — build from web/, don't edit)
   tests/             hardware-free smoke tests
 web/src/             React + TypeScript UI

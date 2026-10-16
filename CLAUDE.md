@@ -324,6 +324,7 @@ server/daq/
   acquisition.py   threaded readout engine + telemetry snapshots
   server.py        FastAPI REST + WS + static
   update.py        `daq update`: release check, then hand-over to the installer
+  quicklook/       read-only analysis of recorded runs (see Quick Look)
   __main__.py      entrypoint
 web/               React + Vite + TypeScript; builds into server/daq/static
 ```
@@ -643,6 +644,51 @@ Never let the UI show a setting the hardware did not confirm.
   (`locks`), keyed by setting key, so every window and a reload agree;
   `LOCKED_BY_DEFAULT` (App.tsx) names the ones that start locked - today
   only the TR DC offset.
+
+## Quick Look (`server/daq/quicklook`, `web/src/ql`)
+
+Preliminary analysis of recorded runs - "do we need to rerun anything?" before
+leaving the beamline, not publishable results. **Read-only, absolutely**: it
+never writes into a run folder or to the server's settings. Tags, the channel
+map, strikes, hand-fixed tag values and plot choices live in the BROWSER
+(`usePersistentState("ql:prefs")`, keyed by folder); exports are downloads
+(CSV, PNG, a settings JSON that "Load settings" reads back). ROOT only:
+WaveDump-format runs list as "Not supported: WaveDump format".
+
+- **Two stages, because waveforms are big** (channel[18][1024] f32 is ~74 KB
+  per event). Stage 1 (`features.py`) reads a run once and keeps a per-event
+  table for EVERY slot - pedestal, its RMS, signed charge, both peaks, both
+  CFD times, clipping - so the channel map, polarity, cuts, grouping and stats
+  (stage 2, `aggregate.py`/`service.py`) never reread a waveform. Only the
+  baseline window, integration window (fixed or from a reference pulse) and
+  CFD fraction feed stage 1.
+- Stage 1 runs in **spawned daemon worker processes at below-normal
+  priority** (`worker.py`), never threads: numpy in the server's interpreter
+  would fight the readout for the GIL. Daemon, so shutdown never waits on a
+  pass. Previews (first 1000 events per run) jump the queue so a plot shows in
+  seconds; a settings change cancels now-pointless passes via flag files.
+- **The cache is the one thing written**, under `<state dir>/quicklook-cache`,
+  keyed by file (path, size, mtime) + the normalized settings + `features.
+  VERSION`. **Bump VERSION whenever a pass computes something different**, or
+  stale tables from the old build are served as current. Pruned past 4 GB.
+- **The server pins the cache dir into the workers** (`cache.set_dir`). A
+  spawned child re-runs the main module's top level; the smoke suite sets the
+  state dir to a fresh temp dir there, so a child that recomputed it wrote
+  every table where the parent never looked. Corollary: a script piped to
+  `python -` cannot spawn workers at all - run test scripts from a file.
+- Units: input mV. TR0 slots (8, 17) are scaled x2 for its attenuator, so a
+  channel fed from TR0 compares with its neighbours. Clipping is any sample
+  within 2 mV of the +/-500 mV rails (maketree's mV convention). Slots the
+  writer filled with exact zeros (a disabled bank) are NaN, "not recorded".
+  JSON carries no NaN: `service._clean` turns them into null.
+- Channel numbering is DAQ numbering (inputs 0-15, `tr0:0`/`tr0:1`);
+  `slots.py` is the only place it meets the ROOT slot order.
+- The fake backend writes a synthetic 12-run campaign (`demo.py`, through the
+  real RootWriter) under the STATE dir and lists it as an extra folder - NOT
+  the data dir, where its run_1..12 would advance the real run numbering the
+  UI suite asserts on. The smoke test and `quicklook.spec.ts` use it: ch 8
+  dead with its pixel on TR0, a clipped run (5), a +6 mV pedestal step (10).
+- The run being recorded is listed but not selectable until it ends.
 
 ## Watching vs recording
 

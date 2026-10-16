@@ -24,6 +24,7 @@ import { PERSIST_TRACES } from "./waveDensity";
 import { BlurInput } from "./components/BlurInput";
 import { LockToggle } from "./components/LockToggle";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { QuickLook } from "./ql/QuickLook";
 import { usePersistentState } from "./persist";
 import { onFlush } from "./flush";
 import { TR_OFF_MID_DAC, fmtDacVolts, trAbsThresholdV, trThresholdDacForAbs,
@@ -106,7 +107,7 @@ export function App() {
   const [recCond, setRecCond] = useState<Condition[]>([]);
   // Live = watch and operate; Experiment = campaign setup, conditions, and
   // everything you would hate to change by accident mid-campaign.
-  const [view, setView] = usePersistentState<"live" | "experiment">("view", "live");
+  const [view, setView] = usePersistentState<"live" | "experiment" | "quicklook">("view", "live");
   // Per-setting locks (house style: the icon left of the label). Keyed by
   // setting ("post_trigger"), bank setting ("bank1:enabled"), channel offset
   // ("ch:5") or activity ("calibration"); a key not present falls back to
@@ -690,6 +691,10 @@ export function App() {
               className={view === "experiment" ? "on" : ""}
               title="Campaign setup: the settings and experiment facts that stay fixed for a whole campaign"
               onClick={() => setView("experiment")}>Experiment Settings</button>
+            <button role="tab" aria-selected={view === "quicklook"}
+              className={view === "quicklook" ? "on" : ""}
+              title="Preliminary analysis of recorded runs - read-only, never touches the data"
+              onClick={() => setView("quicklook")}>Quick Look</button>
           </nav>
           <div className="spacer" />
           <ConnectionBadge status={status} serverUp={serverUp}
@@ -779,7 +784,11 @@ export function App() {
         </div>
       </header>
 
-      <div className="body">
+      {/* Quick Look reads recorded runs and needs no unit, so it lives
+          outside the hardware lock. Live stays mounted underneath, hidden,
+          so switching back never loses its averages or plots. */}
+      {view === "quicklook" ? <QuickLook onError={(t, l) => push("err", t, l)} /> : null}
+      <div className="body" style={view === "quicklook" ? { display: "none" } : undefined}>
         <fieldset className="hw-lock" disabled={!connected}
           title={connected ? undefined : "No unit connected"}>
         {view === "experiment" ? (

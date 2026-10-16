@@ -1251,6 +1251,86 @@ def test_log_lines_carry_no_durations():
     assert not any(re.search(r"\d+\.\d+s", m) for m in seen), seen
 
 
+def test_quick_look_reads_a_campaign_and_never_writes_to_it():
+    """Quick Look end to end through the HTTP API, on a synthetic campaign
+    written by the real RootWriter: the workers' full pass lands, the
+    channel map (ch 8 fed from TR0, with TR0's x2 attenuator undone) and
+    strikes apply, the run checks flag the clipped run and the pedestal
+    step, and the run folder is byte-for-byte untouched afterwards."""
+    from daq import runs
+    from daq.quicklook import demo
+
+    def snapshot(path):
+        return {n: (os.path.getsize(os.path.join(path, n)),
+                    os.path.getmtime(os.path.join(path, n)))
+                for n in sorted(os.listdir(path))}
+
+    with tempfile.TemporaryDirectory() as d:
+        old_root, runs.DATA_ROOT = runs.DATA_ROOT, d
+        try:
+            folder = demo.write_campaign(d, events=120)
+            os.makedirs(os.path.join(d, "dumped"))
+            open(os.path.join(d, "dumped", "wave_0.txt"), "w").close()
+            before = snapshot(folder)
+            client = TestClient(create_app(_engine_without_a_unit()))
+
+            ids = [f["id"] for f in client.get("/api/ql/folders").json()["folders"]]
+            assert demo.FOLDER in ids and "dumped" in ids
+            dumped = client.get("/api/ql/folder", params={"path": "dumped"}).json()
+            assert dumped["runs"][0]["reason"] == "Not supported: WaveDump format"
+            info = client.get("/api/ql/folder", params={"path": demo.FOLDER}).json()
+            assert len(info["runs"]) == len(demo.RUNS)
+            r3 = next(r for r in info["runs"] if r["number"] == 3)
+            assert r3["note"].startswith("electrons 8GeV") and r3["experiment"]["bias_V"] == "42.0"
+
+            channels = [{"source": f"in:{i}", "struck": False} for i in range(16)]
+            channels[8] = {"source": "tr0:1", "struck": False}
+            channels[13]["struck"] = True
+            electrons = [f"run_{n}.root" for n in range(1, 8)]
+            req = {"folder": demo.FOLDER, "runs": [f"run_{n}.root" for n in range(1, 13)],
+                   "processing": {"baseline": [10, 40],
+                                  "window": {"mode": "record", "range": [62, 117]}},
+                   "channels": channels, "no_clip": False,
+                   "plot": {"kind": "channel", "quantity": "charge", "stat": "mean"},
+                   "groups": [{"series": "e", "runs": electrons}], "pulse_channel": 5}
+            deadline = time.time() + 120
+            while True:
+                r = client.post("/api/ql/analyse", json=req).json()
+                if r["progress"]["done"] or time.time() > deadline:
+                    break
+                time.sleep(0.5)
+            assert r["progress"]["done"] and r["progress"]["full"] == 12, r["progress"]
+            assert r["polarity"][5] == "neg"
+            pts = r["plot"]["series"][0]["points"]
+            assert pts[13]["off"] and pts[13]["y"] is None
+            # Pixel 8 through TR0 vs its neighbour pixel 4: the geometry puts
+            # them within ~10%; without undoing TR0's x2 it would be ~0.5.
+            assert 0.85 < pts[8]["y"] / pts[4]["y"] < 1.35, (pts[8]["y"], pts[4]["y"])
+            assert r["runs"]["run_5.root"]["clip_frac"] > 0.01
+            assert abs(r["runs"]["run_10.root"]["ped_shift"]["mv"] - 6.0) < 1.0
+            assert r["pulse"] and min(r["pulse"]["v"]) < -5
+
+            # Resolution vs energy: electrons improve with energy, and the fit
+            # finds a stochastic term.
+            req2 = dict(req, plot={"kind": "tag", "quantity": "charge", "stat": "resolution",
+                                   "channel": "sum", "fit": True},
+                        groups=[{"series": "e", "x": e, "runs": [f"run_{n}.root"]}
+                                for n, (_, e, _) in enumerate(demo.RUNS[:7], start=1)
+                                if n != 4])
+            r2 = client.post("/api/ql/analyse", json=req2).json()
+            ys = [p["y"] for p in r2["plot"]["series"][0]["points"]]
+            assert ys[0] > ys[-1] and r2["plot"]["series"][0]["fit"]["a"] > 0
+
+            # Cuts are stage 2: instant, and they reduce the count.
+            req3 = dict(req, cuts=[{"quantity": "charge", "channel": "sum", "min": 50}])
+            r3 = client.post("/api/ql/analyse", json=req3).json()
+            assert 0 < r3["passed"] < r3["events"]
+
+            assert snapshot(folder) == before          # read-only, really
+        finally:
+            runs.DATA_ROOT = old_root
+
+
 if __name__ == "__main__":
     for fn in [test_tiers_and_enable_is_per_group,
                test_rolling_average_matches_numpy, test_rolling_average_event_window,
@@ -1289,7 +1369,8 @@ if __name__ == "__main__":
                test_log_steps_nest_outside_in_then_close_inside_out,
                test_log_conclusion_never_repeats_the_opening_line,
                test_log_atomic_operations_are_one_line,
-               test_log_lines_carry_no_durations]:
+               test_log_lines_carry_no_durations,
+               test_quick_look_reads_a_campaign_and_never_writes_to_it]:
         fn()
         print("ok:", fn.__name__)
     print("ALL SMOKE TESTS PASSED")
