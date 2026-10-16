@@ -12,6 +12,8 @@
 # Set by `daq update`, which runs this script to do its installing:
 #   DAQ_WHEEL=<url>      install this wheel; the release was already looked up
 #   DAQ_RELAUNCH=<args>  after a good install, start `daq <args>` in this terminal
+#   DAQ_SERVICE=<scope>:<unit>  after a good install, have systemd start the
+#                        unit the server ran as (scope: system or user)
 
 set -euo pipefail
 
@@ -21,6 +23,7 @@ PYTHON_VERSION="3.11"
 VERSION="${DAQ_VERSION:-latest}"
 WHEEL="${DAQ_WHEEL:-}"
 RELAUNCH="${DAQ_RELAUNCH:-}"
+SERVICE="${DAQ_SERVICE:-}"
 
 if [ -t 1 ]; then B=$'\033[1m'; Y=$'\033[33m'; R=$'\033[31m'; G=$'\033[32m'; N=$'\033[0m'
 else B=""; Y=""; R=""; G=""; N=""; fi
@@ -264,6 +267,27 @@ if [ -n "$RELAUNCH" ]; then
     say "Starting the DAQ again"
     # shellcheck disable=SC2086  # word splitting is the point: these are arguments
     exec "$DAQ_BIN" $RELAUNCH
+fi
+if [ -n "$SERVICE" ]; then
+    # The server was a systemd unit; systemd owns it, so systemd starts it.
+    unit="${SERVICE#*:}"
+    if [ "${SERVICE%%:*}" = "user" ]; then
+        start=(systemctl --user start "$unit")
+    elif [ "$(id -u)" -eq 0 ]; then
+        start=(systemctl start "$unit")
+    else
+        start=(sudo systemctl start "$unit")
+    fi
+    say "Starting $unit again"
+    if "${start[@]}"; then
+        printf '   %sok%s  %s started\n' "$G" "$N" "$unit"
+    else
+        warn "Could not start it. Start it yourself: ${start[*]}"
+    fi
+    if [ "$missing" -eq 1 ]; then
+        warn "Install the CAEN items above before the unit will open."
+    fi
+    exit 0
 fi
 echo "  daq                    open the DAQ (starts the server if needed)"
 echo "  daq --host 0.0.0.0     serve to the network"

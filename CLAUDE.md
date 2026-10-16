@@ -557,7 +557,12 @@ point: it makes the Python/CAEN-DLL bitness mismatch impossible. Updating is
   good install). Older installers ignore them, which only costs the relaunch.
 - **Who restarts the server is decided by `runtime.json` `mode`.** `tray` and
   `launcher` (`daq` in the foreground) come back with their host/port/no-open;
-  `serve` belongs to systemd/NSSM/a terminal and is left stopped with a message.
+  `serve` belongs to systemd/NSSM/a terminal. A systemd unit's main process
+  records its unit (`service`: `SYSTEMD_EXEC_PID` == own pid, unit name from
+  `/proc/self/cgroup`), and the installer gets `DAQ_SERVICE=<scope>:<unit>`
+  and runs `systemctl [--user] start` after a good install - systemd stays
+  the only owner. Anything else under `serve` is left stopped with a message.
+  `DAQ_SERVICE` is POSIX-only; `install.ps1` has no counterpart.
   A record without `mode` is a pre-update server: `pythonw` means tray.
 - `/api/shutdown` closes the digitizer, then exits; it answers 409 while
   recording, which closes the race between our check and the stop. `daq stop`

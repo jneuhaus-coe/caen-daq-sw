@@ -136,6 +136,16 @@ def _relaunch_args(record: dict) -> Optional[list]:
     return args
 
 
+def _service_spec(record: dict) -> Optional[str]:
+    """`<scope>:<unit>` for a server that is a systemd unit, so the installer
+    can ask systemd - its owner - to start it again; None otherwise."""
+    service = record.get("service")
+    if not isinstance(service, dict) or not service.get("unit"):
+        return None
+    scope = "user" if service.get("scope") == "user" else "system"
+    return f"{scope}:{service['unit']}"
+
+
 def windows_wrapper(installer: str, linger_s: int = 6) -> str:
     """The PowerShell that runs the installer in its own console window.
 
@@ -153,15 +163,18 @@ def windows_wrapper(installer: str, linger_s: int = 6) -> str:
         "Read-Host 'The update did not finish. Press Enter to close' | Out-Null; exit 1 }")
 
 
-def _hand_over(release: Release, installer: str, relaunch: Optional[list]) -> int:
+def _hand_over(release: Release, installer: str, relaunch: Optional[list],
+               service: Optional[str] = None) -> int:
     """Run the release's installer for this release. Does not return on POSIX."""
     env = dict(os.environ)
     env["DAQ_VERSION"] = release.tag
     env["DAQ_WHEEL"] = release.wheel or ""
+    env.pop("DAQ_RELAUNCH", None)
+    env.pop("DAQ_SERVICE", None)
     if relaunch:
         env["DAQ_RELAUNCH"] = " ".join(relaunch)
-    else:
-        env.pop("DAQ_RELAUNCH", None)
+    elif service:
+        env["DAQ_SERVICE"] = service
 
     if os.name != "nt":
         # Become the installer. Nothing of ours keeps running, so uv is free to
@@ -231,6 +244,7 @@ def run(check_only: bool = False) -> int:
     logsetup.did(log, f"Fetching the {latest.version} installer", "Ok")
 
     relaunch = None
+    service = None
     live = runtime.find_server()
     if live:
         status = live["status"]
@@ -244,8 +258,12 @@ def run(check_only: bool = False) -> int:
             log.error("The update was not installed.")
             return 1
         relaunch = _relaunch_args(record)
-        if relaunch is None:
+        service = None if relaunch else _service_spec(record)
+        if service:
+            log.info("systemd starts %s again once the update finishes",
+                     service.partition(":")[2])
+        elif relaunch is None:
             log.info("The server was started with 'daq --serve' (a service or a "
                      "terminal); start it again the same way once the update finishes")
 
-    return _hand_over(latest, installer, relaunch)
+    return _hand_over(latest, installer, relaunch, service)
