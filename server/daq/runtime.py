@@ -42,6 +42,35 @@ def url_for(host: str, port: int) -> str:
     return f"http://{shown}:{port}/"
 
 
+def unit_from_cgroup(text: str) -> Optional[dict]:
+    """The systemd service named by a /proc/<pid>/cgroup listing, or None.
+
+    A user unit sits under user@<uid>.service; anything else is a system unit.
+    """
+    for line in text.splitlines():
+        path = line.rpartition(":")[2]
+        unit = path.rstrip("/").rpartition("/")[2]
+        if unit.endswith(".service") and not unit.startswith("user@"):
+            return {"unit": unit, "scope": "user" if "/user@" in path else "system"}
+    return None
+
+
+def systemd_service() -> Optional[dict]:
+    """The systemd unit this process is the main process of, if any.
+
+    SYSTEMD_EXEC_PID names the process systemd itself started, so a `daq`
+    run from a shell that merely inherited a unit's environment is not
+    mistaken for the unit.
+    """
+    if os.environ.get("SYSTEMD_EXEC_PID") != str(os.getpid()):
+        return None
+    try:
+        with open("/proc/self/cgroup") as f:
+            return unit_from_cgroup(f.read())
+    except OSError:
+        return None
+
+
 def write(host: str, port: int, mode: str = "serve", no_open: bool = False) -> None:
     os.makedirs(state_dir(), exist_ok=True)
     record = {
@@ -56,6 +85,9 @@ def write(host: str, port: int, mode: str = "serve", no_open: bool = False) -> N
         # How it was started, so `daq update` can bring it back the same way.
         "mode": mode,
         "no_open": no_open,
+        # The systemd unit that owns it, so `daq update` can have systemd
+        # start it again rather than leave it stopped.
+        "service": systemd_service(),
     }
     tmp = runtime_path() + ".tmp"
     with open(tmp, "w") as f:

@@ -202,8 +202,10 @@ install finishes in its own window, which closes itself when done.
 An open DAQ window then shows **Update ready** with a **Reload** button (held
 back until any recording ends). Reloading keeps everything you had typed.
 
-A server you run as a service (`daq --serve`: systemd, NSSM, Task Scheduler) is
-updated but not restarted — start it again the way you normally do.
+A server run as a systemd unit is started again by systemd (`sudo` may ask for
+your password). One you run any other way with `daq --serve` (NSSM, Task
+Scheduler, a terminal) is updated but not restarted — start it again the way you
+normally do.
 
 Before `daq update` existed — or if it cannot run — the install one-liner does
 the same job; it stops the server first and refuses while a run is recording:

@@ -1134,9 +1134,9 @@ def test_update_reads_versions_and_releases():
 
 def test_update_restarts_only_servers_it_may_own():
     """After an update, the tray server and a foreground `daq` come back as
-    they were; a `daq --serve` belongs to its service or terminal, and is left
-    for its owner to start."""
-    from daq.update import _relaunch_args
+    they were; a `daq --serve` belongs to its service or terminal - systemd
+    is asked to start its own unit, anything else is left for its owner."""
+    from daq.update import _relaunch_args, _service_spec
     with tempfile.TemporaryDirectory() as d:
         os.environ["XDG_STATE_HOME"] = d
         os.environ["LOCALAPPDATA"] = d
@@ -1147,7 +1147,15 @@ def test_update_restarts_only_servers_it_may_own():
         assert _relaunch_args(runtime.read()) == ["--host", "127.0.0.1", "--port", "8800"]
         runtime.write("127.0.0.1", 8800, mode="serve")
         assert _relaunch_args(runtime.read()) is None
+        assert _service_spec(runtime.read()) is None       # not under systemd here
         runtime.clear()
+    assert runtime.unit_from_cgroup("0::/system.slice/daq.service\n") == {
+        "unit": "daq.service", "scope": "system"}
+    assert runtime.unit_from_cgroup(
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/daq.service") == {
+        "unit": "daq.service", "scope": "user"}
+    assert runtime.unit_from_cgroup("0::/user.slice/user-1000.slice/session-3.scope") is None
+    assert _service_spec({"service": {"unit": "daq.service", "scope": "user"}}) == "user:daq.service"
     # A record from before the mode was kept: pythonw is the tray server.
     old = {"host": "127.0.0.1", "port": 8800}
     assert _relaunch_args({**old, "executable": r"C:\uv\pythonw.exe"}) is not None
