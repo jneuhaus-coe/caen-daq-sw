@@ -153,11 +153,11 @@ def _same(a: str | None, b: str) -> bool:
 
 
 def describe(path: str, recording_folder: str | None = None) -> dict:
-    """The runs in one folder, each with what the tags are built from.
+    """The runs in one folder, each with what the facets are built from.
 
     `recording_folder` is the run folder being recorded into right now, if
     any: its run is listed but not analysable until it ends. Each run's
-    `name` is its folder name (run_002_10GeV-electrons) - the text a tag
+    `name` is its folder name (run_002_10GeV-electrons) - the text a facet
     can be read from when the label carries what changes."""
     runs = []
     for number, d in _run_dirs(path):

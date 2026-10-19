@@ -873,11 +873,19 @@ span.button:hover { border-color: #4b5563; }
 button.dashed { border-style: dashed; color: var(--muted); }
 button.linkish { background: none; border: 0; padding: 0; color: #58a6ff; font-size: 12px; cursor: pointer; }
 
-.ql-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.ql-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+.ql-facets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* A facet chip toggles its column in the runs table; filled = shown. */
+.ql-chip { display: inline-flex; align-items: stretch; border-radius: 999px; overflow: hidden;
   border: 1px solid var(--border); font-size: 11.5px; color: #c9d1d9; background: transparent; }
+.ql-chip:hover { border-color: #4b5563; }
+.ql-chip.on { background: #1f2a3a; border-color: #3b5a86; color: var(--text); }
+.ql-chip button { background: none; border: 0; border-radius: 0; color: inherit; font-size: inherit; cursor: pointer; }
+.ql-chip-main { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; }
+.ql-chip-edit { display: inline-flex; align-items: center; padding: 2px 7px 2px 5px; color: var(--muted) !important;
+  border-left: 1px solid var(--border) !important; }
+.ql-chip.on .ql-chip-edit { border-left-color: #3b5a86 !important; }
+.ql-chip-edit:hover { color: var(--text) !important; }
 .ql-chip .src { color: var(--muted); font-size: 10.5px; }
-button.ql-chip:hover { border-color: #4b5563; }
 
 .ql-table-wrap { overflow-x: auto; max-height: 420px; overflow-y: auto; }
 .ql-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -892,14 +900,27 @@ button.ql-chip:hover { border-color: #4b5563; }
 .ql-health.bad { color: var(--red); }
 
 .ql-chans { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; }
-.ql-ch { display: flex; flex-direction: column; align-items: center; padding: 4px 0; min-height: 40px;
+.ql-ch { display: flex; flex-direction: column; align-items: center; padding: 4px 0; min-height: 40px; width: 100%;
+  touch-action: none; user-select: none;
   font-size: 12px; line-height: 1.15; }
 .ql-ch small { font-size: 9.5px; color: var(--muted); height: 11px; }
 .ql-ch.sub { border-color: #3b5a86; background: #1f2a3a; }
 .ql-ch.sub small { color: #9ecbff; }
 .ql-ch.off { background: repeating-linear-gradient(135deg, #161b22 0 4px, #21262d 4px 8px); color: #6e7681; }
 .ql-ch.off span { text-decoration: line-through; }
-.ql-ch.pick { box-shadow: 0 0 0 2px #58a6ff; }
+/* A Channels-card square, split: the top toggles the channel, the strip
+   along the bottom opens its source. The squares are ~33 px wide - too
+   narrow for anything in a corner without covering the number. */
+.ql-chcell { min-width: 0; display: flex; flex-direction: column; border-radius: 6px; }
+.ql-chcell.pick { box-shadow: 0 0 0 2px #58a6ff; }
+.ql-chcell .ql-ch { border-radius: 6px 6px 0 0; min-height: 36px; }
+.ql-chmore { height: 17px; width: 100%; padding: 0; margin-top: -1px; display: grid; place-items: center; line-height: 0;
+  background: #1a1f26; border: 1px solid var(--border); border-radius: 0 0 6px 6px; color: #6e7681; fill: currentColor; }
+.ql-chmore:hover:not(:disabled), .ql-chmore[aria-expanded="true"] { color: var(--text); background: #30363d; border-color: var(--border); }
+.ql-chmore:focus-visible { outline: 2px solid #58a6ff; outline-offset: 0; }
+.ql-pop-btns { display: flex; justify-content: flex-end; }
+.ql-ch.on { border-color: #3b5a86; background: #1f2a3a; color: var(--text); }
+.ql-ch:disabled { opacity: 1; }
 .ql-pop { background: #1c2128; border: 1px solid #3b5a86; border-radius: 8px; padding: 10px;
   display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
 .ql-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
@@ -916,6 +937,10 @@ select.ql-slot.plain { background: #21262d; border-color: var(--border); font-we
 .ql-x:hover { opacity: 1; }
 .ql-inline-form, .ql-cutform { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .ql-cutform input { width: 64px; }
+.ql-cutform input[aria-invalid="true"] { border-color: var(--orange); }
+/* The text of an editable chip: clicking it opens the chip's form. */
+.ql-chip-text { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.ql-chip-text:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .ql-pass { font-size: 12px; color: var(--green); }
 .ql-bar { height: 6px; border-radius: 3px; background: #21262d; overflow: hidden; }
 .ql-bar > div { height: 100%; background: #2ea043; }
@@ -940,19 +965,23 @@ select.ql-slot.plain { background: #21262d; border-color: var(--border); font-we
 .ql-legend-col { flex: 0 0 170px; display: flex; flex-direction: column; gap: 12px; }
 .ql-legend { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: #c9d1d9; }
 .ql-legend-stat { display: block; margin-left: 16px; font-size: 11px; }
+.ql-legend-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.ql-legend-row.head { font-size: 11px; }
+/* The window column: big enough to drag down without missing a box. */
+.ql-paint { flex: none; width: 18px; height: 18px; padding: 0; margin: -1px 0; display: grid; place-items: center;
+  border-radius: 4px; background: transparent; border: 1px solid var(--border); color: #fff; cursor: pointer;
+  touch-action: none; user-select: none; }
+.ql-paint.on { background: var(--accent); border-color: var(--accent); }
+.ql-paint:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
 .ql-actions { display: flex; flex-direction: column; gap: 6px; }
 .ql-actions.row { flex-direction: row; flex-wrap: wrap; }
 .ql-status.busy::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   background: var(--orange); margin-right: 6px; animation: conn-pulse 1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ql-status.busy::before { animation: none; } }
 
-.ql-proc { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
-.ql-proc-pulse { flex: 1 1 420px; min-width: 0; }
-.ql-pulse { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
-.ql-pulse-empty { display: grid; place-items: center; min-height: 160px; background: var(--chart); border-radius: 8px; }
-.ql-proc-fields { flex: 1 1 300px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.ql-proc-fields { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
 .ql-proc-fields p { margin: 2px 0 0; }
-.ql-step { display: grid; grid-template-columns: 76px 1fr; gap: 4px 10px; align-items: center; }
+.ql-step { display: grid; grid-template-columns: 136px 1fr; gap: 4px 10px; align-items: center; }
 .ql-step > span:first-child, .ql-step > label { color: var(--muted); }
 .ql-num { width: 56px; text-align: right; }
 
@@ -964,6 +993,7 @@ select.ql-slot.plain { background: #21262d; border-color: var(--border); font-we
 .ql-cell { border-radius: 3px; display: flex; flex-direction: column; align-items: center; justify-content: center;
   font-size: 11.5px; line-height: 1.15; }
 .ql-cell small { font-size: 9.5px; opacity: .75; }
+.ql-cell.neg { background: #2a1517; color: #ff9b8f; box-shadow: inset 0 0 0 1px #8e3b33; }
 .ql-cell.off { background: repeating-linear-gradient(135deg, #161b22 0 4px, #21262d 4px 8px); color: #6e7681; }
 .ql-centroid { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
   border: 2px solid #ff7a45; box-shadow: 0 0 0 2px #10141a; pointer-events: none; }
@@ -972,8 +1002,8 @@ select.ql-slot.plain { background: #21262d; border-color: var(--border); font-we
 .ql-pixgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .ql-pixgrid .ql-num { width: 100%; text-align: center; padding: 6px 0; }
 
-.ql-tagb { width: min(680px, 94vw); max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.ql-tagb h3 { margin: 0; }
+.ql-facetb { width: min(680px, 94vw); max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.ql-facetb h3 { margin: 0; }
 .ql-step-label { font-size: 12px; color: var(--muted); }
 .ql-tokens { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 10px; background: var(--chart); border-radius: 8px; }
 .ql-tokens select { margin-right: 8px; }
@@ -981,14 +1011,71 @@ select.ql-slot.plain { background: #21262d; border-color: var(--border); font-we
 .ql-tok:hover { border-color: var(--border); }
 .ql-tok.on { background: #1f2a3a; border-color: #58a6ff; color: #fff; }
 .ql-pattern { display: block; width: 100%; margin-top: 6px; }
-.ql-tagb-fields { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.ql-tagb-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-.ql-tagb-table { max-height: 300px; overflow: auto; border: 1px solid #21262d; border-radius: 8px; }
-.ql-tagb-table mark { background: #1f2a3a; color: #9ecbff; border-radius: 3px; padding: 0 2px; }
-.ql-tagb-table input { width: 90px; }
-.ql-tagb-table tr.miss td { background: #2a2113; }
+.ql-facetb-fields { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.ql-facetb-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.ql-facetb-table { max-height: 300px; overflow: auto; border: 1px solid #21262d; border-radius: 8px; }
+.ql-facetb-table mark { background: #1f2a3a; color: #9ecbff; border-radius: 3px; padding: 0 2px; }
+.ql-facetb-table input { width: 90px; }
+.ql-facetb-table tr.miss td { background: #2a2113; }
 .ql-seg { display: inline-flex; }
 .ql-seg button { border-radius: 0; font-size: 12px; padding: 4px 10px; background: #12151b; color: var(--muted); }
 .ql-seg button:first-child { border-radius: 6px 0 0 6px; }
 .ql-seg button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
 .ql-seg button.on { background: #1f2a3a; color: var(--text); border-color: #3b5a86; }
+
+/* Header tools: a control or two at the right of a card title. */
+.ql-head-tools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; font-size: 12px; }
+
+/* Popover menus (series facets, channel pickers). */
+.ql-popover { position: relative; display: inline-flex; }
+.ql-caret { font-size: 9px; opacity: .7; margin-left: 2px; }
+.ql-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; min-width: 200px;
+  background: #1c2128; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 12.5px; color: var(--text); font-weight: 400; }
+.ql-menu.right { left: auto; right: 0; }
+.ql-checklist { display: flex; flex-direction: column; gap: 6px; }
+.ql-checklist .ql-check { justify-content: flex-start; }
+.ql-checklist .ql-check .mono { margin-left: auto; }
+.ql-check.dim { color: var(--muted); }
+.ql-chpick { display: flex; flex-direction: column; gap: 10px; width: 340px; max-width: 80vw; }
+
+/* A where-filter chip edits its value in place. */
+.ql-filter-value { background: transparent; border: 0; color: inherit; font: inherit; padding: 0 2px; min-width: 0;
+  cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.ql-filter-value:focus-visible { outline: 1px solid #f0c38e; border-radius: 3px; }
+.ql-filter-value option { background: #1c2128; color: var(--text); }
+
+/* Runs table columns move by drag, or Alt+arrows. */
+.ql-th-move { cursor: grab; user-select: none; }
+.ql-th-move.lift { opacity: .45; }
+.ql-th-move.drop { box-shadow: inset 2px 0 0 #58a6ff; }
+.ql-th-move:focus-visible { outline: 1px solid #58a6ff; outline-offset: -1px; }
+
+/* The processing strip at the foot of the plot card. */
+.ql-strip { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; border-top: 1px solid #21262d; }
+.ql-strip-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12.5px; }
+.ql-strip .ql-collapse { font-weight: 600; color: var(--text); }
+
+/* A title that collapses what follows it. */
+.ql-collapse { display: inline-flex; align-items: center; gap: 7px; background: none; border: 0; padding: 0;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.ql-collapse svg { transition: transform .15s; }
+.ql-collapse[aria-expanded="true"] svg { transform: rotate(90deg); }
+.ql-collapse:focus-visible { outline: 2px solid #58a6ff; outline-offset: 3px; border-radius: 3px; }
+@media (prefers-reduced-motion: reduce) { .ql-collapse svg { transition: none; } }
+
+/* Small multiples: one panel per channel, one scale for all. */
+/* Four across: 16 channels make a square, and a bank of 8 is two rows. */
+.ql-multiples { display: flex; flex-direction: column; gap: 8px; container-type: inline-size; }
+.ql-panels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+@container (max-width: 620px) { .ql-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ql-panels.big { grid-template-columns: 1fr; }
+.ql-panel { position: relative; min-width: 0; }
+.ql-panel-svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
+.ql-enlarge { position: absolute; top: 4px; right: 4px; padding: 3px 5px; line-height: 0; background: #161b22;
+  color: var(--muted); opacity: 0; transition: opacity .1s; }
+.ql-panel:hover .ql-enlarge, .ql-enlarge:focus-visible { opacity: 1; }
+.ql-enlarge:hover { color: var(--text); }
+.ql-panel-tip { top: 22px; pointer-events: none; white-space: nowrap; transform: translateX(10px); }
+.ql-focusbar { display: flex; gap: 6px; align-items: center; }
+@media (hover: none) { .ql-enlarge { opacity: 1; } }

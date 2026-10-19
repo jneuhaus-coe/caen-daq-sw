@@ -12,7 +12,7 @@ from . import features as F
 from . import folder as FD
 from . import slots as S
 
-KINDS = ("channel", "tag", "hist", "spatial", "waveform")
+KINDS = ("channel", "facet", "hist", "spatial", "waveform")
 STATS = ("mean", "median", "sigma", "resolution")
 ERRS = ("rms", "sem", "none")
 
@@ -93,9 +93,10 @@ def analyse(ql, req: dict, recording_folder=None) -> dict:
         if v is not None:
             r["passed"] = int(masks[k].sum())
             r["clip_frac"] = round(float(v.clipped_any().mean()) if v.n else 0.0, 4)
-            with np.errstate(all="ignore"):
-                peds[k] = [float(np.nanmean(v.values("pedestal", i))) if cmap[i] is not None
-                           else None for i in range(A.N_CH)]
+            if proc["baseline"] is not None:      # no baseline, no pedestal to compare
+                with np.errstate(all="ignore"):
+                    peds[k] = [float(np.nanmean(v.values("pedestal", i))) if cmap[i] is not None
+                               else None for i in range(A.N_CH)]
         runs_out[k] = r
     if len(peds) >= 2:
         for i in range(A.N_CH):
@@ -130,7 +131,7 @@ def analyse(ql, req: dict, recording_folder=None) -> dict:
                 pts.append({"x": ch, "y": y, "err": e, "n": n, "per_run": per})
             out_plot["series"].append({"name": g["series"], "runs": g["runs"],
                                        "points": pts})
-    elif kind == "tag":
+    elif kind == "facet":
         by_series: dict[str, list] = {}
         for g in groups:
             y, e, n = A.reduce(pooled(g["runs"], quantity, pchan), stat, err)
@@ -181,55 +182,66 @@ def analyse(ql, req: dict, recording_folder=None) -> dict:
             if ch >= 0 and cmap[ch] is not None:
                 r, c = divmod(i, cols)
                 pos[ch] = ((c - (cols - 1) / 2) * pitch, ((rows - 1) / 2 - r) * pitch)
+        xs = np.array([pos[ch][0] for ch in pos])
+        ys = np.array([pos[ch][1] for ch in pos])
         for g in groups:
             qs = {ch: pooled(g["runs"], "charge", ch) for ch in pos}
             if not qs:
                 out_plot["series"].append({"name": g["series"], "cells": [], "centroid": None})
                 continue
-            Q = np.stack([np.nan_to_num(qs[ch]) for ch in pos], 1) if qs else np.empty((0, 0))
-            Qp = np.clip(Q, 0, None)
-            tot = Qp.sum(1)
+            Q = np.stack([np.nan_to_num(qs[ch]) for ch in pos], 1)
             mean_tot = float(np.mean(Q.sum(1))) if Q.size else 0.0
             share = {ch: (float(np.mean(qs[ch][np.isfinite(qs[ch])])) / mean_tot
                           if mean_tot else None) for ch in pos}
-            xs = np.array([pos[ch][0] for ch in pos])
-            ys = np.array([pos[ch][1] for ch in pos])
-            ok = tot > 0
-            cx = (Qp[ok] @ xs) / tot[ok] if ok.any() else np.empty(0)
-            cy = (Qp[ok] @ ys) / tot[ok] if ok.any() else np.empty(0)
+            # The centroid of the map as drawn: each pixel weighted by its
+            # share, so the dot and the cells can never disagree. A negative
+            # share (a baseline or window problem, flagged on the cell) adds
+            # no weight rather than pushing the centroid away.
+            w = np.array([max(share[ch] or 0.0, 0.0) for ch in pos])
             cent = None
-            if cx.size:
-                cent = {"x": float(cx.mean()), "y": float(cy.mean()),
-                        "sx": float(cx.std()), "sy": float(cy.std()), "n": int(cx.size)}
+            if w.sum() > 0:
+                cx, cy = float(w @ xs / w.sum()), float(w @ ys / w.sum())
+                # Spread: how far single events' centroids scatter around it.
+                Qp = np.clip(Q, 0, None)
+                tot = Qp.sum(1)
+                ok = tot > 0
+                ex, ey = (Qp[ok] @ xs) / tot[ok], (Qp[ok] @ ys) / tot[ok]
+                cent = {"x": cx, "y": cy, "n": int(ok.sum()),
+                        "sx": float(np.sqrt(np.mean((ex - cx) ** 2))) if ok.any() else 0.0,
+                        "sy": float(np.sqrt(np.mean((ey - cy) ** 2))) if ok.any() else 0.0}
             out_plot["series"].append({
                 "name": g["series"], "runs": g["runs"], "centroid": cent,
                 "cells": [{"channel": ch, "share": share.get(ch) if ch >= 0 else None}
                           for ch in cells]})
         out_plot.update(rows=rows, cols=cols, pitch=pitch)
     elif kind == "waveform":
-        slot = cmap[pchan] if isinstance(pchan, int) else None
-        out_plot["channel"] = pchan
+        # Struck channels too, read from their source: the windows are set
+        # on these pulses, and a struck one is shown, masked "excluded".
+        smap = A.channel_map([{**c, "struck": False} if isinstance(c, dict) else c
+                              for c in (req.get("channels") or [])])
+        chans = _chans(plot.get("channels"), smap)
+        out_plot["channels"] = chans
         for g in groups:
-            tr = _average(ql, path, by_key, g["runs"], slot, proc)
-            out_plot["series"].append({"name": g["series"], "runs": g["runs"],
-                                       **(tr or {"t": [], "v": []})})
+            out_plot["series"].append({
+                "name": g["series"], "runs": g["runs"],
+                "traces": _averages(ql, path, by_key, g["runs"],
+                                    {ch: smap[ch] for ch in chans},
+                                    proc["baseline"], len(chans))})
 
-    # The average pulse the processing panel draws its windows on.
-    pulse = None
-    pc = _chan(req.get("pulse_channel", 0))
-    pslot = cmap[pc] if isinstance(pc, int) else None
-    if pslot is not None and wanted:
-        pulse = _average(ql, path, by_key, wanted, pslot, None)
-        if pulse and proc["window"]["mode"] == "reference":
-            rt = _average(ql, path, by_key, wanted, proc["window"]["reference"], None,
-                          raw=True)
-            if rt:
-                neg = A._slot_polarity(list(tables.values()), proc["window"]["reference"]) \
-                    == "neg" if tables else True
-                pulse["ref_t0"] = A.cfd_on_average(np.array(rt["t"]), np.array(rt["v"]),
-                                                   proc["cfd"], neg)
-        if pulse:
-            pulse["channel"] = pc
+    # Where a reference-placed window sat, for drawing it: per series, the
+    # median over its selected events of the reference time each event's
+    # window was placed from. Series whose pulses start at different times
+    # get windows at different times - one window for all would fit none.
+    ref_t0: dict = {}
+    if proc["window"]["mode"] == "reference":
+        by_series: dict[str, list] = {}
+        for g in groups:
+            by_series.setdefault(g["series"], []).extend(g["runs"])
+        for name, keys in by_series.items():
+            parts = [views[k].window_ref()[masks[k]] for k in dict.fromkeys(keys) if k in views]
+            v = np.concatenate(parts) if parts else np.empty(0)
+            v = v[np.isfinite(v)]
+            ref_t0[name] = float(np.median(v)) if v.size else None
 
     total = len(wanted)
     full = sum(1 for k in wanted if have[k]["state"] == "full")
@@ -244,7 +256,7 @@ def analyse(ql, req: dict, recording_folder=None) -> dict:
                          "errors": errs, "frac": round(frac, 3),
                          "done": full + errs == total},
             "runs": runs_out, "polarity": pol, "events": events, "passed": passed,
-            "plot": out_plot, "pulse": pulse,
+            "plot": out_plot, "ref_t0": ref_t0,
             "processing": {**proc, "window": {**proc["window"],
                            "reference": _src_name(proc["window"]["reference"])}}})
 
@@ -274,11 +286,23 @@ def _src_name(slot):
     return f"in:{g * 8 + i}"
 
 
-def _average(ql, path, by_key, keys, slot, proc, raw=False):
-    """Event-weighted average pulse of one slot over runs, in input mV.
-    With `proc`, the baseline window is subtracted so groups overlay."""
-    if slot is None:
-        return None
+def _chans(v, cmap) -> list[int]:
+    """Logical channels a request names, minus any that are off or struck."""
+    out = []
+    for c in v if isinstance(v, list) else []:
+        ch = _chan(c)
+        if isinstance(ch, int) and cmap[ch] is not None and ch not in out:
+            out.append(ch)
+    return out
+
+
+def _averages(ql, path, by_key, keys, slots: dict, baseline, n_panels: int) -> list:
+    """Event-weighted average pulse of each slot over runs, in input mV:
+    [{"channel", "t", "v", "events"}], one per entry of `slots` (logical
+    channel -> ROOT slot). With a baseline window, it is subtracted so
+    groups and channels overlay. Each run's average is read once."""
+    if not slots:
+        return []
     acc_x = acc_t = None
     n_tot = 0
     for k in keys:
@@ -286,17 +310,21 @@ def _average(ql, path, by_key, keys, slot, proc, raw=False):
         if a is None:
             continue
         x, t, n = a
-        g = S.group_of_slot(slot)
-        acc_x = x[slot] * n if acc_x is None else acc_x + x[slot] * n
-        acc_t = t[g] * n if acc_t is None else acc_t + t[g] * n
+        acc_x = x * n if acc_x is None else acc_x + x * n
+        acc_t = t * n if acc_t is None else acc_t + t * n
         n_tot += n
     if not n_tot:
-        return None
-    x, t = acc_x / n_tot, acc_t / n_tot
-    if proc is not None and not raw:
-        b0, b1 = proc["baseline"]
-        m = (t >= b0) & (t < b1)
-        if m.any():
-            x = x - x[m].mean()
-    tt, vv = A.decimate_trace(t, x)
-    return {"t": tt, "v": vv, "events": n_tot}
+        return []
+    # Small multiples are a few hundred pixels wide: half the points do.
+    points = 512 if n_panels <= 2 else 256
+    out = []
+    for ch, slot in slots.items():
+        x = acc_x[slot] / n_tot
+        t = acc_t[S.group_of_slot(slot)] / n_tot
+        if baseline is not None:
+            m = (t >= baseline[0]) & (t < baseline[1])
+            if m.any():
+                x = x - x[m].mean()
+        tt, vv = A.decimate_trace(t, x, points)
+        out.append({"channel": ch, "t": tt, "v": vv, "events": n_tot})
+    return out

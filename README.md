@@ -294,16 +294,24 @@ never changes, moves or adds anything in a run folder.
 
 - Pick a **folder** (an experiment), tick the runs you want. The **check** column flags clipped
   events and pedestal jumps.
-- **Tags** come from each run's Experiment Conditions automatically. **+ Tag from
-  name** makes one from the run notes or the run labels - click the part that
-  changes (the "8" in "8GeV") and check every run's value.
-- **Channels**: click one to feed it from TR0 (or another input) or to strike it.
+- **Facets** (energy, particle, ...) come from each run's Experiment Conditions
+  automatically. **+ Facet from name** makes one from the run notes or the run
+  labels - click the part that changes (the "8" in "8GeV") and check every
+  run's value. Click a facet to show it as a column; drag columns to reorder.
+- **Channels**: click one to leave it out of the view and analysis (or bring
+  it back); drag across several to set them all the same. The gear under a
+  channel sets its source (TR0, another input).
 - Pick an analysis, then read the sentence above the plot - every highlighted
-  word is a menu.
+  word is a menu. "One line per" takes several facets at once; a "where"
+  value can be changed in place.
+- **Processing** (baseline subtraction and the integration window) is
+  summed up under every plot; click it for the settings. Set the windows by
+  dragging them on the **Waveforms** pulses. Baseline subtraction can be
+  "none" for signals too slow to have a quiet stretch.
 - Plots appear within seconds from each run's first events and sharpen when the
   full pass finishes. It runs at low priority; recording is never slowed.
 - **Download CSV / PNG** for the plot; **Export settings** saves the channel map,
-  tags and cuts to a file you can load again.
+  facets and cuts to a file you can load again.
 
 ---
 

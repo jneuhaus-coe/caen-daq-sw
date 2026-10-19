@@ -654,8 +654,8 @@ Never let the UI show a setting the hardware did not confirm.
 
 Preliminary analysis of recorded runs - "do we need to rerun anything?" before
 leaving the beamline, not publishable results. **Read-only, absolutely**: it
-never writes into a run folder or to the server's settings. Tags, the channel
-map, strikes, hand-fixed tag values and plot choices live in the BROWSER
+never writes into a run folder or to the server's settings. Facets, the
+channel map, strikes, hand-fixed facet values and plot choices live in the BROWSER
 (`usePersistentState("ql:prefs")`, keyed by folder); exports are downloads
 (CSV, PNG, a settings JSON that "Load settings" reads back). ROOT only:
 WaveDump-format runs list as "Not supported: WaveDump format".
@@ -665,15 +665,56 @@ WaveDump-format runs list as "Not supported: WaveDump format".
   is `<run folder>/run_<N>.root`. Older layouts still open, because Quick
   Look is for data already on disk: the flat campaign folder (several
   `run_<N>.root`, one sidecar with a per-run `runs` map), a legacy single-run
-  folder, or any absolute path. A tag's second source is each run's folder
+  folder, or any absolute path. A facet's second source is each run's folder
   name, where the label carries what changes (`run_002_10GeV-e`).
+- **"Facet" is the term**, in code and UI: a named value per run (energy,
+  particle) for filtering and splitting into series - the Experiment
+  Conditions, or read from notes / folder names by pattern (`FacetDef`).
+  Not "tag": that is a bare keyword. `sanitize` still loads settings saved
+  under the old names (`tags`, `seriesTag`, `xTag`, recipe `tag`).
+- Series split by any COMBINATION of facets (`seriesFacets`); a where-filter
+  on a facet pins it out of the split while it stands. One filter per facet
+  - two on the same one can never both hold - and a filter's value choices
+  come from the runs the other filters let through.
 - **Two stages, because waveforms are big** (channel[18][1024] f32 is ~74 KB
   per event). Stage 1 (`features.py`) reads a run once and keeps a per-event
   table for EVERY slot - pedestal, its RMS, signed charge, both peaks, both
   CFD times, clipping - so the channel map, polarity, cuts, grouping and stats
   (stage 2, `aggregate.py`/`service.py`) never reread a waveform. Only the
-  baseline window, integration window (fixed or from a reference pulse) and
-  CFD fraction feed stage 1.
+  baseline window (or none), integration window (fixed, from a reference
+  pulse, or the whole record) and CFD fraction feed stage 1.
+- **Processing is two settings, always in view**: baseline subtraction (a
+  window, or none - `baseline: null`, pedestal and noise then NaN; slow
+  signals have no quiet stretch to take one from) and the integration window
+  (fixed, from a reference pulse, or the whole record). Never a master
+  "off": every plot integrates, so a one-line summary sits at the foot of
+  every plot (the processing strip), and the windows are dragged on the
+  Waveforms pulses. There is no separate processing panel - it duplicated
+  Waveforms, and averaging the series together hid a window that fits one
+  pulse shape and cuts another. Polarity is not a setting: `auto` per
+  channel, so charge and amplitude count positive. The CFD fraction shows
+  only in "from a reference pulse", the one place it moves anything (it
+  finds each event's reference time, independent of where the trigger put
+  the record). No timing controls until timing gets a proper home.
+- **A reference-placed window is drawn once per series**, at the median of
+  the reference times its events' windows were placed from (stage 1 stores
+  that time per event, field `TREF`). One window for the whole plot sat
+  between series whose pulses start hundreds of ns apart (flash mode, he
+  plates, 0.2 vs 0.5 us: 288 vs 582 ns on ch 9) and fit neither. The
+  integration itself was always per event; only the drawing was wrong.
+- Average pulses are drawn as **small multiples** (`Multiples.tsx`), one
+  panel per channel on ONE scale, so nothing rescales as you look across
+  channels; each series is its own line. Without baseline subtraction the
+  panels share a mV span, each centred on its own trace (pedestals differ by
+  tens of mV). The server reads each run's average once for all channels
+  (`service._averages`). A struck channel can still be shown, read from its
+  source and masked "excluded".
+- **The spatial centroid is the share-weighted centre of the map as drawn**
+  (ratio of mean charges, negative shares weighted 0), so the dot and the
+  cells can never disagree. It used to average per-event centroids of
+  charges clipped at 0, which drifted off the map when charges went
+  negative. A centre of mass legitimately lands in a weak row between two
+  strong ones; that is explained on hover, not "fixed".
 - Stage 1 runs in **spawned daemon worker processes at below-normal
   priority** (`worker.py`), never threads: numpy in the server's interpreter
   would fight the readout for the GIL. Daemon, so shutdown never waits on a
@@ -760,6 +801,14 @@ file. Quick Look opens experiments as its folders.
   DOM — a DOM-only test would pass while the write silently failed. One
   worker, file order: the tests share the one fake board's state. CI runs it
   on ubuntu with `DAQ_TEST_SERVER_CMD` overriding the local uv launch.
+- **The suite must stay fast (~35 s); it runs on every change.** Two costs
+  dominated it, both fixed - keep them fixed: (1) Chromium spends ~3.2 s on
+  the FIRST navigation of every new page, so the specs share one page per
+  worker (`tests/ui/fixtures.ts`, storage and routes reset per test) - import
+  `test` from there, never from `@playwright/test`; (2) calibrations wait
+  for ~100 events, so the fake emits 50/s (`_EVENT_HZ`). Wait on the thing a
+  test needs (a status field, an event count), never a fixed sleep, and a
+  check that a run is "recording" needs a bound longer than 50/s can finish.
 - **Board registers are not persisted by us** - the unit holds them across
   daq restarts (not a power cycle) and is read at open. **What the unit
   cannot hold is** (`lastused.py`, `<state dir>/last_used.json`, saved on

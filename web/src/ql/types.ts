@@ -31,14 +31,16 @@ export interface QlFolder {
 export type Quantity = "charge" | "amplitude" | "time" | "pedestal" | "noise";
 export type Stat = "mean" | "median" | "sigma" | "resolution";
 export type Err = "rms" | "sem" | "none";
-export type Kind = "channel" | "tag" | "hist" | "spatial" | "waveform";
+export type Kind = "channel" | "facet" | "hist" | "spatial" | "waveform";
 export type ChanSel = number | "sum";
 
 export interface Cut { quantity: Quantity; channel: ChanSel; min: number | null; max: number | null }
 
+/** Processing as the server takes it: no baseline is null, and "all"
+ *  integrates the whole record. */
 export interface Processing {
-  baseline: [number, number];
-  window: { mode: "record" | "reference"; range: [number, number]; reference: string | null };
+  baseline: [number, number] | null;
+  window: { mode: "record" | "reference" | "all"; range: [number, number]; reference: string | null };
   cfd: number;
 }
 
@@ -73,15 +75,18 @@ export interface PlotSeries {
   stats?: Stats;
   cells?: { channel: number; share: number | null }[];
   centroid?: { x: number; y: number; sx: number; sy: number; n: number } | null;
-  t?: number[];
-  v?: number[];
+  traces?: Trace[];
   events?: number;
 }
+
+/** One channel's average pulse. */
+export interface Trace { channel: number; t: number[]; v: number[]; events: number }
 
 export interface PlotResult {
   kind: Kind; quantity: Quantity; unit: string; stat: Stat; err: Err;
   series: PlotSeries[];
   channel?: ChanSel;
+  channels?: number[];
   edges?: number[];
   rows?: number; cols?: number; pitch?: number;
 }
@@ -91,9 +96,10 @@ export interface Analysis {
   folder: string;
   progress: { total: number; full: number; preview: number; errors: number; frac: number; done: boolean };
   runs: Record<string, RunResult>;
-  polarity: ("neg" | "pos")[];
+  polarity: ("neg" | "pos" | "raw")[];
   events: number;
   passed: number;
   plot: PlotResult;
-  pulse: { t: number[]; v: number[]; events: number; channel: number; ref_t0?: number | null } | null;
+  /** Per series: where a reference-placed window sat (median over its events). */
+  ref_t0: Record<string, number | null>;
 }
