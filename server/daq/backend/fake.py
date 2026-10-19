@@ -18,7 +18,10 @@ import numpy as np
 from .base import DigitizerBackend, Event, BoardInfo
 from .. import constants as C
 
-_EVENT_HZ = 5.0            # steady synthetic rate while acquiring
+# Steady synthetic rate while acquiring. Calibrations wait for ~100 events,
+# so this sets how long the UI suite's calibration tests take; still far
+# under the real unit's ~1 kHz.
+_EVENT_HZ = 50.0
 _NOISE_COUNTS = 3.0        # baseline jitter, roughly the real unit's floor
 _PULSE_COUNTS = 800.0      # synthetic pulse amplitude
 

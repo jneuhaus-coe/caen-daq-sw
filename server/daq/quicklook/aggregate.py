@@ -2,8 +2,8 @@
 
 Fast - it only touches the small stage-1 tables - so the channel map,
 polarity, cuts, grouping and statistics can all change instantly. The UI
-resolves tags and groups runs itself (tags are its own, read-only view of
-the folder); this module just pools each group's events and reduces them.
+resolves facets and groups runs itself (facets are its own, read-only view
+of the folder); this module just pools each group's events and reduces them.
 """
 from __future__ import annotations
 
@@ -122,6 +122,11 @@ class RunView:
             return self._field(F.RMS)[:, slot]
         return np.full(n, np.nan, dtype=np.float32)
 
+    def window_ref(self) -> np.ndarray:
+        """Per event: the reference time its integration window was placed
+        from (NaN unless the window is placed from a reference pulse)."""
+        return self._field(F.TREF)[:, 0]
+
     def clipped_any(self) -> np.ndarray:
         c = self._field(F.CLIP)
         if not self.used:
@@ -224,19 +229,3 @@ def fit_resolution(points) -> dict | None:
 def decimate_trace(t, v, n: int = 512):
     k = max(1, len(t) // n)
     return [round(float(a), 3) for a in t[::k]], [round(float(b), 3) for b in v[::k]]
-
-
-def cfd_on_average(t, v, frac: float, neg: bool):
-    """A rough reference t0 on an average pulse, for drawing only."""
-    x = -v if neg else v
-    i = int(np.argmax(x[F.EDGE:-F.EDGE])) + F.EDGE
-    a = x[i]
-    if not a > 0:
-        return None
-    below = np.nonzero(x[:i] < frac * a)[0]
-    if below.size == 0:
-        return None
-    j = int(below[-1])
-    if x[j + 1] == x[j]:
-        return float(t[j])
-    return float(t[j] + (frac * a - x[j]) * (t[j + 1] - t[j]) / (x[j + 1] - x[j]))

@@ -1324,7 +1324,7 @@ def test_quick_look_reads_a_campaign_and_never_writes_to_it():
                                   "window": {"mode": "record", "range": [62, 117]}},
                    "channels": channels, "no_clip": False,
                    "plot": {"kind": "channel", "quantity": "charge", "stat": "mean"},
-                   "groups": [{"series": "e", "runs": electrons}], "pulse_channel": 5}
+                   "groups": [{"series": "e", "runs": electrons}]}
             deadline = time.time() + 120
             while True:
                 r = client.post("/api/ql/analyse", json=req).json()
@@ -1340,11 +1340,17 @@ def test_quick_look_reads_a_campaign_and_never_writes_to_it():
             assert 0.85 < pts[8]["y"] / pts[4]["y"] < 1.35, (pts[8]["y"], pts[4]["y"])
             assert r["runs"][key[5]]["clip_frac"] > 0.01
             assert abs(r["runs"][key[10]]["ped_shift"]["mv"] - 6.0) < 1.0
-            assert r["pulse"] and min(r["pulse"]["v"]) < -5
+            # Average pulses per channel asked for - the struck one too, read
+            # from its source - over the group's runs: the electrons.
+            rw = client.post("/api/ql/analyse", json=dict(
+                req, plot={"kind": "waveform", "channels": [5, 13, 4]})).json()
+            tr = rw["plot"]["series"][0]["traces"]
+            assert [t["channel"] for t in tr] == [5, 13, 4]
+            assert min(tr[0]["v"]) < -5 and tr[0]["events"] == 120 * len(electrons)
 
             # Resolution vs energy: electrons improve with energy, and the fit
             # finds a stochastic term.
-            req2 = dict(req, plot={"kind": "tag", "quantity": "charge", "stat": "resolution",
+            req2 = dict(req, plot={"kind": "facet", "quantity": "charge", "stat": "resolution",
                                    "channel": "sum", "fit": True},
                         groups=[{"series": "e", "x": e, "runs": [key[n]]}
                                 for n, (_, e, _) in enumerate(demo.RUNS[:7], start=1)
@@ -1357,6 +1363,46 @@ def test_quick_look_reads_a_campaign_and_never_writes_to_it():
             req3 = dict(req, cuts=[{"quantity": "charge", "channel": "sum", "min": 50}])
             r3 = client.post("/api/ql/analyse", json=req3).json()
             assert 0 < r3["passed"] < r3["events"]
+
+            # No baseline subtracted, the whole record integrated - a new
+            # pass, so wait for it.
+            req4 = dict(req, processing={"baseline": None, "window": {"mode": "all"}},
+                        plot={"kind": "waveform", "channels": [5, 6]})
+            deadline = time.time() + 120
+            while True:
+                r4 = client.post("/api/ql/analyse", json=req4).json()
+                if r4["progress"]["done"] or time.time() > deadline:
+                    break
+                time.sleep(0.5)
+            assert r4["progress"]["done"], r4["progress"]
+            assert r4["processing"]["baseline"] is None
+            trace = r4["plot"]["series"][0]["traces"]
+            assert [x["channel"] for x in trace] == [5, 6] and min(trace[0]["v"]) < -5
+            req6 = dict(req4, plot={"kind": "channel", "quantity": "pedestal", "stat": "mean"})
+            ped = client.post("/api/ql/analyse", json=req6).json()["plot"]["series"][0]["points"]
+            assert ped[5]["y"] is None                 # no baseline, no pedestal
+
+            # A reference-placed window is drawn per series, at the median of
+            # the reference times its events' windows were placed from.
+            pions = [key[n] for n in range(8, 13)]
+            req8 = dict(req, processing={"baseline": [10, 40], "window": {
+                            "mode": "reference", "reference": "in:5", "range": [-5, 45]}},
+                        groups=[{"series": "e", "runs": electrons}, {"series": "pi", "runs": pions}])
+            deadline = time.time() + 120
+            while True:
+                r8 = client.post("/api/ql/analyse", json=req8).json()
+                if r8["progress"]["done"] or time.time() > deadline:
+                    break
+                time.sleep(0.5)
+            assert set(r8["ref_t0"]) == {"e", "pi"}
+            assert all(69 < t < 74 for t in r8["ref_t0"].values()), r8["ref_t0"]
+
+            # The centroid is the share-weighted mean of the map as drawn.
+            req7 = dict(req, plot={"kind": "spatial", "pixels": list(range(16)), "pitch": 1.0})
+            sp = client.post("/api/ql/analyse", json=req7).json()["plot"]["series"][0]
+            w = [max(c["share"] or 0, 0) for c in sp["cells"]]
+            cy = sum(wi * (1.5 - i // 4) for i, wi in enumerate(w)) / sum(w)
+            assert abs(sp["centroid"]["y"] - cy) < 1e-6
 
             assert snapshot(folder) == before          # read-only, really
         finally:

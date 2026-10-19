@@ -1,17 +1,17 @@
 import { useMemo, useState } from "react";
 import type { QlRun } from "./types";
-import { evalTag, suggestPattern, tokenize, type FolderPrefs, type TagDef } from "./model";
+import { evalFacet, suggestPattern, tokenize, type FacetDef, type FolderPrefs } from "./model";
 
-/** Make (or edit) a tag from the varying part of the run notes or run folder
- *  names (run_002_10GeV-electrons): click the
+/** Make (or edit) a facet from the varying part of the run notes or run
+ *  folder names (run_002_10GeV-electrons): click the
  *  piece that changes, check every run's value, fix the misses by hand.
  *  Hand fixes belong to this view only - run files are never modified. */
-export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, onClose }: {
+export function FacetBuilder({ runs, initial, overrides, taken, onSave, onDelete, onClose }: {
   runs: QlRun[];
-  initial: TagDef | null;
+  initial: FacetDef | null;
   overrides: FolderPrefs["overrides"];
   taken: string[];
-  onSave: (def: TagDef, fixes: Record<string, string>, oldName: string | null) => void;
+  onSave: (def: FacetDef, fixes: Record<string, string>, oldName: string | null) => void;
   onDelete: (name: string) => void;
   onClose: () => void;
 }) {
@@ -36,7 +36,7 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
   const sample = runs.find((r) => r.key === sampleKey) ?? sample0;
   const text = (source === "folder" ? sample?.name : sample?.note) ?? "";
   const tokens = useMemo(() => tokenize(text), [text]);
-  const def: TagDef = { name: name.trim(), source, pattern, kind };
+  const def: FacetDef = { name: name.trim(), source, pattern, kind };
   let badPattern = false;
   try { new RegExp(pattern, "i"); } catch { badPattern = true; }
 
@@ -53,7 +53,7 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
     const src = source === "folder" ? r.name : r.note;
     let m: RegExpExecArray | null = null;
     if (pattern && !badPattern) { try { m = new RegExp(pattern, "i").exec(src); } catch { m = null; } }
-    const auto = pattern && !badPattern ? evalTag(def, r) : null;
+    const auto = pattern && !badPattern ? evalFacet(def, r) : null;
     return { r, src, m, auto };
   });
   const misses = rows.filter((x) => x.auto === null && !(fixes[x.r.key] ?? "").trim()).length;
@@ -69,11 +69,11 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal ql-tagb" role="dialog" aria-label="Tag from run names"
+      <div className="modal ql-facetb" role="dialog" aria-label="Facet from run names"
         onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}>
         <div className="ql-row-between">
-          <h3>{initial ? `Tag "${initial.name}"` : "New tag from run names"}</h3>
-          <div className="ql-seg" role="radiogroup" aria-label="Text to read the tag from">
+          <h3>{initial ? `Facet "${initial.name}"` : "New facet from run names"}</h3>
+          <div className="ql-seg" role="radiogroup" aria-label="Text to read the facet from">
             <button role="radio" aria-checked={source === "note"} className={source === "note" ? "on" : ""}
               onClick={() => { setSource("note"); setPicked(null); }}>Run note</button>
             <button role="radio" aria-checked={source === "folder"} className={source === "folder" ? "on" : ""}
@@ -105,18 +105,18 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
           {badPattern ? <span className="ql-warn"> Not a valid pattern.</span> : null}
         </div>
 
-        <div className="ql-tagb-fields">
-          <label>2 · Tag name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <div className="ql-facetb-fields">
+          <label>2 · Facet name<input value={name} autoFocus={!!initial} onChange={(e) => setName(e.target.value)} /></label>
           <label>Kind
             <select value={kind} onChange={(e) => setKind(e.target.value as "number" | "text")}>
               <option value="number">number</option><option value="text">text</option>
             </select>
           </label>
-          {dup ? <span className="ql-warn">A tag with that name exists.</span> : null}
+          {dup ? <span className="ql-warn">A facet with that name exists.</span> : null}
         </div>
 
         <div className="ql-step-label">3 · Check every run. Fix misses by hand; this changes this view only.</div>
-        <div className="ql-tagb-table">
+        <div className="ql-facetb-table">
           <table className="ql-table">
             <thead><tr><th>Run</th><th>{source === "folder" ? "Run folder" : "Note"}</th><th>{name.trim() || "value"}</th></tr></thead>
             <tbody>
@@ -141,7 +141,7 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
         {misses ? <div className="ql-warn">{misses} of {rows.length} runs have no value.</div> : null}
 
         <div className="modal-btns">
-          {initial ? <button className="danger" onClick={() => onDelete(initial.name)}>Remove tag</button> : null}
+          {initial ? <button className="danger" onClick={() => onDelete(initial.name)}>Remove facet</button> : null}
           <span style={{ flex: 1 }} />
           <button onClick={onClose}>Cancel</button>
           <button className="primary" disabled={!canSave}
@@ -153,7 +153,7 @@ export function TagBuilder({ runs, initial, overrides, taken, onSave, onDelete, 
                 if (f !== undefined && f.trim() !== "" && f !== auto) keep[r.key] = f.trim();
               }
               onSave(def, keep, initial?.name ?? null);
-            }}>{initial ? "Save tag" : "Add tag"}</button>
+            }}>{initial ? "Save facet" : "Add facet"}</button>
         </div>
       </div>
     </div>

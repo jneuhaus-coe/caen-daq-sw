@@ -2,8 +2,8 @@
 
 The table is independent of the channel map, polarity and cuts (all stage 2),
 so changing those never rereads a waveform. It depends only on the
-processing settings: the baseline window, the integration window, and the
-CFD fraction. Both polarities are kept (VMAX/VMIN, CFDP/CFDN) for the same
+processing settings: the baseline window (or none), the integration window
+(or the whole record), and the CFD fraction. Both polarities are kept (VMAX/VMIN, CFDP/CFDN) for the same
 reason - choosing one is instant later.
 
 Units: input mV (TR0 rescaled for its x2 attenuator), ns on each group's own
@@ -17,10 +17,12 @@ import numpy as np
 from . import slots as S
 
 # Field order of the stored table, shape (N_FIELDS, events, 18).
-PED, RMS, Q, VMAX, VMIN, TMAX, TMIN, CFDP, CFDN, CLIP = range(10)
-N_FIELDS = 10
+# TREF is per event, not per slot (the reference's crossing that placed the
+# window, NaN without a reference); every slot carries the same value.
+PED, RMS, Q, VMAX, VMIN, TMAX, TMIN, CFDP, CFDN, CLIP, TREF = range(11)
+N_FIELDS = 11
 FIELD_NAMES = ("ped", "rms", "q", "vmax", "vmin", "tmax", "tmin",
-               "cfdp", "cfdn", "clip")
+               "cfdp", "cfdn", "clip", "tref")
 
 OHMS = 50.0
 EDGE = 2            # DRS4 edge cells misbehave even corrected: never used
@@ -28,7 +30,7 @@ STEP = 400          # events per chunk: (400,18,1024) float32 is ~30 MB
 PREVIEW_EVENTS = 1000
 # Part of every cache key: bump it whenever what a pass computes changes, so
 # results from an older build are never mistaken for current ones.
-VERSION = 2
+VERSION = 3
 
 _GROUP = np.array([S.group_of_slot(s) for s in range(S.N_SLOTS)])
 _SCALE = np.array([S.scale_of_slot(s) for s in range(S.N_SLOTS)],
@@ -48,10 +50,14 @@ def normalize(proc: dict | None) -> dict:
         return [min(a, b), max(a, b)]
 
     win = p.get("window") or {}
-    mode = "reference" if win.get("mode") == "reference" else "record"
+    mode = win.get("mode") if win.get("mode") in ("reference", "all") else "record"
     ref = S.parse_source(win.get("reference")) if mode == "reference" else None
-    if ref is None:
+    if mode == "reference" and ref is None:
         mode = "record"
+    # An explicit null is "no baseline": slow signals have no quiet stretch
+    # to take one from. A missing key is an old client: the default window.
+    baseline = (None if "baseline" in p and p["baseline"] in (None, "none")
+                else rng(p.get("baseline"), (10.0, 40.0)))
     try:
         cfd = float(p.get("cfd", 0.3))
     except (TypeError, ValueError):
@@ -59,7 +65,7 @@ def normalize(proc: dict | None) -> dict:
     cfd = min(max(cfd, 0.05), 0.95)
     return {
         "version": VERSION,
-        "baseline": rng(p.get("baseline"), (10.0, 40.0)),
+        "baseline": baseline,
         "window": {"mode": mode,
                    "range": rng(win.get("range"),
                                 (-5.0, 45.0) if mode == "reference" else (60.0, 120.0)),
@@ -114,15 +120,21 @@ def chunk(ch_mv: np.ndarray, times: np.ndarray, proc: dict):
     clip = (np.abs(raw[..., edge]) >= S.CLIP_MV).any(-1)
     x = raw * _SCALE[None, :, None]
 
-    b0, b1 = proc["baseline"]
-    bmask = (t >= b0) & (t < b1) & edge
-    cnt = bmask.sum(-1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ped = (np.where(bmask, x, 0.0).sum(-1) / cnt).astype(np.float32)
-        v = x - ped[..., None]
-        rms = np.sqrt(np.where(bmask, v * v, 0.0).sum(-1) / cnt).astype(np.float32)
+    if proc["baseline"] is None:
+        # As recorded: nothing subtracted, so no pedestal or noise to report.
+        v = x
+        ped = rms = np.full((n, S.N_SLOTS), np.nan, dtype=np.float32)
+    else:
+        b0, b1 = proc["baseline"]
+        bmask = (t >= b0) & (t < b1) & edge
+        cnt = bmask.sum(-1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ped = (np.where(bmask, x, 0.0).sum(-1) / cnt).astype(np.float32)
+            v = x - ped[..., None]
+            rms = np.sqrt(np.where(bmask, v * v, 0.0).sum(-1) / cnt).astype(np.float32)
 
     w0, w1 = proc["window"]["range"]
+    tref_event = None
     ref = proc["window"]["reference"]
     if proc["window"]["mode"] == "reference" and ref is not None:
         vr = v[:, ref, :]
@@ -133,9 +145,12 @@ def chunk(ch_mv: np.ndarray, times: np.ndarray, proc: dict):
         neg = np.nanmean(lo) > np.nanmean(hi) if n else False
         tref = (_cfd(-vr, tr, m, ilo, lo, proc["cfd"]) if neg
                 else _cfd(vr, tr, m, ihi, hi, proc["cfd"]))
+        tref_event = tref
         tref = tref[:, None, None]
         with np.errstate(invalid="ignore"):
             wmask = (t >= tref + w0) & (t < tref + w1) & edge
+    elif proc["window"]["mode"] == "all":
+        wmask = np.broadcast_to(edge, t.shape)
     else:
         wmask = (t >= w0) & (t < w1) & edge
 
@@ -156,6 +171,7 @@ def chunk(ch_mv: np.ndarray, times: np.ndarray, proc: dict):
     out[CFDP] = _cfd(v, t, wmask, imax, vmax, proc["cfd"])
     out[CFDN] = _cfd(-v, t, wmask, imin, nmin, proc["cfd"])
     out[CLIP] = clip
+    out[TREF] = tref_event[:, None] if tref_event is not None else np.nan
     # The writer fills slots it had no samples for (a disabled bank, an event
     # without TR0) with exact zeros. Those are "not recorded", not 0 mV.
     absent = ~(raw != 0).any(-1)
